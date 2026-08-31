@@ -1,0 +1,3 @@
+/mnt/f/程序设计与数据结构/PPCA/CPU Simulator/RISC-V-Simulator-Template/build-assert/CMakeFiles/code.dir
+/mnt/f/程序设计与数据结构/PPCA/CPU Simulator/RISC-V-Simulator-Template/build-assert/CMakeFiles/edit_cache.dir
+/mnt/f/程序设计与数据结构/PPCA/CPU Simulator/RISC-V-Simulator-Template/build-assert/CMakeFiles/rebuild_cache.dir
