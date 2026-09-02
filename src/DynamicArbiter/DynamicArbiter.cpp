@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <stdexcept>
 
+
 namespace {
 // Plain (non-Register) snapshot of one flush-request slot, used for the
 // single-cycle composition: load committed world -> clear -> 3 ordered
@@ -190,8 +191,11 @@ void FlushArbiter::work() {
             SquashInfo viol;
             viol.needSquash = true;
             viol.SquashTag = violTag;
-            viol.SquashPC =
-                static_cast<uint32_t>(rob.robPredictPC[violTag & 0x3F]);
+            // The redirect target is the VIOLATING LOAD's own PC (ROB::getPC),
+            // NOT its predictedPC: load ROB entries carry predictedPC == 0
+            // (only INT/BR/UJ issuers assign it), so robPredictPC would
+            // squash the machine to address 0 and restart the whole program.
+            viol.SquashPC = static_cast<uint32_t>(rob.robPC[violTag & 0x3F]);
             viol.CkptId = static_cast<uint32_t>(rob.robCkptId[violTag & 0x3F]);
             insertPlain(cur, viol);
             violationHandled = true;

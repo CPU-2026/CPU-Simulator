@@ -94,15 +94,11 @@ struct LQInner {
   Register<4> tail;
 };
 class LQ : public dark::Module<LQInput, LQInner> {
-  void pushLoad(RobTag robTag, int n_bytes, bool isUnsigned);
-  void pop();
-  void writeAddress(uint32_t address, int index);
-  void writeValue(int32_t value, int index);
-  void writeValueIfFetching(uint8_t robTag, int index, int32_t value);
-  void setValueState(int index, ValueState state);
-  void setCDBBroadcast(int index);
-  void applyStoreForward(const StoreNotify &notify);
-  void flush(uint8_t tailSnapshot);
+  // (2026-09-01) The former private mutators (pushLoad/pop/writeAddress/
+  // writeValue/writeValueIfFetching/setValueState/setCDBBroadcast/
+  // applyStoreForward/flush) were inlined into work() as per-index write
+  // intents: multi-source fields may only be assigned once per cycle, and
+  // the intents reproduce the main tree's last-writer-wins order.
 
 public:
   bool isEmpty() const;

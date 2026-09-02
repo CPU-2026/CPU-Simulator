@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CPU_SOURCES
 	src/CPU/CPU.cpp
 	src/Decoder/Decoder.cpp
+	src/DCache/DCache.cpp
 	src/DMEM/DMEM.cpp
 	src/ROB/ROB.cpp
 	src/RS/RS.cpp

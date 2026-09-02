@@ -46,6 +46,18 @@ constexpr int CKPT_CAP = 64;
 constexpr int CACHE_BLOCK_CAP = 16;
 constexpr int CACHE_CAP = 1024;
 constexpr int REQUEST_CAP = 4;
+// ---- DCache geometry (mirrors main tree common.hpp) ----
+// 64KB / 4-way / 16B lines. All constexpr: to shrink the cache for stress
+// testing (capacity evictions / dirty-writeback path), edit NUM_OF_SETS and
+// DCACHE_INDEX_BITS here -- they must keep the 2^DCACHE_INDEX_BITS relation.
+constexpr int DCACHE_BLOCK_CAP = 16;
+constexpr int NUM_OF_SETS = 1024;
+constexpr int DCACHE_INDEX_BITS = 10;              // log2(NUM_OF_SETS)
+constexpr int DCACHE_TAG_SHIFT = 4 + DCACHE_INDEX_BITS; // 16B block + set idx
+constexpr int NUM_OF_WAYS = 4;
+static_assert(NUM_OF_SETS == (1 << DCACHE_INDEX_BITS),
+              "NUM_OF_SETS must be 2^DCACHE_INDEX_BITS");
+static_assert(DCACHE_BLOCK_CAP == 16, "16B lines assumed by DCACHE_TAG_SHIFT");
 enum class ValueState : uint32_t{
   NOTREADY,
   FETCHING,

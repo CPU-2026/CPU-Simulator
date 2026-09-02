@@ -7,6 +7,7 @@
 #include "StaticArbiter.hpp"
 #include "BRU.hpp"
 #include "BPU.hpp"
+#include "DCache.hpp"
 #include "DMEM.hpp"
 #include "Decoder.hpp"
 #include "InstructBuffer.hpp"
@@ -45,6 +46,7 @@ private:
   DecodeUnit DecodeUnitModule;
   PRF PRFModule;
   DMEM DMEMModule;
+  DCache DCacheModule;
   IMEM IMEMModule;
   BPU BPUModule;
   FlushArbiter flushArbiter;

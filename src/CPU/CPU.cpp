@@ -59,6 +59,7 @@ CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
   dcpu.add_module(&AGUModule);
   dcpu.add_module(&BRUModule);
   dcpu.add_module(&BPUModule);
+  dcpu.add_module(&DCacheModule);
   dcpu.add_module(&DMEMModule);
   dcpu.add_module(&RSModule);
   dcpu.add_module(&RATModule);
@@ -211,7 +212,7 @@ void CPU::wire() {
   // flag gate is a superset-safe call of the original storeSelected-only
   // call sites, pure reads with no side effects) ----
   MemArbiterModule.dmemBusy = [this]() {
-    return DMEMModule.isBusy() ? 1u : 0u;
+    return static_cast<uint32_t>(DCacheModule.isBusy);
   };
   MemArbiterModule.sqEmpty = [this]() { return SQModule.isEmpty() ? 1u : 0u; };
   MemArbiterModule.sqHeadRobTag = [this]() {
@@ -870,30 +871,81 @@ void CPU::wire() {
     };
   }
 
-  DMEMModule.DMEMInput::decisionValid = [this]() {
+  // ---- Wire DCache's Input Wires (decision from the MemArbiter Output;
+  // squash from FlushArbiter; DMEM completion observed through the DMEM
+  // bridge accessors reading _M_old -- the DCache is now DMEM's only
+  // client) ----
+  DCacheModule.squashNeed = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  DCacheModule.squashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
+  DCacheModule.squashPC = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashPC);
+  };
+  DCacheModule.squashCkptId = [this]() {
+    return static_cast<uint32_t>(flushArbiter.CkptId);
+  };
+  DCacheModule.decisionValid = [this]() {
     return MemArbiterModule.valid ? 1u : 0u;
   };
-  DMEMModule.DMEMInput::op = [this]() {
+  DCacheModule.decisionOp = [this]() {
     return static_cast<uint32_t>(MemArbiterModule.op);
   };
-  DMEMModule.DMEMInput::value = [this]() {
+  DCacheModule.decisionValue = [this]() {
     return static_cast<uint32_t>(MemArbiterModule.value);
   };
-  DMEMModule.DMEMInput::address = [this]() {
+  DCacheModule.decisionAddr = [this]() {
     return static_cast<uint32_t>(MemArbiterModule.address);
   };
-  DMEMModule.DMEMInput::isSigned = [this]() {
+  DCacheModule.decisionIsSigned = [this]() {
     return MemArbiterModule.isSigned ? 1u : 0u;
   };
-  DMEMModule.DMEMInput::n_bytes = [this]() {
+  DCacheModule.decisionNBytes = [this]() {
     return static_cast<uint32_t>(MemArbiterModule.nEnc);
   };
-  DMEMModule.DMEMInput::robTag = [this]() {
+  DCacheModule.decisionRobTag = [this]() {
     return static_cast<uint32_t>(MemArbiterModule.robTag);
   };
-  DMEMModule.DMEMInput::memIndex = [this]() {
+  DCacheModule.decisionMemIndex = [this]() {
     return static_cast<uint32_t>(MemArbiterModule.memIndex);
   };
+  DCacheModule.dmemReadBusy = [this]() {
+    return DMEMModule.isReadBusy() ? 1u : 0u;
+  };
+  DCacheModule.dmemWriteBusy = [this]() {
+    return DMEMModule.isWriteBusy() ? 1u : 0u;
+  };
+  DCacheModule.dmemReplyReady = [this]() {
+    return DMEMModule.isReplyReady() ? 1u : 0u;
+  };
+  for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) {
+    DCacheModule.dmemLineData[i] = [this, i]() {
+      return DMEMModule.lineByte(i);
+    };
+  }
+
+  // Wire the DMEM's Input Wires (dual-port line access: readValid/readAddress
+  // for fills, writeValid/writeAddress/writeLineData for dirty writebacks --
+  // the DCache is the only producer).
+  DMEMModule.DMEMInput::readValid = [this]() {
+    return static_cast<uint32_t>(DCacheModule.reqReadValid);
+  };
+  DMEMModule.DMEMInput::readAddress = [this]() {
+    return static_cast<uint32_t>(DCacheModule.reqReadAddr);
+  };
+  DMEMModule.DMEMInput::writeValid = [this]() {
+    return static_cast<uint32_t>(DCacheModule.reqWriteValid);
+  };
+  DMEMModule.DMEMInput::writeAddress = [this]() {
+    return static_cast<uint32_t>(DCacheModule.reqWriteAddr);
+  };
+  for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) {
+    DMEMModule.DMEMInput::writeLineData[i] = [this, i]() {
+      return static_cast<uint32_t>(DCacheModule.reqWriteLineData[i]);
+    };
+  }
 
   LQModule.squash.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
   LQModule.squash.SquashTag = [this]() { return static_cast<uint32_t>(flushArbiter.SquashTag); };
@@ -947,43 +999,20 @@ void CPU::wire() {
     return static_cast<uint32_t>(
         ROBModule.entry.lqTailSnapshot[static_cast<uint32_t>(flushArbiter.SquashTag) & 0x3F]);
   };
+  // loadResp now comes from the DCache (hit self-answer or fill serve); the
+  // squash guard lives inside DCache::wire_output (valid && (!needSquash ||
+  // isOlder)).
   LQModule.loadResp.loadRespValid = [this]() {
-    return DMEMModule.isReady() &&
-           static_cast<uint32_t>(DMEMModule.respOp) ==
-               static_cast<uint32_t>(Operation::Load) &&
-           (!static_cast<bool>(flushArbiter.needSquash) ||
-            ROB::isOlder(static_cast<uint32_t>(DMEMModule.respRobTag),
-                         static_cast<uint32_t>(flushArbiter.SquashTag)));
+    return static_cast<uint32_t>(DCacheModule.loadRespValid);
   };
   LQModule.loadResp.loadRespMemIndex = [this]() {
-    return (DMEMModule.isReady() &&
-            static_cast<uint32_t>(DMEMModule.respOp) ==
-                static_cast<uint32_t>(Operation::Load) &&
-            (!static_cast<bool>(flushArbiter.needSquash) ||
-             ROB::isOlder(static_cast<uint32_t>(DMEMModule.respRobTag),
-                          static_cast<uint32_t>(flushArbiter.SquashTag))))
-               ? static_cast<uint32_t>(DMEMModule.respMemIndex)
-               : 0;
+    return static_cast<uint32_t>(DCacheModule.loadRespMemIndex);
   };
   LQModule.loadResp.loadRespRobTag = [this]() {
-    return (DMEMModule.isReady() &&
-            static_cast<uint32_t>(DMEMModule.respOp) ==
-                static_cast<uint32_t>(Operation::Load) &&
-            (!static_cast<bool>(flushArbiter.needSquash) ||
-             ROB::isOlder(static_cast<uint32_t>(DMEMModule.respRobTag),
-                          static_cast<uint32_t>(flushArbiter.SquashTag))))
-               ? static_cast<uint32_t>(DMEMModule.respRobTag)
-               : 0;
+    return static_cast<uint32_t>(DCacheModule.loadRespRobTag);
   };
   LQModule.loadResp.loadRespValue = [this]() {
-    return (DMEMModule.isReady() &&
-            static_cast<uint32_t>(DMEMModule.respOp) ==
-                static_cast<uint32_t>(Operation::Load) &&
-            (!static_cast<bool>(flushArbiter.needSquash) ||
-             ROB::isOlder(static_cast<uint32_t>(DMEMModule.respRobTag),
-                          static_cast<uint32_t>(flushArbiter.SquashTag))))
-               ? static_cast<uint32_t>(DMEMModule.respValue)
-               : 0;
+    return static_cast<uint32_t>(DCacheModule.loadRespValue);
   };
   LQModule.memDispatch.memDispatchValid = [this]() {
     return MemArbiterModule.valid ? 1u : 0u;
@@ -1243,6 +1272,9 @@ void CPU::wire() {
     flushArbiter.rob.robPredictPC[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.predictedPC[i]);
     };
+    flushArbiter.rob.robPC[i] = [this, i]() {
+      return static_cast<uint32_t>(ROBModule.entry.pc[i]);
+    };
     flushArbiter.rob.robCkptId[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.ckptId[i]);
     };
@@ -1349,6 +1381,10 @@ void CPU::wire() {
   BPUModule.fetchCtx.imemReqFull = [this]() {
     return ICacheModule.isRequestFull() || IMEMModule.isRequestFull();
   };
+  // fetchInfo: scan the FQ's registered last* (the push record of the
+  // PREVIOUS cycle). Mirrors the main tree, which reads pushCache in comb()
+  // (also the previous cycle's FQ.tick write). Do NOT use the ICache return
+  // bundle directly -- it is the current-cycle value and races FQ push gating.
   BPUModule.fetchInfo.FetchValid = [this]() {
     return scanJump(FQModule.getLastValid(), FQModule.getLastRaw(),
                     FQModule.getLastPC())
@@ -1542,6 +1578,16 @@ void CPU::run(bool shuffle) {
       dcpu.run_once();
     finish = s_halt && s_fqEmpty && s_decEmpty && s_robEmpty;
   }
+  if (debug::enabled(debug::TOPIC_DCACHE))
+    debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%% "
+                 "writebacks=%llu\n",
+                 DCacheModule.statHits, DCacheModule.statMisses,
+                 DCacheModule.statHits + DCacheModule.statMisses,
+                 (DCacheModule.statHits + DCacheModule.statMisses)
+                     ? 100.0 * DCacheModule.statHits /
+                           (DCacheModule.statHits + DCacheModule.statMisses)
+                     : 0.0,
+                 DCacheModule.statWritebacks);
   if (debug::enabled(debug::TOPIC_CLOCK))
     debug::print("clock: %llu\n", dcpu.cycles);
   if (debug::enabled(debug::TOPIC_BRANCH))

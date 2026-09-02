@@ -38,6 +38,7 @@ struct FlushArbiterInputROB {
   Wire<1> isROBEmpty;
   Wire<7> robHeadTag;
   std::array<Wire<32>, ROB_CAP> robPredictPC;
+  std::array<Wire<32>, ROB_CAP> robPC; // true fetch PC (load entries included)
   std::array<Wire<6>, ROB_CAP> robCkptId;
 };
 struct FlushArbiterInputLQ {
