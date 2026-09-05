@@ -50,7 +50,8 @@ private:
   IMEM IMEMModule;
   BPU BPUModule;
   FlushArbiter flushArbiter;
-  CDBArbiter CDBArbiterModule;
+  AluCDBArbiter AluCDBArbiterModule;
+  LqCDBArbiter LqCDBArbiterModule;
   MemArbiter MemArbiterModule;
   DispatchArbiter DispatchArbiterModule;
   IssueArbiter IssueArbiterModule;

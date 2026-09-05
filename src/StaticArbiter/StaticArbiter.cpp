@@ -2,64 +2,48 @@
 #include <cassert>
 #include <cstdint>
 
-// ---- CDBArbiter: stateless combinational arbiter ----
-// Predicates read the Input Wires (lazy, cached per cycle); the Output Wire
-// lambdas re-evaluate every cycle like an always_comb. Arbitration semantics
-// are verbatim from the former CDBArbiter::build/arbitrate.
-bool CDBArbiter::aluLive() const {
+// ---- AluCDBArbiter / LqCDBArbiter: dual-CDB bus sources ----
+// Pure combinational: the retired CDBArbiter's age arbitration is gone (each
+// bus has a single candidate); the per-candidate squash guard is verbatim
+// from the former aluLive()/lsqLive(). Outputs are lazy Wires re-evaluated
+// every cycle like an always_comb.
+bool AluCDBArbiter::aluLive() const {
   return !static_cast<bool>(aluEmpty) &&
          (!static_cast<bool>(squashNeed) ||
           ROB::isOlder(static_cast<uint32_t>(aluRobTag),
                        static_cast<uint32_t>(squashTag)));
 }
 
-bool CDBArbiter::lsqLive() const {
+void AluCDBArbiter::wire_output() {
+  valid = [this]() -> uint32_t { return aluLive() ? 1u : 0u; };
+  value = [this]() -> uint32_t {
+    return aluLive() ? static_cast<uint32_t>(aluValue) : 0u;
+  };
+  robTag = [this]() -> uint32_t {
+    return aluLive() ? static_cast<uint32_t>(aluRobTag) : 0u;
+  };
+  isControl = [this]() -> uint32_t {
+    return aluLive() ? static_cast<uint32_t>(aluIsControl) : 0u;
+  };
+}
+
+bool LqCDBArbiter::lsqLive() const {
   return static_cast<bool>(lsqValid) &&
          (!static_cast<bool>(squashNeed) ||
           ROB::isOlder(static_cast<uint32_t>(lsqRobTag),
                        static_cast<uint32_t>(squashTag)));
 }
 
-bool CDBArbiter::aluWins() const {
-  return ROB::isOlder(static_cast<uint32_t>(aluRobTag),
-                      static_cast<uint32_t>(lsqRobTag)) ||
-         static_cast<uint32_t>(aluRobTag) ==
-             static_cast<uint32_t>(lsqRobTag);
-}
-
-bool CDBArbiter::aluSelected() const {
-  return aluLive() && (!lsqLive() || aluWins());
-}
-
-bool CDBArbiter::lsqSelected() const {
-  return lsqLive() && !aluSelected();
-}
-
-void CDBArbiter::wire_output() {
-  valid = [this]() -> uint32_t { return (aluLive() || lsqLive()) ? 1u : 0u; };
-  aluGranted = [this]() -> uint32_t { return aluSelected() ? 1u : 0u; };
-  memGranted = [this]() -> uint32_t { return lsqSelected() ? 1u : 0u; };
+void LqCDBArbiter::wire_output() {
+  valid = [this]() -> uint32_t { return lsqLive() ? 1u : 0u; };
   value = [this]() -> uint32_t {
-    if (aluSelected())
-      return static_cast<uint32_t>(aluValue);
-    if (lsqSelected())
-      return static_cast<uint32_t>(lsqValue);
-    return 0u;
+    return lsqLive() ? static_cast<uint32_t>(lsqValue) : 0u;
   };
   robTag = [this]() -> uint32_t {
-    if (aluSelected())
-      return static_cast<uint32_t>(aluRobTag);
-    if (lsqSelected())
-      return static_cast<uint32_t>(lsqRobTag);
-    return 0u;
-  };
-  // lsqResult.isControl is never set (candidate default) -- only the ALU
-  // candidate can be a control op.
-  isControl = [this]() -> uint32_t {
-    return aluSelected() ? static_cast<uint32_t>(aluIsControl) : 0u;
+    return lsqLive() ? static_cast<uint32_t>(lsqRobTag) : 0u;
   };
   memIndex = [this]() -> uint32_t {
-    return lsqSelected() ? static_cast<uint32_t>(lsqMemIndex) : 0u;
+    return lsqLive() ? static_cast<uint32_t>(lsqMemIndex) : 0u;
   };
 }
 

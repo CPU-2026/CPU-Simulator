@@ -147,7 +147,7 @@ struct TAGE_MetaReg {
   Register<1> tagePred;
   Register<2> baseCnt;
 };
-// Register-storage mirror of the plain BTBEntry (comb-domain).
+// Register-storage mirror of the comb-domain BTB line.
 struct BTBEntryReg {
   Register<32> actualPC;
   Register<32> target;

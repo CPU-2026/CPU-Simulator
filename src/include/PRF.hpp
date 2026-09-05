@@ -12,20 +12,21 @@ struct PRFInputSquash {
   Wire<7> SquashTag;
   Wire<8> CkptId;
 };
-struct PRFInputLQ {
-  Wire<8> lqHead;
-  std::array<Wire<1>, LQ_CAP> lqActive;
-  std::array<Wire<1>, LQ_CAP> lqReadyToCommit;
-  std::array<Wire<7>, LQ_CAP> lqRobTags;
-  std::array<Wire<32>, LQ_CAP> lqValues;
-  std::array<Wire<1>, LQ_CAP> lqHasOlderUnresolved;
-  std::array<Wire<7>, LQ_CAP> lqNewPhys;
-};
-struct PRFInputCDB {
+// Dual-CDB write ports (mirrors the main tree's PRFInput.cdbOfALU/cdbOfLQ):
+// the ALU group gates on cdbIsControl (control results never write PRF); the
+// LQ group has no isControl wire -- loads are never control ops, saving a
+// port.
+struct PRFInputCDBAlu {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
   Wire<7> cdbRobTag;
   Wire<1> cdbIsControl;
+  Wire<7> cdbNewPhy;
+};
+struct PRFInputCDBLq {
+  Wire<1> cdbValid;
+  Wire<32> cdbValue;
+  Wire<7> cdbRobTag;
   Wire<7> cdbNewPhy;
 };
 struct PRFInputIssue {
@@ -46,8 +47,8 @@ struct PRFInputROB {
 };
 struct PRFInput {
   PRFInputSquash squash;
-  PRFInputLQ lq;
-  PRFInputCDB cdb;
+  PRFInputCDBAlu cdbOfALU;
+  PRFInputCDBLq cdbOfLQ;
   PRFInputIssue issue;
   PRFInputROB rob;
 };

@@ -101,8 +101,9 @@ void ALU::work() {
   const uint32_t dTag = static_cast<uint32_t>(dispatchRobTag);
   const Operation dOp =
       static_cast<Operation>(static_cast<uint32_t>(op));
-  const bool grant =
-      static_cast<bool>(cdbValid) && static_cast<bool>(aluGranted);
+  // grant = this entry is the aluCDB winner; dual-CDB leaves ALU as the sole
+  // candidate so valid implies granted (retired the aluGranted select bit)
+  const bool grant = static_cast<bool>(cdbValid);
   const uint32_t cdbTag = static_cast<uint32_t>(cdbRobTag);
 
   // push target from the OLD validity bitmap only: the reference picked the

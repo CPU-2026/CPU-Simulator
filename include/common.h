@@ -3,8 +3,8 @@
 #include <cstdint>
 #include "tools.h"
 using RobTag = uint8_t;
-constexpr int INTEGERRS_CAP = 16;
-constexpr int STORERS_CAP = 8;
+constexpr int INTEGERRS_CAP = 8;
+constexpr int STORERS_CAP = 4;
 constexpr int LOADRS_CAP = 4;
 constexpr int BRANCHRS_CAP = 4;
 constexpr int LQ_CAP = 16;
@@ -21,17 +21,15 @@ constexpr int FLUSHARBITER_CAP = 4;
 constexpr int ALU_CAP = 4;
 constexpr int AGU_CAP = 4;
 constexpr int BRU_CAP = 4;
-constexpr int BTB_CAP = 512;
-constexpr int BHT_CAP = 1 << 9;
+constexpr int BTB_CAP = 256;
+constexpr int BHT_CAP = 1 << 8;
 constexpr int T0_CAP = 1 << 10;  // local base table, (pc ^ LHT) hashed index
-constexpr int LHT_CAP = 1 << 10; // per-PC local history table, pc[11:2] index
-constexpr int SELECTOR_CAP = 1 << 12;
-constexpr uint64_t HISTORY_MASK = ~UINT64_C(0);
-constexpr int LOCAL_HISTORY_BIT = 8;
+constexpr int LHT_CAP = 1 << 9; // per-PC local history table, pc[11:2] index
+constexpr int LOCAL_HISTORY_BIT = 7;
 constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
-constexpr int CONDSEEN_CAP = 1 << 10; // "this PC is a conditional" filter
-constexpr int RAS_CAP = 16;
-constexpr int ALIGNQ_CAP = 32;
+constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
+constexpr int RAS_CAP = 8;
+constexpr int ALIGNQ_CAP = 16;
 constexpr int PRF_CAP = 128;
 // Sentinel for "no physical register" across the whole phy-tag domain
 // (RAT entries, freeList empty slots, Operand.tag immediates, ROB
@@ -100,18 +98,6 @@ enum class RISC_V {
   RV_INVALID,
 };
 
-struct AddressCalculateResult {
-  int32_t value;
-  uint8_t robTag;
-  uint8_t memIndex;
-};
-
-struct BranchResult {
-  int pcFrom;
-  int pcResult;
-  uint8_t robTag;
-};
-
 struct SquashInfo {
   bool needSquash = false;
   uint8_t SquashTag = 0;
@@ -146,16 +132,6 @@ struct PredictInfo {
   TAGESCMeta meta{};
 };
 
-struct BTBEntry {
-  uint32_t actualPC;
-  uint32_t target;
-  bool valid;
-  bool unconditional;
-  bool isCall = false;
-  bool isRet = false;
-  bool isIndirect = false; // JALR: target history-dependent, TC-eligible
-};
-
 struct BPUSnapshot {
   // SARAS: the checkpoint keeps GHR, AlignQueue head+tail, and RAS_top.
   // With RASEntry{retPC,times}, the height != call/ret depth, so RAS_top
@@ -171,21 +147,6 @@ struct BPUSnapshot {
 };
 
 struct Uop {
-  RISC_V type = RISC_V::RV_INVALID;
-  int opcode = 0;
-  int funct3 = 0;
-  int funct7 = 0;
-  int rd = 0;
-  int rs1 = 0;
-  int rs2 = 0;
-  int32_t imm = 0;
-  uint32_t pc = 0;
-  bool isHalt = false;
-  bool allocDest = false;
-  int32_t predictedPC = 0;
-  uint8_t ckptId = 0;
-};
-struct UopView {
   RISC_V type = RISC_V::RV_INVALID;
   int opcode = 0;
   int funct3 = 0;

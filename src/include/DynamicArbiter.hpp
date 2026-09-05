@@ -59,7 +59,7 @@ struct FlushArbiterInputAGU{
 // the accepted squash (clear), stage 2 detects BRU branch mispredicts,
 // stage 3 detects CDB JALR mispredicts, stage 4 detects MDP load violations
 // (store address resolves against younger executed loads) -- all reads from
-// the committed Input Wire views (BRUModule head, CDBArbiter output,
+// the committed Input Wire views (BRUModule head, aluCDB output,
 // ROBModule, AGUModule head store, LQModule/SQModule), all writes to its own
 // queue (receive).
 struct FlushArbiterInput {

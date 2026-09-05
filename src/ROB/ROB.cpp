@@ -135,20 +135,6 @@ void ROB::work() {
     }
   }
   {
-    uint32_t lqHead = static_cast<uint32_t>(lq.lqHead);
-    for (int k = 0; k < MEMQ_SCAN_WINDOW; ++k) {
-      uint32_t i = (lqHead + k) & 0x0F;
-      if (!static_cast<bool>(lq.lqValid[i])) continue;
-      if (!static_cast<bool>(lq.lqReadyToCommit[i])) continue;
-      if (static_cast<bool>(sq.sqHasOlderUnresolvedAddressStore[static_cast<uint32_t>(lq.lqRobTag[i])])) continue;
-      uint32_t lqTag = static_cast<uint32_t>(lq.lqRobTag[i]);
-      if (needSquash && !ROB::isOlder(lqTag, squashTag)) continue;
-      if (!curEmpty && ROB::isOlder(lqTag, curHead)) continue;
-      if (curEmpty) continue;
-      markReady(lqTag & 0x3F);
-    }
-  }
-  {
     uint32_t sqHead = static_cast<uint32_t>(sq.sqHead);
     for (int k = 0; k < MEMQ_SCAN_WINDOW; ++k) {
       uint32_t i = (sqHead + k) & 0x0F;
@@ -161,8 +147,16 @@ void ROB::work() {
       markReady(sqTag & 0x3F);
     }
   }
-  if (static_cast<bool>(cdb.cdbValid)) {
-    uint32_t cdbTag = static_cast<uint32_t>(cdb.cdbRobTag);
+  if (static_cast<bool>(cdbOfALU.cdbValid)) {
+    uint32_t cdbTag = static_cast<uint32_t>(cdbOfALU.cdbRobTag);
+    if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
+      if (!curEmpty && !ROB::isOlder(cdbTag, curHead)) {
+        markReady(cdbTag & 0x3F);
+      }
+    }
+  }
+  if (static_cast<bool>(cdbOfLQ.cdbValid)) {
+    uint32_t cdbTag = static_cast<uint32_t>(cdbOfLQ.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
       if (!curEmpty && !ROB::isOlder(cdbTag, curHead)) {
         markReady(cdbTag & 0x3F);

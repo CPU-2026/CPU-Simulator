@@ -1,10 +1,11 @@
 #pragma once
-// StaticArbiter: the stateless arbiter family (pure combinational, zero
-// flip-flops in RTL). CDBArbiter / MemArbiter / DispatchArbiter / IssueArbiter
-// share one form: work() is empty, every port is a lazy Wire, and the whole
-// always_comb cloud is wired once in wire_output(). The stateful FlushArbiter
-// lives separately in DynamicArbiter.hpp (registered queue vs always_comb is
-// the stateful/stateless hardware boundary).
+// StaticArbiter: the stateless arbiter/bus-source family (pure combinational,
+// zero flip-flops in RTL). AluCDBArbiter / LqCDBArbiter / MemArbiter /
+// DispatchArbiter / IssueArbiter share one form: work() is empty, every port
+// is a lazy Wire, and the whole always_comb cloud is wired once in
+// wire_output(). The stateful FlushArbiter lives separately in
+// DynamicArbiter.hpp (registered queue vs always_comb is the stateful/
+// stateless hardware boundary).
 #include "AGU.hpp"
 #include "ALU.hpp"
 #include "BRU.hpp"
@@ -18,15 +19,35 @@
 #include "module.h"
 #include <array>
 #include <cstdint>
-// Stateless CDB arbiter (pure combinational, zero flip-flops): two candidates
-// per cycle -- the oldest ready ALU result and the LSQ load value flagged by
-// LQ::CDBDetect -- arbitrated by age (tag tie goes to ALU), with squash
-// invalidating any candidate not older than the squash point.
-struct CDBArbInput {
+// Dual-CDB bus sources (pure combinational, zero flip-flops): the retired
+// CDBArbiter arbitrated ALU vs LQ on one shared bus; each source now drives
+// its own bus (aluCDB / lqCDB), so there is no cross-unit arbitration left --
+// every source has a single candidate (ALU oldest head / LQ::CDBDetect hit)
+// that is squash-guarded and passed straight through. This mirrors the main
+// tree's aluCDB::build / lqCDB::build factories (dual CDB, validated 19/19).
+struct AluCDBArbInput {
   Wire<1> aluEmpty;     // ALUModule.isEmpty()
   Wire<32> aluValue;    // ALUModule.headValue()
   Wire<7> aluRobTag;    // ALUModule.headRobTag()
   Wire<1> aluIsControl; // ALUModule.headIsControl()
+  Wire<1> squashNeed;   // squashDetect.needSquash
+  Wire<7> squashTag;    // squashDetect.SquashTag
+};
+struct AluCDBArbOutput {
+  Wire<1> valid;
+  Wire<32> value;
+  Wire<7> robTag;
+  Wire<1> isControl;
+};
+struct AluCDBArbiter : dark::Module<AluCDBArbInput, AluCDBArbOutput> {
+  AluCDBArbiter() { wire_output(); }
+  void work() override {} // pure combinational: outputs are lazy Wires
+private:
+  void wire_output();
+  // ALU head candidate surviving the squash guard (verbatim from CDBArbiter).
+  bool aluLive() const;
+};
+struct LqCDBArbInput {
   Wire<1> lsqValid;     // LQModule.CDBDetect() != -1
   Wire<7> lsqMemIndex;  // CDBDetect() hit ? LQ index : 0
   Wire<7> lsqRobTag;    // hit ? LQModule.getRobTag(idx) : 0
@@ -35,26 +56,19 @@ struct CDBArbInput {
   Wire<1> squashNeed;   // squashDetect.needSquash
   Wire<7> squashTag;    // squashDetect.SquashTag
 };
-struct CDBArbOutput {
+struct LqCDBArbOutput {
   Wire<1> valid;
   Wire<32> value;
   Wire<7> robTag;
-  Wire<1> isControl;
-  Wire<1> aluGranted;
-  Wire<1> memGranted;
   Wire<7> memIndex;
 };
-struct CDBArbiter : dark::Module<CDBArbInput, CDBArbOutput> {
-  CDBArbiter() { wire_output(); }
+struct LqCDBArbiter : dark::Module<LqCDBArbInput, LqCDBArbOutput> {
+  LqCDBArbiter() { wire_output(); }
   void work() override {} // pure combinational: outputs are lazy Wires
 private:
   void wire_output();
-  // Combinational predicates over the Input Wires (explicit casts inside).
-  bool aluLive() const;     // ALU head candidate surviving the squash guard
-  bool lsqLive() const;     // LSQ load candidate surviving the squash guard
-  bool aluWins() const;     // both live: age order, tag tie goes to ALU
-  bool aluSelected() const; // ALU candidate carries the grant
-  bool lsqSelected() const; // LSQ candidate carries the grant
+  // LSQ load candidate surviving the squash guard (verbatim from CDBArbiter).
+  bool lsqLive() const;
 };
 
 // Stateless memory-request arbiter (pure combinational, zero flip-flops):

@@ -17,9 +17,9 @@ struct ALUInput {
   Wire<32> src2Value;
   Wire<5> op;
   Wire<8> dispatchRobTag;
-  // this unit's own grant on the CDB result bus
+  // this unit's own result bus (dual-CDB: ALU is the sole source of the
+  // aluCDB, so no aluGranted bit survives -- valid implies granted)
   Wire<1> cdbValid;
-  Wire<1> aluGranted;
   Wire<8> cdbRobTag;
 };
 

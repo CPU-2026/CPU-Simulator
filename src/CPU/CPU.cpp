@@ -63,7 +63,8 @@ CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
   dcpu.add_module(&DMEMModule);
   dcpu.add_module(&RSModule);
   dcpu.add_module(&RATModule);
-  dcpu.add_module(&CDBArbiterModule);
+  dcpu.add_module(&AluCDBArbiterModule);
+  dcpu.add_module(&LqCDBArbiterModule);
   dcpu.add_module(&MemArbiterModule);
   dcpu.add_module(&DispatchArbiterModule);
   dcpu.add_module(&IssueArbiterModule);
@@ -173,36 +174,40 @@ void CPU::wire() {
     };
   }
 
-  // ---- Wire CDBArbiter's Input Wires (producers stay bridges reading _M_old;
+  // ---- Wire the dual-CDB bus sources (producers stay bridges reading _M_old;
   // lsq* are gated here so an invalid CDBDetect index never reaches
-  // getValue's throw) ----
-  CDBArbiterModule.aluEmpty = [this]() { return ALUModule.isEmpty() ? 1u : 0u; };
-  CDBArbiterModule.aluValue = [this]() {
+  // getValue's throw; each source carries its own squash guard) ----
+  AluCDBArbiterModule.aluEmpty = [this]() { return ALUModule.isEmpty() ? 1u : 0u; };
+  AluCDBArbiterModule.aluValue = [this]() {
     return static_cast<uint32_t>(ALUModule.headValue());
   };
-  CDBArbiterModule.aluRobTag = [this]() {
+  AluCDBArbiterModule.aluRobTag = [this]() {
     return static_cast<uint32_t>(ALUModule.headRobTag());
   };
-  CDBArbiterModule.aluIsControl = [this]() {
+  AluCDBArbiterModule.aluIsControl = [this]() {
     return ALUModule.headIsControl() ? 1u : 0u;
   };
-  CDBArbiterModule.lsqValid = [this]() {
+  AluCDBArbiterModule.squashNeed = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
+  AluCDBArbiterModule.squashTag = [this]() {
+    return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
+  };
+  LqCDBArbiterModule.lsqValid = [this]() {
     return LQModule.CDBDetect() != -1 ? 1u : 0u;
   };
-  CDBArbiterModule.lsqMemIndex = [this]() {
+  LqCDBArbiterModule.lsqMemIndex = [this]() {
     auto d = LQModule.CDBDetect();
     return d != -1 ? static_cast<uint32_t>(d) : 0u;
   };
-  CDBArbiterModule.lsqRobTag = [this]() {
+  LqCDBArbiterModule.lsqRobTag = [this]() {
     auto d = LQModule.CDBDetect();
     return d != -1 ? static_cast<uint32_t>(LQModule.getRobTag(d)) : 0u;
   };
-  CDBArbiterModule.lsqValue = [this]() {
+  LqCDBArbiterModule.lsqValue = [this]() {
     auto d = LQModule.CDBDetect();
     return d != -1 ? static_cast<uint32_t>(LQModule.getValue(d)) : 0u;
   };
-  CDBArbiterModule.squashNeed = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
-  CDBArbiterModule.squashTag = [this]() {
+  LqCDBArbiterModule.squashNeed = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
+  LqCDBArbiterModule.squashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
 
@@ -391,12 +396,9 @@ void CPU::wire() {
   ALUModule.dispatchRobTag = [this]() {
     return static_cast<uint32_t>(DispatchArbiterModule.alu.robTag);
   };
-  ALUModule.cdbValid = [this]() { return CDBArbiterModule.valid ? 1u : 0u; };
-  ALUModule.aluGranted = [this]() {
-    return CDBArbiterModule.aluGranted ? 1u : 0u;
-  };
+  ALUModule.cdbValid = [this]() { return AluCDBArbiterModule.valid ? 1u : 0u; };
   ALUModule.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(CDBArbiterModule.robTag);
+    return static_cast<uint32_t>(AluCDBArbiterModule.robTag);
   };
 
   // Wire the AGU's input wires once: the load/store RS array choice is made
@@ -487,43 +489,39 @@ void CPU::wire() {
   PRFModule.squash.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
   PRFModule.squash.SquashTag = [this]() { return static_cast<uint32_t>(flushArbiter.SquashTag); };
   PRFModule.squash.CkptId = [this]() { return static_cast<uint32_t>(flushArbiter.CkptId); };
-  PRFModule.lq.lqHead = [this]() { return LQModule.getHead(); };
-  for (int i = 0; i < LQ_CAP; ++i) {
-    PRFModule.lq.lqActive[i] = [this, i]() { return LQModule.isActive(i); };
-    PRFModule.lq.lqReadyToCommit[i] = [this, i]() {
-      return LQModule.isReadyToCommit(i);
-    };
-    PRFModule.lq.lqRobTags[i] = [this, i]() { return LQModule.getRobTag(i); };
-    PRFModule.lq.lqValues[i] = [this, i]() { return LQModule.getValue(i); };
-    PRFModule.lq.lqHasOlderUnresolved[i] = [this, i]() {
-      return SQModule.hasOlderUnresolvedAddressStore(LQModule.getRobTag(i));
-    };
-    PRFModule.lq.lqNewPhys[i] = [this, i]() {
-      if (!LQModule.isActive(i))
-        return static_cast<uint32_t>(InvalidPhy);
-      auto tag = LQModule.getRobTag(i);
-      // Guard: if tag is older than ROB head, entry is already retired
-      if (!static_cast<bool>(ROBModule.headView.isEmpty) &&
-          ROB::isOlder(tag, static_cast<uint32_t>(ROBModule.headView.head)))
-        return static_cast<uint32_t>(InvalidPhy);
-      return static_cast<uint32_t>(ROBModule.entry.newPhy[tag & 0x3F]);
-    };
-  }
-  PRFModule.cdb.cdbValid = [this]() { return CDBArbiterModule.valid ? 1u : 0u; };
-  PRFModule.cdb.cdbValue = [this]() {
-    return static_cast<uint32_t>(CDBArbiterModule.value);
+  // dual-CDB write ports: ALU group keeps isControl (PRF never writes control
+  // results); the LQ group omits it (loads are never control ops). newPhy is
+  // looked up from the ROB entry by tag, valid-gated (a broadcast only ever
+  // targets an in-flight entry's rename).
+  PRFModule.cdbOfALU.cdbValid = [this]() { return AluCDBArbiterModule.valid ? 1u : 0u; };
+  PRFModule.cdbOfALU.cdbValue = [this]() {
+    return static_cast<uint32_t>(AluCDBArbiterModule.value);
   };
-  PRFModule.cdb.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(CDBArbiterModule.robTag);
+  PRFModule.cdbOfALU.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(AluCDBArbiterModule.robTag);
   };
-  PRFModule.cdb.cdbIsControl = [this]() {
-    return CDBArbiterModule.isControl ? 1u : 0u;
+  PRFModule.cdbOfALU.cdbIsControl = [this]() {
+    return AluCDBArbiterModule.isControl ? 1u : 0u;
   };
-  PRFModule.cdb.cdbNewPhy = [this]() {
-    if (!static_cast<bool>(CDBArbiterModule.valid))
+  PRFModule.cdbOfALU.cdbNewPhy = [this]() {
+    if (!static_cast<bool>(AluCDBArbiterModule.valid))
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(
-        ROBModule.entry.newPhy[static_cast<uint32_t>(CDBArbiterModule.robTag) &
+        ROBModule.entry.newPhy[static_cast<uint32_t>(AluCDBArbiterModule.robTag) &
+                               0x3F]);
+  };
+  PRFModule.cdbOfLQ.cdbValid = [this]() { return LqCDBArbiterModule.valid ? 1u : 0u; };
+  PRFModule.cdbOfLQ.cdbValue = [this]() {
+    return static_cast<uint32_t>(LqCDBArbiterModule.value);
+  };
+  PRFModule.cdbOfLQ.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(LqCDBArbiterModule.robTag);
+  };
+  PRFModule.cdbOfLQ.cdbNewPhy = [this]() {
+    if (!static_cast<bool>(LqCDBArbiterModule.valid))
+      return static_cast<uint32_t>(InvalidPhy);
+    return static_cast<uint32_t>(
+        ROBModule.entry.newPhy[static_cast<uint32_t>(LqCDBArbiterModule.robTag) &
                                0x3F]);
   };
   PRFModule.issue.issueValid = [this]() {
@@ -969,13 +967,13 @@ void CPU::wire() {
     return static_cast<uint32_t>(IssueArbiterModule.core.isUnsigned);
   };
   LQModule.cdb.lsqSetCDB = [this]() {
-    // memGranted already embeds the squash guard on the lsq candidate
-    // (arbitrate invalidates a candidate not older than the squash point),
-    // so the former re-check here is a redundant idempotent gate.
-    return CDBArbiterModule.memGranted ? 1u : 0u;
+    // lqCDB.valid already embeds the squash guard on the lsq candidate
+    // (LqCDBArbiter passes only candidates older than the squash point), so
+    // the former re-check here is a redundant idempotent gate.
+    return LqCDBArbiterModule.valid ? 1u : 0u;
   };
   LQModule.cdb.cdbMemIndex = [this]() {
-    return static_cast<uint32_t>(CDBArbiterModule.memIndex);
+    return static_cast<uint32_t>(LqCDBArbiterModule.memIndex);
   };
   LQModule.agu.isAGUEmpty = [this]() { return AGUModule.isEmpty(); };
   LQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };
@@ -1140,28 +1138,18 @@ void CPU::wire() {
   ROBModule.squash.SquashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
-  ROBModule.cdb.cdbValid = [this]() { return CDBArbiterModule.valid ? 1u : 0u; };
-  ROBModule.cdb.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(CDBArbiterModule.robTag);
+  ROBModule.cdbOfALU.cdbValid = [this]() { return AluCDBArbiterModule.valid ? 1u : 0u; };
+  ROBModule.cdbOfALU.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(AluCDBArbiterModule.robTag);
+  };
+  ROBModule.cdbOfLQ.cdbValid = [this]() { return LqCDBArbiterModule.valid ? 1u : 0u; };
+  ROBModule.cdbOfLQ.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(LqCDBArbiterModule.robTag);
   };
   ROBModule.bru.isBRUEmpty = [this]() { return BRUModule.isEmpty() ? 1u : 0u; };
   ROBModule.bru.bruHeadRobTag = [this]() {
     return BRUModule.isEmpty() ? 0u
                                : static_cast<uint32_t>(BRUModule.headRobTag());
-  };
-  for (int i = 0; i < LQ_CAP; ++i) {
-    ROBModule.lq.lqValid[i] = [this, i]() {
-      return LQModule.isActive(i) ? 1u : 0u;
-    };
-    ROBModule.lq.lqReadyToCommit[i] = [this, i]() {
-      return LQModule.isReadyToCommit(i) ? 1u : 0u;
-    };
-    ROBModule.lq.lqRobTag[i] = [this, i]() {
-      return static_cast<uint32_t>(LQModule.getRobTag(i));
-    };
-  }
-  ROBModule.lq.lqHead = [this]() {
-    return static_cast<uint32_t>(LQModule.getHead());
   };
   for (int i = 0; i < SQ_CAP; ++i) {
     ROBModule.sq.sqValid[i] = [this, i]() {
@@ -1250,17 +1238,20 @@ void CPU::wire() {
   flushArbiter.bru.bruHeadPCFrom = [this]() {
     return static_cast<uint32_t>(BRUModule.headPCFrom());
   };
+  // JALR mispredict detection consumes only the ALU bus (control results;
+  // loads never produce control), so the LQ bus is not wired here -- an
+  // area/port saving over a shared single CDB.
   flushArbiter.cdb.cdbValid = [this]() {
-    return CDBArbiterModule.valid ? 1u : 0u;
+    return AluCDBArbiterModule.valid ? 1u : 0u;
   };
   flushArbiter.cdb.cdbValue = [this]() {
-    return static_cast<uint32_t>(CDBArbiterModule.value);
+    return static_cast<uint32_t>(AluCDBArbiterModule.value);
   };
   flushArbiter.cdb.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(CDBArbiterModule.robTag);
+    return static_cast<uint32_t>(AluCDBArbiterModule.robTag);
   };
   flushArbiter.cdb.cdbIsControl = [this]() {
-    return CDBArbiterModule.isControl ? 1u : 0u;
+    return AluCDBArbiterModule.isControl ? 1u : 0u;
   };
   flushArbiter.rob.isROBEmpty = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.isEmpty);
@@ -1322,15 +1313,18 @@ void CPU::wire() {
   BPUModule.squash.SquashCkpt = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.CkptId));
   };
-  BPUModule.cdb.cdbValid = [this]() { return CDBArbiterModule.valid ? 1u : 0u; };
+  // BPU training consumes only the ALU bus (its cdb port gates on
+  // cdbValid && cdbIsControl; loads never produce control), so the LQ bus is
+  // not wired here -- an area/port saving over a shared single CDB.
+  BPUModule.cdb.cdbValid = [this]() { return AluCDBArbiterModule.valid ? 1u : 0u; };
   BPUModule.cdb.cdbValue = [this]() {
-    return static_cast<uint32_t>(CDBArbiterModule.value);
+    return static_cast<uint32_t>(AluCDBArbiterModule.value);
   };
   BPUModule.cdb.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(CDBArbiterModule.robTag);
+    return static_cast<uint32_t>(AluCDBArbiterModule.robTag);
   };
   BPUModule.cdb.cdbIsControl = [this]() {
-    return CDBArbiterModule.isControl ? 1u : 0u;
+    return AluCDBArbiterModule.isControl ? 1u : 0u;
   };
   BPUModule.bru.isBRUEmpty = [this]() { return BRUModule.isEmpty() ? 1u : 0u; };
   BPUModule.bru.bruHeadRobTag = [this]() {

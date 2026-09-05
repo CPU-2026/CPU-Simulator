@@ -59,19 +59,20 @@ struct ROBInputIssue {
   Wire<1> issueValid;
   ROBInputEntry entry;
 };
-struct ROBInputCDB {
+// Dual-CDB commit-ready ports (mirrors the main tree's
+// ROBInput.cdbOfALU/cdbOfLQ): each bus marks its result's ROB entry
+// commit-ready; only valid+tag are needed (the ROB reads no payload).
+struct ROBInputCDBAlu {
+  Wire<1> cdbValid;
+  Wire<7> cdbRobTag;
+};
+struct ROBInputCDBLq {
   Wire<1> cdbValid;
   Wire<7> cdbRobTag;
 };
 struct ROBInputBRU {
   Wire<1> isBRUEmpty;
   Wire<7> bruHeadRobTag;
-};
-struct ROBInputLQ {
-  std::array<Wire<1>, LQ_CAP> lqValid;
-  std::array<Wire<1>, LQ_CAP> lqReadyToCommit;
-  std::array<Wire<7>, LQ_CAP> lqRobTag;
-  Wire<4> lqHead;
 };
 struct ROBInputSQ {
   std::array<Wire<1>, SQ_CAP> sqValid;
@@ -83,9 +84,9 @@ struct ROBInputSQ {
 struct ROBInput {
   ROBInputSquash squash;
   ROBInputIssue issue;
-  ROBInputCDB cdb;
+  ROBInputCDBAlu cdbOfALU;
+  ROBInputCDBLq cdbOfLQ;
   ROBInputBRU bru;
-  ROBInputLQ lq;
   ROBInputSQ sq;
 };
 

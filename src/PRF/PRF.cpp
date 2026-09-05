@@ -19,7 +19,6 @@ void PRF::work() {
   bool needSquash = static_cast<bool>(squash.needSquash);
   uint32_t squashTag = static_cast<uint32_t>(squash.SquashTag);
   uint8_t ckptId = static_cast<uint32_t>(squash.CkptId);
-  uint32_t lqHeadVal = static_cast<uint32_t>(lq.lqHead);
   uint32_t robHeadVal = static_cast<uint32_t>(rob.robHead);
   bool isRobEmpty = static_cast<bool>(rob.isRobEmpty);
   bool isHeadReady = static_cast<bool>(rob.isRobHeadCommitReady);
@@ -30,58 +29,54 @@ void PRF::work() {
   bool issueIsCtrl = static_cast<bool>(issue.issueIsControl);
   uint32_t issuePCVal = static_cast<uint32_t>(issue.issuePC);
 
-  // ---- CDB writeback: resolve the single write port first ----
-  bool cdbWrite = false;
-  uint32_t cdbPhy = 0;
-  uint32_t cdbVal = 0;
-  if (static_cast<bool>(cdb.cdbValid)) {
-    uint32_t cdbTag = static_cast<uint32_t>(cdb.cdbRobTag);
+  // ---- Dual-CDB writeback: two independent write ports (aluCDB / lqCDB).
+  // Register renaming guarantees a distinct newPhy per in-flight instruction,
+  // so a same-cycle ALU + load writeback always hits different physical
+  // registers (no WAW; the Register array's per-element single write port is
+  // naturally satisfied). Each port keeps its own squash guard, verbatim from
+  // the single-CDB era.
+  bool cdbWriteAlu = false;
+  uint32_t cdbPhyAlu = 0;
+  uint32_t cdbValAlu = 0;
+  if (static_cast<bool>(cdbOfALU.cdbValid)) {
+    uint32_t cdbTag = static_cast<uint32_t>(cdbOfALU.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
-      if (!static_cast<bool>(cdb.cdbIsControl)) {
-        uint32_t newPhy = static_cast<uint32_t>(cdb.cdbNewPhy);
+      if (!static_cast<bool>(cdbOfALU.cdbIsControl)) {
+        uint32_t newPhy = static_cast<uint32_t>(cdbOfALU.cdbNewPhy);
         if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
-          cdbWrite = true;
-          cdbPhy = newPhy;
-          cdbVal = static_cast<uint32_t>(cdb.cdbValue);
+          cdbWriteAlu = true;
+          cdbPhyAlu = newPhy;
+          cdbValAlu = static_cast<uint32_t>(cdbOfALU.cdbValue);
         }
       }
     }
   }
-
-  // ---- LQ load writeback: same commit guard as ROB. A slot the CDB port
-  // serves this cycle is skipped: both carry the same value for the same phy
-  // (main tree wrote it twice on plain ints; a Register has one write port),
-  // so one drive is net-identical.
-  for (int k = 0; k < MEMQ_SCAN_WINDOW; ++k) {
-    uint8_t i = (lqHeadVal + k) & 0x0F;
-    if (!static_cast<bool>(lq.lqActive[i]))
-      continue;
-    if (!static_cast<bool>(lq.lqReadyToCommit[i]))
-      continue;
-    if (static_cast<bool>(lq.lqHasOlderUnresolved[i]))
-      continue;
-    uint32_t lqTag = static_cast<uint32_t>(lq.lqRobTags[i]);
-    if (needSquash && !ROB::isOlder(lqTag, squashTag))
-      continue;
-    if (!isRobEmpty && ROB::isOlder(lqTag, robHeadVal))
-      continue;
-    uint32_t newPhy = static_cast<uint32_t>(lq.lqNewPhys[i]);
-    if (newPhy == static_cast<uint32_t>(InvalidPhy))
-      continue;
-    if (cdbWrite && newPhy == cdbPhy)
-      continue;
-    if (debug::enabled(debug::TOPIC_PRF))
-      debug::print("PRF write P%d = %d (lq)\n", newPhy,
-                   static_cast<uint32_t>(lq.lqValues[i]));
-    PhysicalRegs[newPhy].ready <= true;
-    PhysicalRegs[newPhy].value <= static_cast<uint32_t>(lq.lqValues[i]);
+  bool cdbWriteLq = false;
+  uint32_t cdbPhyLq = 0;
+  uint32_t cdbValLq = 0;
+  if (static_cast<bool>(cdbOfLQ.cdbValid)) {
+    uint32_t cdbTag = static_cast<uint32_t>(cdbOfLQ.cdbRobTag);
+    if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
+      uint32_t newPhy = static_cast<uint32_t>(cdbOfLQ.cdbNewPhy);
+      if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
+        cdbWriteLq = true;
+        cdbPhyLq = newPhy;
+        cdbValLq = static_cast<uint32_t>(cdbOfLQ.cdbValue);
+      }
+    }
   }
 
-  if (cdbWrite) {
+  if (cdbWriteAlu) {
     if (debug::enabled(debug::TOPIC_PRF))
-      debug::print("PRF write P%d = %d (cdb)\n", cdbPhy, cdbVal);
-    PhysicalRegs[cdbPhy].ready <= true;
-    PhysicalRegs[cdbPhy].value <= cdbVal;
+      debug::print("PRF write P%d = %d (aluCDB)\n", cdbPhyAlu, cdbValAlu);
+    PhysicalRegs[cdbPhyAlu].ready <= true;
+    PhysicalRegs[cdbPhyAlu].value <= cdbValAlu;
+  }
+  if (cdbWriteLq) {
+    if (debug::enabled(debug::TOPIC_PRF))
+      debug::print("PRF write P%d = %d (lqCDB)\n", cdbPhyLq, cdbValLq);
+    PhysicalRegs[cdbPhyLq].ready <= true;
+    PhysicalRegs[cdbPhyLq].value <= cdbValLq;
   }
 
   // ---- Issue: PRFHeadCkpt snapshot + free-list pop ----
