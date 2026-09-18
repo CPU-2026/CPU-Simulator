@@ -1,0 +1,8 @@
+build
+build-msys
+build-assert
+code
+code.exe
+code_assert.exe
+.cache/
+AGENTS.md
