@@ -57,12 +57,17 @@ constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
 constexpr int RAS_CAP = 8;
 constexpr int ALIGNQ_CAP = 16;
-constexpr uint8_t PRF_CAP = 64;
-// Packed free-list sequence = {1-bit epoch, index}. The index field holds
-// 0..PRF_CAP-1, so its width is bit_width(PRF_CAP-1) (6 for PRF64) and the
-// extra top bit is the epoch. headSeq/tailSeq/checkpoints wrap modulo
-// 2*PRF_CAP; PRF_CAP stays a power of two, so indices are contiguous and no
-// hole skipping is needed.
+#ifndef PRF_CAP_N
+#define PRF_CAP_N 64
+#endif
+static_assert(PRF_CAP_N > REGISTER_CAP && PRF_CAP_N <= 128,
+              "PRF_CAP_N must fit the 7-bit physical-tag domain");
+constexpr uint8_t PRF_CAP = PRF_CAP_N;
+// Packed free-list sequence = {1-bit epoch, index}. Only indices
+// 0..PRF_CAP-1 are allocated; codes PRF_CAP..PRF_INDEX_MASK are holes.
+// For power-of-two capacities the helpers below reduce exactly to masked
+// increment and subtraction. Non-power-of-two capacities skip the holes and
+// reconstruct logical distance from the epoch and index fields.
 template <typename T> constexpr uint8_t PRF_SEQ_BITWIDTH(T cap) {
   return std::bit_width(static_cast<uint32_t>(cap - 1)) + 1;
 }
@@ -75,12 +80,34 @@ constexpr int PRF_SEQ_MASK = (1 << PRF_SEQ_WIDTH) - 1;
 constexpr uint32_t prfSlot(PrfSeq seq) { return seq & PRF_INDEX_MASK; }
 
 constexpr PrfSeq prfSeqNext(PrfSeq seq) {
-  return static_cast<PrfSeq>((seq + 1) & PRF_SEQ_MASK);
+  return prfSlot(seq) == static_cast<uint32_t>(PRF_CAP) - 1
+             ? static_cast<PrfSeq>((~seq & PRF_SEQ_MASK) & ~PRF_INDEX_MASK)
+             : static_cast<PrfSeq>((seq + 1) & PRF_SEQ_MASK);
 }
 
 constexpr uint32_t prfSeqDistance(PrfSeq from, PrfSeq to) {
-  return (to - from) & PRF_SEQ_MASK;
+  const int32_t indexDistance = static_cast<int32_t>(prfSlot(to)) -
+                                static_cast<int32_t>(prfSlot(from));
+  const int32_t fromEpoch = (from >> PRF_INDEX_WIDTH) & 1;
+  const int32_t toEpoch = (to >> PRF_INDEX_WIDTH) & 1;
+  int32_t distance = indexDistance;
+  if (toEpoch > fromEpoch)
+    distance += PRF_CAP;
+  else if (toEpoch < fromEpoch)
+    distance -= PRF_CAP;
+  if (distance < 0)
+    distance += static_cast<int32_t>(PRF_CAP) << 1;
+  return static_cast<uint32_t>(distance);
 }
+static_assert(prfSeqNext(static_cast<PrfSeq>(PRF_CAP - 1)) ==
+              static_cast<PrfSeq>(1 << PRF_INDEX_WIDTH));
+static_assert(prfSeqNext(static_cast<PrfSeq>(
+                  (1 << PRF_INDEX_WIDTH) | (PRF_CAP - 1))) == 0);
+static_assert(prfSeqDistance(static_cast<PrfSeq>(PRF_CAP - 1),
+                             static_cast<PrfSeq>(1 << PRF_INDEX_WIDTH)) == 1);
+static_assert(prfSeqDistance(0,
+                             static_cast<PrfSeq>(1 << PRF_INDEX_WIDTH)) ==
+              PRF_CAP);
 static_assert(INTEGERRS_CAP > 0 &&
               (INTEGERRS_CAP & (INTEGERRS_CAP - 1)) == 0);
 static_assert(MULTIPLYRS_CAP > 0 &&
@@ -95,8 +122,11 @@ static_assert(SQ_CAP >= 2 && SQ_CAP <= 64 && (SQ_CAP & SQ_MASK) == 0);
 static_assert(MEMQ_SCAN_WINDOW <= SQ_CAP);
 static_assert(FQ_CAP >= 2 && (FQ_CAP & (FQ_CAP - 1)) == 0);
 static_assert(IQ_CAP >= 2 && (IQ_CAP & (IQ_CAP - 1)) == 0);
-static_assert(PRF_CAP > REGISTER_CAP &&
-              (PRF_CAP & (PRF_CAP - 1)) == 0 && PRF_CAP <= 128);
+static_assert(PRF_CAP > REGISTER_CAP);
+static_assert(PRF_SEQ_WIDTH <= 8,
+              "PrfSeq is uint8_t: packed sequence must fit in 8 bits");
+static_assert(ROB_CAP < (static_cast<uint32_t>(PRF_CAP) << 1),
+              "active ROB checkpoints must span less than two PRF rings");
 // Sentinel for "no physical register" across the whole phy-tag domain
 // (RAT entries, freeList empty slots, Operand.tag immediates, ROB
 // oldPhy/newPhy, IssuePacket.phy). Load-bearing invariant: P0 is never
@@ -106,10 +136,18 @@ static_assert(PRF_CAP > REGISTER_CAP &&
 // PRF::push, RAT::setRAT_PRF and IssueArbiter::resolveSrc.
 inline constexpr int InvalidPhy = 0;
 constexpr int IMEM_CAP = 16;
-constexpr int CKPT_CAP = 64;
+constexpr int CKPT_CAP = 32;
 constexpr int CACHE_BLOCK_CAP = 16;
 constexpr int CACHE_CAP = 512; // 8KB direct-mapped (512x16B), mirrors main tree
 constexpr int REQUEST_CAP = 4;
+constexpr int CKPT_LIVE_MAX =
+    ROB_CAP + REQUEST_CAP + (FQ_CAP - 1) + (IQ_CAP - 1);
+static_assert(CKPT_CAP > 0 && (CKPT_CAP & (CKPT_CAP - 1)) == 0,
+              "checkpoint wrap uses &(CKPT_CAP-1)");
+static_assert(CKPT_CAP >= CKPT_LIVE_MAX,
+              "checkpoint IDs must cover ROB + ICache + FQ + IQ");
+static_assert(CKPT_CAP <= (1 << 6),
+              "checkpoint IDs must fit the retained 6-bit carrier");
 // ---- DCache geometry (mirrors main tree common.hpp) ----
 // 64KB / 4-way / 16B lines. All constexpr: to shrink the cache for stress
 // testing (capacity evictions / dirty-writeback path), edit NUM_OF_SETS and

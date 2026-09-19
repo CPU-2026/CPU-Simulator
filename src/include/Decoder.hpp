@@ -5,7 +5,7 @@
 #include <cstdint>
 
 static_assert(IQ_CAP <= 16);   // head/tail use an over-wide 4-bit carrier
-static_assert(CKPT_CAP == 64); // ckptId is a 6-bit checkpoint index
+static_assert(CKPT_CAP <= (1 << 6)); // ckptId retains a 6-bit carrier
 
 class Decoder {
 public:

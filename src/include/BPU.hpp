@@ -18,10 +18,9 @@ constexpr int TAGE_TAG_BIT = 8;
 constexpr uint8_t BANKTICK_MAX = 63;
 constexpr uint8_t LFSR_TAPS = 0xB8; // 8-bit Galois taps
 constexpr uint8_t LFSR_SEED = 0xAC;
-// The per-ckptId metadata pool must outlive every in-flight branch's
-// resolve; ids are consumed one per fetch and at most ROB_CAP
-// instructions can be in flight, so equal capacities guarantee no id is
-// recycled before its meta is consumed.
+// The common-header CKPT_LIVE_MAX guard covers every checkpoint retained in
+// ROB, ICache, FQ, or IQ before an ID can be recycled. Six-bit carriers are
+// intentionally retained while the logical pool uses IDs 0..CKPT_CAP-1.
 // BP update arbitration input: both table-training sources (BRU branch results
 // and CDB JAL/JALR transfers) converge to this single point so that the two
 // update calls keep a fixed order (BRU candidate first) regardless of stage

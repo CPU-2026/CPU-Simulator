@@ -84,7 +84,7 @@
 - `work()` 对应 `always_ff`：读 `_M_old`，计算所有 next-state，每个 Register 保持单写口；不使用提前 `return` 隐藏部分写集。
 - `Wire` 对应 `always_comb`：构造/接线阶段赋一次 lambda，按拍懒求值；组合模块的 `work()` 可以为空。
 - CDB、Mem、Dispatch、Issue 等无状态仲裁器没有 Register。把它们建成 Module 的原因是让 `sync()` 统一清 Wire 缓存，而不是给组合逻辑增加状态。
-- checkpoint 是状态复制，不是普通通信总线。RAT、PRF、BPU 的 checkpoint 数组保留为本地 Register 状态，恢复时逐槽写回。PRF 的 `headSeq/tailSeq/PRFHeadCkpt` 统一为 packed 循环序号（`{epoch,index}`，PRF64 为 7 bit）：写入与恢复都取 canonical 值，恢复距离用 `prfSeqDistance` 校验。
+- checkpoint 是状态复制，不是普通通信总线。RAT、PRF、BPU 的 checkpoint 数组保留为本地 Register 状态，恢复时逐槽写回。活动 `CKPT_CAP=32`，`CKPT_LIVE_MAX=26` 覆盖 ROB/ICache/FQ/IQ 的全部存活 ID；逻辑 ID 为 5 bit，既有 6/8-bit 运输载体保留。PRF 的 `headSeq/tailSeq/PRFHeadCkpt` 统一为 packed 循环序号（`{epoch,index}`，PRF64 为 7 bit）：写入与恢复都取 canonical 值，恢复距离用 `prfSeqDistance` 校验。
 - IMEM/DMEM 的大存储阵列和缓存数据阵列不因模板化而机械变成 Register 阵列；端口、控制状态和拍级握手才进入模块同步模型。
 - 逻辑索引按 CAP 掩码收紧，并以 `static_assert` 守住容量假设；容量缩减后部分接口载体有意保持原宽度，实际有效范围仍由 CAP 限定。
 
@@ -218,11 +218,20 @@ DMEM/DCache 中 `i < n_bytes` 的运行期循环全部改为固定 `i < 4`，`i 
 ### PRF 自由表 packed 序号
 
 自由表指针与 checkpoint 由裸 `uint32_t` 计数器改为 packed 环形序号
-`{1-bit epoch, bit_width(PRF_CAP-1)-bit index}`：PRF64 时模板载体为
-`Register<PRF_SEQ_WIDTH>`（7 bit）。推进与槽位选择只做掩码（`prfSeqNext`/`prfSlot`），
-恢复到 tail 的距离用 `prfSeqDistance` 校验，全程无除法。checkpoint 写入的是
-**分配后的 canonical head**，因此 squash 恢复可与严格更老 head 的同拍 commit 并存；
-`_DEBUG` 全量 18 用例零断言，与主树 clock 逐位一致。
+`{1-bit epoch, bit_width(PRF_CAP-1)-bit index}`。index 只分配 `0..PRF_CAP-1`，字段内
+其余编码为空洞；`prfSeqNext` 在末槽翻转 epoch 并归零 index，`prfSlot` 只投影 index。
+`prfSeqDistance` 以 index 差加 epoch 对应的 `±PRF_CAP` 重建模 `2*PRF_CAP` 距离，
+因此非 2 次幂容量仍能检出过期 checkpoint，且数据通路全程无乘除。checkpoint 写入
+**分配后的 canonical head**，squash 恢复可与严格更老 head 的同拍 commit 并存。
+PRF33..64 的 seq/checkpoint 载体均为 7 bit，PRF65..128 为 8 bit；phy tag 载体仍保持
+7 bit 以覆盖 P0..P127。
+
+非 2 次幂门禁在最终 `CKPT_CAP=32` 配置下完成：P64 主树/模板 Release/模板 `_DEBUG`
+均为 18/18 x10+cycles 对活动 golden；P48 Release 18/18 双树逐拍一致且 `_DEBUG`
+magic/qsort/tak 零断言；P65 重点+快用例 12/12、`_DEBUG` 3/3；P33 的
+magic/qsort/tak 3/3 x10 对 golden且双树 clock 一致（pi 因极限停顿按计划跳过）。
+CKPT32 下 PRF seq/checkpoint 存储为 P33..64 的 238 bit、P65..128 的 272 bit；
+checkpoint 数组深度 64→32 另在 BPU/RAT/PRF 合计节省 10,592 bit。
 
 ### 固定容量 FlushArbiter
 

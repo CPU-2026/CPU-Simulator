@@ -495,7 +495,8 @@ void BPU::wire_output() {
                                      : (p.condSeen ? p.taken : false);
     // ckptId occupies packed bits [7:2] (shift/shiftValue own bits 0/1),
     // so it must be shifted into place before the flag bits are ORed in.
-    uint32_t v = (static_cast<uint32_t>(getNextCkptId()) & 0x3Fu) << 2;
+    uint32_t v =
+        (static_cast<uint32_t>(getNextCkptId()) & (CKPT_CAP - 1)) << 2;
     if (shift) v |= 1u << 0;
     if (shiftValue) v |= 1u << 1;
     if (p.meta.provValid) v |= 1u << 8;
@@ -521,7 +522,7 @@ void BPU::wire_output() {
     return (static_cast<uint32_t>(mid.packed) >> 1) & 0x1u;
   };
   fetchOut.ckptId = [this]() -> uint32_t {
-    return (static_cast<uint32_t>(mid.packed) >> 2) & 0x3Fu;
+    return (static_cast<uint32_t>(mid.packed) >> 2) & (CKPT_CAP - 1);
   };
   fetchOut.provValid = [this]() -> uint32_t {
     return (static_cast<uint32_t>(mid.packed) >> 8) & 0x1u;

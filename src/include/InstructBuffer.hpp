@@ -5,7 +5,7 @@
 #include <cstdint>
 
 static_assert(FQ_CAP <= 8);    // head/tail use an over-wide 3-bit carrier
-static_assert(CKPT_CAP == 64); // ckptId is a 6-bit checkpoint index
+static_assert(CKPT_CAP <= (1 << 6)); // ckptId retains a 6-bit carrier
 
 struct InstructBufferEntry {
   Register<32> raw;
