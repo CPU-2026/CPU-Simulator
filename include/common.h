@@ -57,7 +57,30 @@ constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
 constexpr int RAS_CAP = 8;
 constexpr int ALIGNQ_CAP = 16;
-constexpr int PRF_CAP = 64;
+constexpr uint8_t PRF_CAP = 64;
+// Packed free-list sequence = {1-bit epoch, index}. The index field holds
+// 0..PRF_CAP-1, so its width is bit_width(PRF_CAP-1) (6 for PRF64) and the
+// extra top bit is the epoch. headSeq/tailSeq/checkpoints wrap modulo
+// 2*PRF_CAP; PRF_CAP stays a power of two, so indices are contiguous and no
+// hole skipping is needed.
+template <typename T> constexpr uint8_t PRF_SEQ_BITWIDTH(T cap) {
+  return std::bit_width(static_cast<uint32_t>(cap - 1)) + 1;
+}
+using PrfSeq = uint8_t;
+constexpr uint8_t PRF_SEQ_WIDTH = PRF_SEQ_BITWIDTH(PRF_CAP);
+constexpr uint8_t PRF_INDEX_WIDTH = PRF_SEQ_WIDTH - 1;
+constexpr int PRF_INDEX_MASK = (1 << PRF_INDEX_WIDTH) - 1;
+constexpr int PRF_SEQ_MASK = (1 << PRF_SEQ_WIDTH) - 1;
+
+constexpr uint32_t prfSlot(PrfSeq seq) { return seq & PRF_INDEX_MASK; }
+
+constexpr PrfSeq prfSeqNext(PrfSeq seq) {
+  return static_cast<PrfSeq>((seq + 1) & PRF_SEQ_MASK);
+}
+
+constexpr uint32_t prfSeqDistance(PrfSeq from, PrfSeq to) {
+  return (to - from) & PRF_SEQ_MASK;
+}
 static_assert(INTEGERRS_CAP > 0 &&
               (INTEGERRS_CAP & (INTEGERRS_CAP - 1)) == 0);
 static_assert(MULTIPLYRS_CAP > 0 &&

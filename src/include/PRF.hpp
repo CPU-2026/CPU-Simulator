@@ -68,16 +68,16 @@ struct PRFInput {
 struct PRFInner {
   std::array<PRFEntry, PRF_CAP> PhysicalRegs;
   std::array<Register<7>, PRF_CAP> freeList;
-  std::array<Register<32>, CKPT_CAP> PRFHeadCkpt;
-  Register<32> headSeq;
-  Register<32> tailSeq;
+  std::array<Register<PRF_SEQ_WIDTH>, CKPT_CAP> PRFHeadCkpt;
+  Register<PRF_SEQ_WIDTH> headSeq;
+  Register<PRF_SEQ_WIDTH> tailSeq;
   Register<1> bootDone;
 };
 struct PRF : public dark::Module<PRFInput, PRFInner> {
   bool isFreeListEmpty() const { return headSeq == tailSeq; }
-  uint32_t getHeadSeq() const { return static_cast<uint32_t>(headSeq); }
-  uint8_t getFreeListSlot(uint32_t seq) const {
-    return static_cast<uint32_t>(freeList[seq & (PRF_CAP - 1)]);
+  PrfSeq getHeadSeq() const { return static_cast<uint32_t>(headSeq); }
+  uint8_t getFreeListSlot(PrfSeq seq) const {
+    return static_cast<uint32_t>(freeList[prfSlot(seq)]);
   }
   bool isReady(int index) const {
     return static_cast<bool>(PhysicalRegs[index].ready);

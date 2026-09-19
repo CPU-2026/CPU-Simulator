@@ -128,17 +128,18 @@ void PRF::work() {
   // ---- Issue: PRFHeadCkpt snapshot + free-list pop ----
   // Single-write-point for headSeq: compute next value, apply once at end.
   uint32_t curHead = static_cast<uint32_t>(headSeq);
+  uint32_t headSnap = issueAlloc ? prfSeqNext(static_cast<PrfSeq>(curHead))
+                                 : curHead;
   uint32_t nextHead = curHead;
   bool doPop = false;
   uint8_t popPhy = 0;
   if (issueValid) {
-    uint32_t headSnap = curHead + (issueAlloc ? 1 : 0);
     PRFHeadCkpt[issueCkpt] <= headSnap;
     if (issueAlloc) {
-      popPhy = static_cast<uint32_t>(freeList[curHead & (PRF_CAP - 1)]);
+      popPhy = static_cast<uint32_t>(freeList[prfSlot(static_cast<PrfSeq>(curHead))]);
       assert(popPhy != InvalidPhy);
       assert(popPhy == issuePhyVal);
-      nextHead = curHead + 1;
+      nextHead = prfSeqNext(static_cast<PrfSeq>(curHead));
       doPop = true;
     }
   }
@@ -162,11 +163,13 @@ void PRF::work() {
     uint32_t ckptVal;
     if (issueValid && ckptId == issueCkpt) {
       // Same-cycle write-read hazard: use newly computed headSnap
-      ckptVal = curHead + (issueAlloc ? 1 : 0);
+      ckptVal = headSnap;
     } else {
       ckptVal = static_cast<uint32_t>(PRFHeadCkpt[ckptId]);
     }
-    assert(static_cast<uint32_t>(tailSeq) - ckptVal <=
+    assert(prfSeqDistance(static_cast<PrfSeq>(ckptVal),
+                          static_cast<PrfSeq>(
+                              static_cast<uint32_t>(tailSeq))) <=
            static_cast<uint32_t>(PRF_CAP));
     nextHead = ckptVal;
     // doPop implies nextHead != curHead; restore overwrites nextHead
@@ -184,8 +187,9 @@ void PRF::work() {
       uint32_t oldPhy = static_cast<uint32_t>(rob.robHeadOldPhy);
       if (oldPhy != static_cast<uint32_t>(InvalidPhy)) {
         uint32_t tail = static_cast<uint32_t>(tailSeq);
-        freeList[tail & (PRF_CAP - 1)] <= oldPhy;
-        tailSeq <= tail + 1;
+        freeList[prfSlot(static_cast<PrfSeq>(tail))] <= oldPhy;
+        tailSeq <= static_cast<uint32_t>(
+            prfSeqNext(static_cast<PrfSeq>(tail)));
       }
     }
   }
