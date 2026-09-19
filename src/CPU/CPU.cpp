@@ -295,18 +295,15 @@ void CPU::wire() {
                ? static_cast<uint32_t>(SQModule.getValue(SQModule.getHead()))
                : 0u;
   };
-  MemArbiterModule.robHeadEmpty = [this]() {
-    return static_cast<bool>(ROBModule.headView.isEmpty) ? 1u : 0u;
+  MemArbiterModule.sqHeadCommitted = [this]() {
+    return !SQModule.isEmpty() && SQModule.isCommitted(SQModule.getHead()) ? 1u
+                                                                           : 0u;
   };
   MemArbiterModule.robHeadTag = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.head);
   };
-  MemArbiterModule.robHeadCommitReady = [this]() {
-    return static_cast<bool>(
-               ROBModule.entry
-                    .isCommitReady[robSlot(SQModule.headRobTag())])
-               ? 1u
-               : 0u;
+  MemArbiterModule.robStoreWillCommit = [this]() {
+    return ROBModule.storeWillCommit() ? 1u : 0u;
   };
   MemArbiterModule.loadValid = [this]() {
     return LQModule.LoadDetect() != 0xFFFFFFFF ? 1u : 0u;
@@ -349,8 +346,8 @@ void CPU::wire() {
   };
 
   // ---- Wire DispatchArbiter's Input Wires (ports are buses: RS slot fields
-  // + PRF ready bitmap; src tags go through Wire<7> so the 8th sentinel bit
-  // is clipped at the wiring site and prdReady indexing stays in-bounds) ----
+  // + PRF ready bitmap; physical source tags remain Wire<7> for PRF indexing,
+  // while the separate ROB identity fields use ROB_TAG_WIDTH) ----
   DispatchArbiterModule.aluFull = [this]() {
     return ALUModule.isFull() ? 1u : 0u;
   };
@@ -690,7 +687,8 @@ void CPU::wire() {
   // looked up from the ROB entry by tag, valid-gated (a broadcast only ever
   // targets an in-flight entry's rename).
   PRFModule.cdbOfALU.cdbValid = [this]() {
-    return AluCDBArbiterModule.valid ? 1u : 0u;
+    const RobTag tag = static_cast<uint32_t>(AluCDBArbiterModule.robTag);
+    return AluCDBArbiterModule.valid && ROBModule.matchesTag(tag) ? 1u : 0u;
   };
   PRFModule.cdbOfALU.cdbValue = [this]() {
     return static_cast<uint32_t>(AluCDBArbiterModule.value);
@@ -702,14 +700,15 @@ void CPU::wire() {
     return AluCDBArbiterModule.isControl ? 1u : 0u;
   };
   PRFModule.cdbOfALU.cdbNewPhy = [this]() {
-    if (!static_cast<bool>(AluCDBArbiterModule.valid))
+    const RobTag tag = static_cast<uint32_t>(AluCDBArbiterModule.robTag);
+    if (!static_cast<bool>(AluCDBArbiterModule.valid) ||
+        !ROBModule.matchesTag(tag))
       return static_cast<uint32_t>(InvalidPhy);
-    return static_cast<uint32_t>(
-        ROBModule.entry
-            .newPhy[robSlot(static_cast<uint32_t>(AluCDBArbiterModule.robTag))]);
+    return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
   };
   PRFModule.cdbOfLQ.cdbValid = [this]() {
-    return LqCDBArbiterModule.valid ? 1u : 0u;
+    const RobTag tag = static_cast<uint32_t>(LqCDBArbiterModule.robTag);
+    return LqCDBArbiterModule.valid && ROBModule.matchesTag(tag) ? 1u : 0u;
   };
   PRFModule.cdbOfLQ.cdbValue = [this]() {
     return static_cast<uint32_t>(LqCDBArbiterModule.value);
@@ -718,16 +717,17 @@ void CPU::wire() {
     return static_cast<uint32_t>(LqCDBArbiterModule.robTag);
   };
   PRFModule.cdbOfLQ.cdbNewPhy = [this]() {
-    if (!static_cast<bool>(LqCDBArbiterModule.valid))
+    const RobTag tag = static_cast<uint32_t>(LqCDBArbiterModule.robTag);
+    if (!static_cast<bool>(LqCDBArbiterModule.valid) ||
+        !ROBModule.matchesTag(tag))
       return static_cast<uint32_t>(InvalidPhy);
-    return static_cast<uint32_t>(
-        ROBModule.entry
-            .newPhy[robSlot(static_cast<uint32_t>(LqCDBArbiterModule.robTag))]);
+    return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
   };
   // MUL write port: never a control op, so no isControl wire (loads and
   // multiplies share that port saving).
   PRFModule.cdbOfMUL.cdbValid = [this]() {
-    return MulCDBModule.valid ? 1u : 0u;
+    const RobTag tag = static_cast<uint32_t>(MulCDBModule.robTag);
+    return MulCDBModule.valid && ROBModule.matchesTag(tag) ? 1u : 0u;
   };
   PRFModule.cdbOfMUL.cdbValue = [this]() {
     return static_cast<uint32_t>(MulCDBModule.value);
@@ -736,13 +736,15 @@ void CPU::wire() {
     return static_cast<uint32_t>(MulCDBModule.robTag);
   };
   PRFModule.cdbOfMUL.cdbNewPhy = [this]() {
-    if (!static_cast<bool>(MulCDBModule.valid))
+    const RobTag tag = static_cast<uint32_t>(MulCDBModule.robTag);
+    if (!static_cast<bool>(MulCDBModule.valid) ||
+        !ROBModule.matchesTag(tag))
       return static_cast<uint32_t>(InvalidPhy);
-    return static_cast<uint32_t>(
-        ROBModule.entry.newPhy[robSlot(static_cast<uint32_t>(MulCDBModule.robTag))]);
+    return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
   };
   PRFModule.cdbOfDIV.cdbValid = [this]() {
-    return DivCDBModule.valid ? 1u : 0u;
+    const RobTag tag = static_cast<uint32_t>(DivCDBModule.robTag);
+    return DivCDBModule.valid && ROBModule.matchesTag(tag) ? 1u : 0u;
   };
   PRFModule.cdbOfDIV.cdbValue = [this]() {
     return static_cast<uint32_t>(DivCDBModule.value);
@@ -751,10 +753,11 @@ void CPU::wire() {
     return static_cast<uint32_t>(DivCDBModule.robTag);
   };
   PRFModule.cdbOfDIV.cdbNewPhy = [this]() {
-    if (!static_cast<bool>(DivCDBModule.valid))
+    const RobTag tag = static_cast<uint32_t>(DivCDBModule.robTag);
+    if (!static_cast<bool>(DivCDBModule.valid) ||
+        !ROBModule.matchesTag(tag))
       return static_cast<uint32_t>(InvalidPhy);
-    return static_cast<uint32_t>(
-        ROBModule.entry.newPhy[robSlot(static_cast<uint32_t>(DivCDBModule.robTag))]);
+    return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
   };
   PRFModule.issue.issueValid = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.valid);
@@ -774,11 +777,8 @@ void CPU::wire() {
   PRFModule.issue.issueCkptId = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.ckptId);
   };
-  PRFModule.rob.isRobEmpty = [this]() {
-    return static_cast<uint32_t>(ROBModule.headView.isEmpty);
-  };
-  PRFModule.rob.isRobHeadCommitReady = [this]() {
-    return static_cast<uint32_t>(ROBModule.headView.isHeadCommitReady);
+  PRFModule.rob.robWillCommit = [this]() {
+    return ROBModule.willCommit() ? 1u : 0u;
   };
   PRFModule.rob.robHeadIsHalt = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.isHeadHalt);
@@ -1297,9 +1297,17 @@ void CPU::wire() {
     return static_cast<uint32_t>(ROBModule.headView.head);
   };
   LQModule.rob.squashLQTailSnapshot = [this]() {
+    const RobTag tag = static_cast<uint32_t>(flushArbiter.SquashTag);
+    if (!ROBModule.matchesTag(tag))
+      return 0u;
     return static_cast<uint32_t>(
-        ROBModule.entry
-            .lqTailSnapshot[robSlot(static_cast<uint32_t>(flushArbiter.SquashTag))]);
+        ROBModule.entry.lqTailSnapshot[robSlot(tag)]);
+  };
+  LQModule.rob.squashTagMatch = [this]() {
+    return ROBModule.matchesTag(
+               static_cast<uint32_t>(flushArbiter.SquashTag))
+               ? 1u
+               : 0u;
   };
   // loadResp now comes from the DCache (hit self-answer or fill serve); the
   // squash guard lives inside DCache::wire_output (valid && (!needSquash ||
@@ -1410,9 +1418,23 @@ void CPU::wire() {
                static_cast<uint32_t>(Operation::Store);
   };
   SQModule.rob.squashSQTailSnapshot = [this]() {
+    const RobTag tag = static_cast<uint32_t>(flushArbiter.SquashTag);
+    if (!ROBModule.matchesTag(tag))
+      return 0u;
     return static_cast<uint32_t>(
-        ROBModule.entry
-            .sqTailSnapshot[robSlot(static_cast<uint32_t>(flushArbiter.SquashTag))]);
+        ROBModule.entry.sqTailSnapshot[robSlot(tag)]);
+  };
+  SQModule.rob.squashTagMatch = [this]() {
+    return ROBModule.matchesTag(
+               static_cast<uint32_t>(flushArbiter.SquashTag))
+               ? 1u
+               : 0u;
+  };
+  SQModule.rob.robHeadTag = [this]() {
+    return static_cast<uint32_t>(ROBModule.headView.head);
+  };
+  SQModule.rob.storeWillCommit = [this]() {
+    return ROBModule.storeWillCommit() ? 1u : 0u;
   };
   SQModule.agu.isAGUEmpty = [this]() { return AGUModule.isEmpty(); };
   SQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };
@@ -1483,6 +1505,9 @@ void CPU::wire() {
     };
     ROBModule.sq.sqReadyToCommit[i] = [this, i]() {
       return SQModule.isReadyToCommit(i) ? 1u : 0u;
+    };
+    ROBModule.sq.sqCommitted[i] = [this, i]() {
+      return SQModule.isCommitted(i) ? 1u : 0u;
     };
     ROBModule.sq.sqRobTag[i] = [this, i]() {
       return static_cast<uint32_t>(SQModule.getRobTag(i));
@@ -1576,6 +1601,9 @@ void CPU::wire() {
     return static_cast<uint32_t>(ROBModule.headView.head);
   };
   for (int i = 0; i < ROB_CAP; ++i) {
+    flushArbiter.rob.robTag[i] = [this, i]() {
+      return static_cast<uint32_t>(ROBModule.entry.tag[i]);
+    };
     flushArbiter.rob.robPredictPC[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.predictedPC[i]);
     };
@@ -1661,6 +1689,9 @@ void CPU::wire() {
     return static_cast<uint32_t>(ROBModule.headView.head);
   };
   for (int i = 0; i < ROB_CAP; ++i) {
+    BPUModule.rob.robTag[i] = [this, i]() {
+      return static_cast<uint32_t>(ROBModule.entry.tag[i]);
+    };
     BPUModule.rob.robPredictPC[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.predictedPC[i]);
     };
@@ -1906,7 +1937,7 @@ void CPU::run(bool shuffle) {
     const uint32_t headAfter =
         static_cast<uint32_t>(ROBModule.headView.head);
     const bool haltAfter = ROBModule.isHaltCommitted();
-    const uint32_t committed = (headAfter - headBefore) & 0x7F;
+    const uint32_t committed = headAfter != headBefore;
     const bool haltCommitted = !haltBefore && haltAfter;
     assert(!haltCommitted || committed != 0);
     if (!ipcFrozen) {

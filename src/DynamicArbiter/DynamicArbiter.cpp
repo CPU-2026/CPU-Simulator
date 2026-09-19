@@ -10,10 +10,17 @@ namespace {
 // inserts -> single write-back (Register single-write discipline).
 struct FlushReqPlain {
   bool valid = false;
-  uint32_t squashTag = 0;
+  RobTag squashTag = 0;
   uint32_t squashPC = 0;
   uint32_t ckptId = 0;
 };
+
+bool robTagMatches(const FlushArbiterInputROB &rob, RobTag tag) {
+  if (static_cast<bool>(rob.isROBEmpty))
+    return false;
+  const uint32_t slot = robSlot(tag);
+  return slot < ROB_CAP && static_cast<uint32_t>(rob.robTag[slot]) == tag;
+}
 
 // Exact port of main-tree FlushArbiter::receive: compact valid entries,
 // then age-ordered insert (oldest first). Plain-to-plain so consecutive
@@ -99,16 +106,16 @@ void FlushArbiter::work() {
 
   // Stage 1: clear (plain domain) -- main-tree tick step 1.
   if (static_cast<bool>(squash.needSquash)) {
-    uint32_t tag = static_cast<uint32_t>(squash.SquashTag);
+    RobTag tag = static_cast<uint32_t>(squash.SquashTag);
     for (int i = 0; i < FLUSHARBITER_CAP; ++i)
       if (cur[i].valid && !ROB::isOlder(cur[i].squashTag, tag))
         cur[i].valid = false;
   }
 
   // Stage 2-4: detection stages -> ordered inserts.
-  if (bru.isBRUEmpty == 0) {
+  const RobTag brRobTag = static_cast<uint32_t>(bru.bruHeadRobTag);
+  if (bru.isBRUEmpty == 0 && robTagMatches(rob, brRobTag)) {
     SquashInfo BranchSquash;
-    auto brRobTag = static_cast<uint32_t>(bru.bruHeadRobTag);
     auto pcResult = static_cast<uint32_t>(bru.bruHeadPCResult);
     auto pcFrom = static_cast<uint32_t>(bru.bruHeadPCFrom);
     if (squash.needSquash == 0 ||
@@ -131,7 +138,8 @@ void FlushArbiter::work() {
       insertPlain(cur, BranchSquash);
   }
 
-  if (cdb.cdbValid) {
+  const RobTag cdbRobTag = static_cast<uint32_t>(cdb.cdbRobTag);
+  if (cdb.cdbValid && robTagMatches(rob, cdbRobTag)) {
     if (squash.needSquash == 0 ||
         ROB::isOlder(static_cast<uint32_t>(cdb.cdbRobTag),
                      static_cast<uint32_t>(squash.SquashTag))) {
@@ -162,7 +170,7 @@ void FlushArbiter::work() {
 
   if (agu.isAGUEmpty == 0 &&
       isStoreMem(static_cast<uint32_t>(agu.aguHeadMemIndex))) {
-    auto aguRobTag = static_cast<uint32_t>(agu.aguHeadRobTag);
+    RobTag aguRobTag = static_cast<uint32_t>(agu.aguHeadRobTag);
     if (squash.needSquash == 0 ||
         (squash.needSquash &&
          ROB::isOlder(aguRobTag, static_cast<uint32_t>(squash.SquashTag)))) {
@@ -181,12 +189,11 @@ void FlushArbiter::work() {
              lq.lqValueState[i] ==
                  static_cast<uint32_t>(ValueState::FETCHING)) &&
             ROB::isYounger(static_cast<uint32_t>(lq.lqRobTags[i]), aguRobTag)) {
-          auto violTag = static_cast<uint32_t>(lq.lqRobTags[i]);
+          RobTag violTag = static_cast<uint32_t>(lq.lqRobTags[i]);
           if ((squash.needSquash == 0 ||
                ROB::isOlder(violTag,
                             static_cast<uint32_t>(squash.SquashTag))) &&
-              rob.isROBEmpty == 0 &&
-              !ROB::isOlder(violTag, static_cast<uint32_t>(rob.robHeadTag))) {
+              robTagMatches(rob, violTag)) {
             SquashInfo viol;
             viol.needSquash = true;
             viol.SquashTag = violTag;

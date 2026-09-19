@@ -352,18 +352,18 @@ void DIV::flush() {
 void DIV::work() {
   // ---- 0. sampling: cycle-stable input wires + committed state ----
   const bool squash = static_cast<bool>(needSquash);
-  const uint32_t squashTag = static_cast<uint32_t>(SquashTag);
+  const RobTag squashTag = static_cast<uint32_t>(SquashTag);
   const bool dValid = static_cast<bool>(dispatchValid);
-  const uint32_t dTag = static_cast<uint32_t>(dispatchRobTag);
+  const RobTag dTag = static_cast<uint32_t>(dispatchRobTag);
   const bool drain = static_cast<bool>(cdbValid);
-  const uint32_t robTagOld = static_cast<uint32_t>(robTag);
+  const RobTag robTagOld = static_cast<uint32_t>(robTag);
 
   // The reference tick ran receive() before flush(), so a same-cycle dispatch
   // replaces the tag the squash test sees. The dispatch arbiter only grants
   // tags older than the squash point, so for a granted op the decision never
   // flips -- this equivalence clause only keeps the freshly received op
   // alive instead of losing it to a stale leftover robTag.
-  const uint32_t effTag = dValid ? dTag : robTagOld;
+  const RobTag effTag = dValid ? dTag : robTagOld;
   const bool flushFires = squash && ROB::isOlder(squashTag, effTag);
 
   // ---- single-writer priority chain. The branches are mutually exclusive by
@@ -384,7 +384,7 @@ void DIV::work() {
   } else if (dValid) {
     receive(static_cast<int32_t>(static_cast<uint32_t>(src1Value)),
             static_cast<int32_t>(static_cast<uint32_t>(src2Value)),
-            static_cast<RobTag>(dTag),
+             dTag,
             static_cast<Operation>(static_cast<uint32_t>(op)));
   }
 }

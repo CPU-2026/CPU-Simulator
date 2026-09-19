@@ -8,12 +8,11 @@
 bool MemArbiter::storeSelected() const {
   if (static_cast<bool>(sqEmpty) || static_cast<bool>(dmemBusy))
     return false;
-  uint32_t storeTag = static_cast<uint32_t>(sqHeadRobTag);
-  uint32_t head = static_cast<uint32_t>(robHeadTag);
-  bool committed =
-      static_cast<bool>(robHeadEmpty) || ROB::isOlder(storeTag, head);
-  bool atHeadReady = !committed && storeTag == head &&
-                     static_cast<bool>(robHeadCommitReady);
+  RobTag storeTag = static_cast<uint32_t>(sqHeadRobTag);
+  RobTag head = static_cast<uint32_t>(robHeadTag);
+  bool committed = static_cast<bool>(sqHeadCommitted);
+  bool atHeadReady = !committed &&
+                     static_cast<bool>(robStoreWillCommit) && storeTag == head;
   return committed || atHeadReady;
 }
 
@@ -89,13 +88,13 @@ template <std::size_t N>
 DispatchArbiter::WinResult DispatchArbiter::selectOldest(
     const std::array<Wire<1>, N> &busy, const std::array<Wire<7>, N> &src1Tag,
     const std::array<Wire<7>, N> &src2Tag,
-    const std::array<Wire<7>, N> &tags) const {
+    const std::array<Wire<ROB_TAG_WIDTH>, N> &tags) const {
   WinResult w{false, 0, 0};
   for (uint32_t i = 0; i < N; ++i) {
     bool req = static_cast<bool>(busy[i]) &&
                readyOf(static_cast<uint32_t>(src1Tag[i])) &&
                readyOf(static_cast<uint32_t>(src2Tag[i]));
-    uint32_t tag = static_cast<uint32_t>(tags[i]);
+    RobTag tag = static_cast<uint32_t>(tags[i]);
     if (req && (!w.v || ROB::isOlder(tag, w.tag)))
       w = {true, tag, i};
   }
@@ -125,7 +124,7 @@ DispatchArbiter::WinResult DispatchArbiter::aguSelect() const {
   WinResult w{false, 0, 0};
   for (int i = 0; i < LOADRS_CAP + STORERS_CAP; ++i) {
     bool req;
-    uint32_t tag;
+    RobTag tag;
     if (i < LOADRS_CAP) {
       req = static_cast<bool>(loadBusy[i]) &&
             readyOf(static_cast<uint32_t>(loadSrc1Tag[i])) &&

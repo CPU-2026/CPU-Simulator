@@ -15,7 +15,7 @@ struct FlushRequest {
   // construction (all three inserts only fire when the local SquashInfo
   // has needSquash==true), so the broadcast Output derives it as
   // (selectOldest() != nullptr).
-  Register<7> SquashTag;
+  Register<ROB_TAG_WIDTH> SquashTag;
   Register<32> SquashPC;
   Register<6> CkptId;
   Register<1> valid;
@@ -23,23 +23,24 @@ struct FlushRequest {
 
 struct FlushArbiterInputSquash {
   Wire<1> needSquash;
-  Wire<7> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
 };
 struct FlushArbiterInputCDB {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
   Wire<1> cdbIsControl;
 };
 struct FlushArbiterInputBRU {
   Wire<1> isBRUEmpty;
-  Wire<7> bruHeadRobTag;
+  Wire<ROB_TAG_WIDTH> bruHeadRobTag;
   Wire<32> bruHeadPCResult;
   Wire<32> bruHeadPCFrom;
 };
 struct FlushArbiterInputROB {
   Wire<1> isROBEmpty;
-  Wire<7> robHeadTag;
+  Wire<ROB_TAG_WIDTH> robHeadTag;
+  std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> robTag;
   std::array<Wire<32>, ROB_CAP> robPredictPC;
   std::array<Wire<32>, ROB_CAP> robPC; // true fetch PC (load entries included)
   std::array<Wire<6>, ROB_CAP> robCkptId;
@@ -48,7 +49,7 @@ struct FlushArbiterInputLQ {
   Wire<8> lqHead;
   std::array<Wire<1>, LQ_CAP> lqActive;
   std::array<Wire<1>, LQ_CAP> lqAddressReady;
-  std::array<Wire<7>, LQ_CAP> lqRobTags;
+  std::array<Wire<ROB_TAG_WIDTH>, LQ_CAP> lqRobTags;
   std::array<Wire<32>, LQ_CAP> lqAddress;
   std::array<Wire<2>, LQ_CAP> lqValueState;
 };
@@ -56,7 +57,7 @@ struct FlushArbiterInputAGU{
   Wire<1> isAGUEmpty;
   Wire<32> aguHeadValue;
   Wire<7> aguHeadMemIndex;
-  Wire<7> aguHeadRobTag;
+  Wire<ROB_TAG_WIDTH> aguHeadRobTag;
 };
 // FlushArbiter owns its queue and the whole squash flow: stage 1 consumes
 // the accepted squash (clear), stage 2 detects BRU branch mispredicts,
@@ -83,7 +84,7 @@ struct FlushArbiterInner {
 // plain-queue insert payload).
 struct FlushArbiterOutput {
   Wire<1> needSquash;
-  Wire<7> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
   Wire<32> SquashPC;
   Wire<6> CkptId;
 };

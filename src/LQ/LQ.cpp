@@ -51,11 +51,11 @@ auto LQ::getValue(int index) const -> int32_t {
   throw std::runtime_error("Value is not ready!");
 }
 
-auto LQ::headRobTag() const -> uint8_t {
+auto LQ::headRobTag() const -> RobTag {
   return static_cast<uint32_t>(LQqueue[static_cast<uint32_t>(head)].robTag);
 }
 
-auto LQ::getRobTag(int index) const -> uint8_t {
+auto LQ::getRobTag(int index) const -> RobTag {
   return static_cast<uint32_t>(LQqueue[index].robTag);
 }
 
@@ -222,7 +222,7 @@ void LQ::work() {
   // 3. AGU: load address ready -> write address + query SQ for forwarding
   if (!static_cast<bool>(agu.isAGUEmpty) &&
       !isStoreMem(static_cast<uint32_t>(agu.aguHeadMemIndex))) {
-    auto aguRobTag = static_cast<uint32_t>(agu.aguHeadRobTag);
+    RobTag aguRobTag = static_cast<uint32_t>(agu.aguHeadRobTag);
     if (!static_cast<bool>(squash.needSquash) ||
         ROB::isOlder(aguRobTag, static_cast<uint32_t>(squash.SquashTag))) {
       auto index = memSlot(static_cast<uint32_t>(agu.aguHeadMemIndex));
@@ -270,7 +270,8 @@ void LQ::work() {
 
   // 8. flush on squash — overrides the push's tail intent (main-tree order:
   //    flush runs last and wins).
-  if (static_cast<bool>(squash.needSquash)) {
+  if (static_cast<bool>(squash.needSquash) &&
+      static_cast<bool>(rob.squashTagMatch)) {
     tailWritten = true;
     tailData = static_cast<uint32_t>(rob.squashLQTailSnapshot);
   }

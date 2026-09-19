@@ -32,7 +32,7 @@ void RSUnit::work() {
   const uint32_t divSlotV = static_cast<uint32_t>(sel.divideSlot);
 
   const bool needSquash = static_cast<bool>(squash.needSquash);
-  const uint32_t sqTag = static_cast<uint32_t>(squash.SquashTag);
+  const RobTag sqTag = static_cast<uint32_t>(squash.SquashTag);
 
   const bool aluRel = static_cast<bool>(dispatch.aluValid);
   const uint32_t aluIdx = static_cast<uint32_t>(dispatch.aluIdx);
@@ -49,7 +49,7 @@ void RSUnit::work() {
   // ---- integerRS: push / release / flush ----
   for (int i = 0; i < INTEGERRS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(integerRS[i].busy);
-    const uint32_t tagOld = static_cast<uint32_t>(integerRS[i].robTag);
+    const RobTag tagOld = static_cast<uint32_t>(integerRS[i].robTag);
     const bool pushHit = hasInt && intSlot == static_cast<uint32_t>(i);
     const bool relHit = aluRel && aluIdx == static_cast<uint32_t>(i);
     const bool flushHit =
@@ -74,7 +74,7 @@ void RSUnit::work() {
   // ---- loadRS: push / release / flush ----
   for (int i = 0; i < LOADRS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(loadRS[i].busy);
-    const uint32_t tagOld = static_cast<uint32_t>(loadRS[i].robTag);
+    const RobTag tagOld = static_cast<uint32_t>(loadRS[i].robTag);
     const bool pushHit = hasLoad && loadSlotV == static_cast<uint32_t>(i);
     const bool relHit = aguRel && aguIsLoadV && aguIdx == static_cast<uint32_t>(i);
     const bool flushHit =
@@ -101,7 +101,7 @@ void RSUnit::work() {
   // src1 -- reference semantics; src2 is rewritten on the next push) ----
   for (int i = 0; i < STORERS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(storeAddressRS[i].busy);
-    const uint32_t tagOld = static_cast<uint32_t>(storeAddressRS[i].robTag);
+    const RobTag tagOld = static_cast<uint32_t>(storeAddressRS[i].robTag);
     const bool pushHit = hasStore && saSlot == static_cast<uint32_t>(i);
     const bool relHit =
         aguRel && !aguIsLoadV && aguIdx == static_cast<uint32_t>(i);
@@ -128,7 +128,7 @@ void RSUnit::work() {
   // converge on the same freed state) ----
   for (int i = 0; i < STORERS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(storeValueRS[i].busy);
-    const uint32_t tagOld = static_cast<uint32_t>(storeValueRS[i].robTag);
+    const RobTag tagOld = static_cast<uint32_t>(storeValueRS[i].robTag);
     const bool pushHit = hasStore && svSlot == static_cast<uint32_t>(i);
     const bool relHit = busyOld && static_cast<bool>(prf.svReady[i]);
     const bool flushHit =
@@ -147,7 +147,7 @@ void RSUnit::work() {
   // ---- branchRS: push / release / flush ----
   for (int i = 0; i < BRANCHRS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(branchRS[i].busy);
-    const uint32_t tagOld = static_cast<uint32_t>(branchRS[i].robTag);
+    const RobTag tagOld = static_cast<uint32_t>(branchRS[i].robTag);
     const bool pushHit = hasBranch && brSlot == static_cast<uint32_t>(i);
     const bool relHit = bruRel && bruIdx == static_cast<uint32_t>(i);
     const bool flushHit =
@@ -174,7 +174,7 @@ void RSUnit::work() {
   // ---- multiplyRS: push / release / flush (same shape as integerRS) ----
   for (int i = 0; i < MULTIPLYRS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(multiplyRS[i].busy);
-    const uint32_t tagOld = static_cast<uint32_t>(multiplyRS[i].robTag);
+    const RobTag tagOld = static_cast<uint32_t>(multiplyRS[i].robTag);
     const bool pushHit = hasMul && mulSlot == static_cast<uint32_t>(i);
     const bool relHit = mulRel && mulIdx == static_cast<uint32_t>(i);
     const bool flushHit =
@@ -201,7 +201,7 @@ void RSUnit::work() {
   // raises while DIV::canAccept() holds) ----
   for (int i = 0; i < DIVIDERS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(divideRS[i].busy);
-    const uint32_t tagOld = static_cast<uint32_t>(divideRS[i].robTag);
+    const RobTag tagOld = static_cast<uint32_t>(divideRS[i].robTag);
     const bool pushHit = hasDiv && divSlotV == static_cast<uint32_t>(i);
     const bool relHit = divRel && divIdx == static_cast<uint32_t>(i);
     const bool flushHit =

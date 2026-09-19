@@ -9,7 +9,7 @@ static_assert(static_cast<uint32_t>(Operation::OP_INVALID) < 32); // op fits Wir
 
 struct BRUInput {
   Wire<1> needSquash;
-  Wire<8> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
   // dispatch payload from the DispatchArbiter's bru grant (wired with lambdas
   // that guard on dispatch.valid)
   Wire<1> dispatchValid;
@@ -18,13 +18,13 @@ struct BRUInput {
   Wire<32> pc;
   Wire<32> imm;
   Wire<5> op;
-  Wire<8> dispatchRobTag;
+  Wire<ROB_TAG_WIDTH> dispatchRobTag;
 };
 
 struct BRUEntry {
   Register<32> pcFrom;
   Register<32> pcResult;
-  Register<8> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
 };
 
 struct BRUOutput {
@@ -41,6 +41,6 @@ public:
   bool isEmpty() const;
   int32_t headPCFrom() const;
   int32_t headPCResult() const;
-  uint8_t headRobTag() const;
+  RobTag headRobTag() const;
   void work() override;
 };

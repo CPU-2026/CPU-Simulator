@@ -43,9 +43,9 @@ int32_t BRU::headPCFrom() const {
     if (static_cast<bool>(slotValid[i]) &&
         (best == -1 ||
          ROB::isOlder(
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[i].robTag)),
-             static_cast<uint8_t>(
-                 static_cast<uint32_t>(slots[best].robTag)))))
+              static_cast<RobTag>(static_cast<uint32_t>(slots[i].robTag)),
+              static_cast<RobTag>(
+                  static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
   return best >= 0 ?
@@ -58,40 +58,40 @@ int32_t BRU::headPCResult() const {
     if (static_cast<bool>(slotValid[i]) &&
         (best == -1 ||
          ROB::isOlder(
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[i].robTag)),
-             static_cast<uint8_t>(
-                 static_cast<uint32_t>(slots[best].robTag)))))
+              static_cast<RobTag>(static_cast<uint32_t>(slots[i].robTag)),
+              static_cast<RobTag>(
+                  static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
   return best >= 0 ? static_cast<int32_t>(
                          static_cast<uint32_t>(slots[best].pcResult)) : 0;
 }
 
-uint8_t BRU::headRobTag() const {
+RobTag BRU::headRobTag() const {
   int best = -1;
   for (int i = 0; i < BRU_CAP; i++) {
     if (static_cast<bool>(slotValid[i]) &&
         (best == -1 ||
          ROB::isOlder(
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[i].robTag)),
-             static_cast<uint8_t>(
-                 static_cast<uint32_t>(slots[best].robTag)))))
+              static_cast<RobTag>(static_cast<uint32_t>(slots[i].robTag)),
+              static_cast<RobTag>(
+                  static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
   return best >= 0 ?
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[best].robTag)) : 0;
+             static_cast<RobTag>(static_cast<uint32_t>(slots[best].robTag)) : 0;
 }
 
 void BRU::work() {
   const bool squash = static_cast<bool>(needSquash);
-  const uint32_t squashTag = static_cast<uint32_t>(SquashTag);
+  const RobTag squashTag = static_cast<uint32_t>(SquashTag);
   const bool dValid = static_cast<bool>(dispatchValid);
-  const uint32_t dTag = static_cast<uint32_t>(dispatchRobTag);
+  const RobTag dTag = static_cast<uint32_t>(dispatchRobTag);
 
   // the reference removes the oldest entry every cycle, judged over the
   // cycle-start (committed) state -- before this cycle's push landed
   const bool oldAny = !isEmpty();
-  const uint32_t headTag = oldAny ? static_cast<uint32_t>(headRobTag()) : 0;
+  const RobTag headTag = oldAny ? headRobTag() : 0;
 
   // push target from the OLD validity bitmap only
   bool found = false;
@@ -124,7 +124,7 @@ void BRU::work() {
   // dead slots
   for (uint32_t i = 0; i < BRU_CAP; ++i) {
     const bool old_v = static_cast<bool>(slotValid[i]);
-    const uint32_t tag_i = static_cast<uint32_t>(slots[i].robTag);
+    const RobTag tag_i = static_cast<uint32_t>(slots[i].robTag);
     const bool removed = oldAny && old_v && tag_i == headTag;
     const bool flushed = squash && old_v && !ROB::isOlder(tag_i, squashTag);
     const bool here = pushHere && i == target;

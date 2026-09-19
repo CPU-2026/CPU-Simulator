@@ -17,10 +17,9 @@ void PRF::work() {
   }
   // Cache frequently used Wire values as local combinational signals
   bool needSquash = static_cast<bool>(squash.needSquash);
-  uint32_t squashTag = static_cast<uint32_t>(squash.SquashTag);
+  RobTag squashTag = static_cast<uint32_t>(squash.SquashTag);
   uint8_t ckptId = static_cast<uint32_t>(squash.CkptId);
-  bool isRobEmpty = static_cast<bool>(rob.isRobEmpty);
-  bool isHeadReady = static_cast<bool>(rob.isRobHeadCommitReady);
+  bool robWillCommit = static_cast<bool>(rob.robWillCommit);
   bool issueValid = static_cast<bool>(issue.issueValid);
   bool issueAlloc = issueValid && static_cast<bool>(issue.issueAllocDest);
   uint8_t issuePhyVal = static_cast<uint32_t>(issue.issuePhy);
@@ -38,7 +37,7 @@ void PRF::work() {
   uint32_t cdbPhyAlu = 0;
   uint32_t cdbValAlu = 0;
   if (static_cast<bool>(cdbOfALU.cdbValid)) {
-    uint32_t cdbTag = static_cast<uint32_t>(cdbOfALU.cdbRobTag);
+    RobTag cdbTag = static_cast<uint32_t>(cdbOfALU.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
       if (!static_cast<bool>(cdbOfALU.cdbIsControl)) {
         uint32_t newPhy = static_cast<uint32_t>(cdbOfALU.cdbNewPhy);
@@ -54,7 +53,7 @@ void PRF::work() {
   uint32_t cdbPhyLq = 0;
   uint32_t cdbValLq = 0;
   if (static_cast<bool>(cdbOfLQ.cdbValid)) {
-    uint32_t cdbTag = static_cast<uint32_t>(cdbOfLQ.cdbRobTag);
+    RobTag cdbTag = static_cast<uint32_t>(cdbOfLQ.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
       uint32_t newPhy = static_cast<uint32_t>(cdbOfLQ.cdbNewPhy);
       if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
@@ -67,9 +66,9 @@ void PRF::work() {
   bool cdbWriteMul = false;
   uint32_t cdbPhyMul = 0;
   uint32_t cdbValMul = 0;
-  uint32_t cdbTagMul = 0;
+  RobTag cdbTagMul = 0;
   if (static_cast<bool>(cdbOfMUL.cdbValid)) {
-    uint32_t cdbTag = static_cast<uint32_t>(cdbOfMUL.cdbRobTag);
+    RobTag cdbTag = static_cast<uint32_t>(cdbOfMUL.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
       uint32_t newPhy = static_cast<uint32_t>(cdbOfMUL.cdbNewPhy);
       if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
@@ -84,9 +83,9 @@ void PRF::work() {
   bool cdbWriteDiv = false;
   uint32_t cdbPhyDiv = 0;
   uint32_t cdbValDiv = 0;
-  uint32_t cdbTagDiv = 0;
+  RobTag cdbTagDiv = 0;
   if (static_cast<bool>(cdbOfDIV.cdbValid)) {
-    uint32_t cdbTag = static_cast<uint32_t>(cdbOfDIV.cdbRobTag);
+    RobTag cdbTag = static_cast<uint32_t>(cdbOfDIV.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
       uint32_t newPhy = static_cast<uint32_t>(cdbOfDIV.cdbNewPhy);
       if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
@@ -160,34 +159,28 @@ void PRF::work() {
   // ---- Squash: single-write-point for headSeq, handles PRFHeadCkpt hazard
   // ----
   if (needSquash) {
-      uint32_t ckptVal;
-      if (issueValid && ckptId == issueCkpt) {
-        // Same-cycle write-read hazard: use newly computed headSnap
-        ckptVal = curHead + (issueAlloc ? 1 : 0);
-      } else {
-        ckptVal = static_cast<uint32_t>(PRFHeadCkpt[ckptId]);
-      }
-      assert(static_cast<uint32_t>(tailSeq) - ckptVal <=
-             static_cast<uint32_t>(PRF_CAP));
-      nextHead = ckptVal;
+    uint32_t ckptVal;
+    if (issueValid && ckptId == issueCkpt) {
+      // Same-cycle write-read hazard: use newly computed headSnap
+      ckptVal = curHead + (issueAlloc ? 1 : 0);
+    } else {
+      ckptVal = static_cast<uint32_t>(PRFHeadCkpt[ckptId]);
+    }
+    assert(static_cast<uint32_t>(tailSeq) - ckptVal <=
+           static_cast<uint32_t>(PRF_CAP));
+    nextHead = ckptVal;
     // doPop implies nextHead != curHead; restore overwrites nextHead
     if (nextHead != curHead)
       headSeq <= nextHead;
-  } else {
-    if (doPop)
-      headSeq <= nextHead;
+  } else if (doPop) {
+    headSeq <= nextHead;
+  }
 
-    // ---- Commit: push oldPhy ----
-    bool doReturn = false;
-    if (isRobEmpty || !isHeadReady)
-      doReturn = true;
-    if (static_cast<bool>(rob.robHeadIsHalt))
-      doReturn = true;
+  // ---- Commit: independent of squash when the head is strictly older ----
+  if (robWillCommit && !static_cast<bool>(rob.robHeadIsHalt)) {
     uint32_t hType = static_cast<uint32_t>(rob.robHeadType);
-    if (hType != static_cast<uint32_t>(ROBType::REGISTER) &&
-        hType != static_cast<uint32_t>(ROBType::LINK))
-      doReturn = true;
-    if (!doReturn) {
+    if (hType == static_cast<uint32_t>(ROBType::REGISTER) ||
+        hType == static_cast<uint32_t>(ROBType::LINK)) {
       uint32_t oldPhy = static_cast<uint32_t>(rob.robHeadOldPhy);
       if (oldPhy != static_cast<uint32_t>(InvalidPhy)) {
         uint32_t tail = static_cast<uint32_t>(tailSeq);

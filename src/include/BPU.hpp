@@ -28,24 +28,25 @@ constexpr uint8_t LFSR_SEED = 0xAC;
 // scheduling order.
 struct BPUInputSquash {
   Wire<1> needSquash;
-  Wire<7> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
   Wire<6> SquashCkpt;
 };
 struct BPUInputCDB {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
   Wire<1> cdbIsControl;
 };
 struct BPUInputBRU {
   Wire<1> isBRUEmpty;
-  Wire<7> bruHeadRobTag;
+  Wire<ROB_TAG_WIDTH> bruHeadRobTag;
   Wire<32> bruHeadPCResult;
   Wire<32> bruHeadPCFrom;
 };
 struct BPUInputROB {
   Wire<1> isROBEmpty;
-  Wire<7> robHeadTag;
+  Wire<ROB_TAG_WIDTH> robHeadTag;
+  std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> robTag;
   std::array<Wire<32>, ROB_CAP> robPredictPC;
   std::array<Wire<32>, ROB_CAP> robPC;
   std::array<Wire<1>, ROB_CAP> robIsCall;

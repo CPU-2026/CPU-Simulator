@@ -9,7 +9,7 @@ struct PRFEntry {
 };
 struct PRFInputSquash {
   Wire<1> needSquash;
-  Wire<7> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
   Wire<8> CkptId;
 };
 // Quad-CDB write ports (mirrors the main tree's
@@ -20,26 +20,26 @@ struct PRFInputSquash {
 struct PRFInputCDBAlu {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
   Wire<1> cdbIsControl;
   Wire<7> cdbNewPhy;
 };
 struct PRFInputCDBLq {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
   Wire<7> cdbNewPhy;
 };
 struct PRFInputCDBMul {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
   Wire<7> cdbNewPhy;
 };
 struct PRFInputCDBDiv {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
   Wire<7> cdbNewPhy;
 };
 struct PRFInputIssue {
@@ -51,8 +51,7 @@ struct PRFInputIssue {
   Wire<8> issueCkptId;
 };
 struct PRFInputROB {
-  Wire<1> isRobEmpty;
-  Wire<1> isRobHeadCommitReady;
+  Wire<1> robWillCommit;
   Wire<1> robHeadIsHalt;
   Wire<2> robHeadType;
   Wire<7> robHeadOldPhy;

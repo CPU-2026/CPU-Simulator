@@ -7,8 +7,9 @@
 // Register-based RS entries (flat, no inheritance): the ReservationStation /
 // AddressRS hierarchy was retired at the RS Register migration. Widths follow
 // the tight-fit discipline: op < 32 (ALU static_assert), phy tag 7b
-// (InvalidPhy=0 sentinel, real tags 1..PRF_CAP-1), robTag 8b (0xFF sentinel domain
-// preserved), memIndex 7b (MEM_STORE_BIT + 6b slot).
+// (InvalidPhy=0 sentinel, real tags 1..PRF_CAP-1), robTag ROB_TAG_WIDTH,
+// memIndex 7b (MEM_STORE_BIT + 6b slot). Slot busy bits alone determine
+// validity; robTag has no sentinel value.
 struct RegOperand {
   Register<7> tag;
   Register<32> imm;
@@ -17,33 +18,33 @@ struct IntRS {
   Register<1> busy;
   Register<5> op;
   RegOperand src1, src2;
-  Register<8> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
 };
 struct LoadRS {
   Register<1> busy;
   Register<5> op;
   RegOperand src1, src2;
-  Register<8> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
   Register<7> memIndex;
 };
 struct StoreAddrRS {
   Register<1> busy;
   Register<5> op;
   RegOperand src1, src2;
-  Register<8> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
   Register<7> memIndex;
 };
 struct StoreValueRS {
   Register<1> busy;
   RegOperand data;
-  Register<8> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
   Register<7> memIndex;
 };
 struct BranchRS {
   Register<1> busy;
   Register<5> op;
   RegOperand src1, src2;
-  Register<8> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
   Register<32> imm;
   Register<32> pc;
 };
@@ -66,40 +67,40 @@ struct RSInputIntPayload {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
 };
 struct RSInputLoadPayload {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct RSInputStoreAddrPayload {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct RSInputStoreValuePayload {
   Wire<7> dataTag;
   Wire<32> dataImm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct RSInputBranchPayload {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<32> imm, pc;
 };
 struct RSInputMulPayload {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
 };
 // DIV/REM push payload. Shape-identical to RSInputMulPayload (both are
 // two-register-source ops with an optional dest rename), but kept as its own
@@ -109,7 +110,7 @@ struct RSInputDivPayload {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
 };
 struct RSInputIssueData {
   RSInputIntPayload intP;
@@ -131,7 +132,7 @@ struct RSInputDispatch {
 };
 struct RSInputSquash {
   Wire<1> needSquash;
-  Wire<8> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
 };
 // storeValue ready-release: an operand whose value now lives in the PRF (or
 // is a constant) frees its slot. Computed CPU-side over this RS's own

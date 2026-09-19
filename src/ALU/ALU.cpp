@@ -56,28 +56,28 @@ int32_t ALU::headValue() const {
     if (static_cast<bool>(slotValid[i]) &&
         (best == -1 ||
          ROB::isOlder(
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[i].robTag)),
-             static_cast<uint8_t>(
-                 static_cast<uint32_t>(slots[best].robTag)))))
+              static_cast<RobTag>(static_cast<uint32_t>(slots[i].robTag)),
+              static_cast<RobTag>(
+                  static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
   return best >= 0 ?
              static_cast<int32_t>(static_cast<uint32_t>(slots[best].value)) : 0;
 }
 
-uint8_t ALU::headRobTag() const {
+RobTag ALU::headRobTag() const {
   int best = -1;
   for (int i = 0; i < ALU_CAP; i++) {
     if (static_cast<bool>(slotValid[i]) &&
         (best == -1 ||
          ROB::isOlder(
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[i].robTag)),
-             static_cast<uint8_t>(
-                 static_cast<uint32_t>(slots[best].robTag)))))
+              static_cast<RobTag>(static_cast<uint32_t>(slots[i].robTag)),
+              static_cast<RobTag>(
+                  static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
   return best >= 0 ?
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[best].robTag)) : 0;
+             static_cast<RobTag>(static_cast<uint32_t>(slots[best].robTag)) : 0;
 }
 
 bool ALU::headIsControl() const {
@@ -86,9 +86,9 @@ bool ALU::headIsControl() const {
     if (static_cast<bool>(slotValid[i]) &&
         (best == -1 ||
          ROB::isOlder(
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[i].robTag)),
-             static_cast<uint8_t>(
-                 static_cast<uint32_t>(slots[best].robTag)))))
+              static_cast<RobTag>(static_cast<uint32_t>(slots[i].robTag)),
+              static_cast<RobTag>(
+                  static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
   return best >= 0 ? static_cast<bool>(slots[best].isControl) : false;
@@ -96,15 +96,15 @@ bool ALU::headIsControl() const {
 
 void ALU::work() {
   const bool squash = static_cast<bool>(needSquash);
-  const uint32_t squashTag = static_cast<uint32_t>(SquashTag);
+  const RobTag squashTag = static_cast<uint32_t>(SquashTag);
   const bool dValid = static_cast<bool>(dispatchValid);
-  const uint32_t dTag = static_cast<uint32_t>(dispatchRobTag);
+  const RobTag dTag = static_cast<uint32_t>(dispatchRobTag);
   const Operation dOp =
       static_cast<Operation>(static_cast<uint32_t>(op));
   // grant = this entry is the aluCDB winner; dual-CDB leaves ALU as the sole
   // candidate so valid implies granted (retired the aluGranted select bit)
   const bool grant = static_cast<bool>(cdbValid);
-  const uint32_t cdbTag = static_cast<uint32_t>(cdbRobTag);
+  const RobTag cdbTag = static_cast<uint32_t>(cdbRobTag);
 
   // push target from the OLD validity bitmap only: the reference picked the
   // free slot before remove/flush ran, so a slot freed this cycle stays
@@ -130,7 +130,7 @@ void ALU::work() {
   // value per slot; priority flush > remove > keep, push only into dead slots
   for (uint32_t i = 0; i < ALU_CAP; ++i) {
     const bool old_v = static_cast<bool>(slotValid[i]);
-    const uint32_t tag_i = static_cast<uint32_t>(slots[i].robTag);
+    const RobTag tag_i = static_cast<uint32_t>(slots[i].robTag);
     const bool removed = grant && old_v && tag_i == cdbTag;
     const bool flushed = squash && old_v && !ROB::isOlder(tag_i, squashTag);
     const bool here = pushHere && i == target;

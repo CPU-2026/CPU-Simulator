@@ -5,17 +5,18 @@
 #include <cstdint>
 
 struct SQEntry {
-  Register<7> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
   Register<32> address;
   Register<32> value;
   Register<2> n_bytes; // 0->1B, 1->2B, 2->4B (DMEM/LQ aligned)
   Register<1> isAddressReady;
   Register<1> isValueReady;
+  Register<1> isCommitted;
 };
 
 struct SQInputSquash {
   Wire<1> needSquash;
-  Wire<7> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
 };
 struct SQInputMemDispatch {
   Wire<1> memDispatchValid;
@@ -23,17 +24,20 @@ struct SQInputMemDispatch {
 };
 struct SQInputROB {
   Wire<7> squashSQTailSnapshot;
+  Wire<1> squashTagMatch;
+  Wire<ROB_TAG_WIDTH> robHeadTag;
+  Wire<1> storeWillCommit;
 };
 struct SQInputIssue {
   Wire<1> issueValid;
   Wire<1> issueStore;
-  Wire<7> issueTag;
+  Wire<ROB_TAG_WIDTH> issueTag;
   Wire<2> issueBytes;
 };
 struct SQInputAGU {
   Wire<1> isAGUEmpty;
   Wire<7> aguHeadMemIndex;
-  Wire<7> aguHeadRobTag;
+  Wire<ROB_TAG_WIDTH> aguHeadRobTag;
   Wire<32> aguHeadValue;
 };
 struct SQInputPRF {
@@ -55,23 +59,23 @@ struct SQInput {
 // AGU-head-driven address-forward.
 struct SQOutputNotifyData {
   std::array<Wire<1>, STORERS_CAP> valid;
-  std::array<Wire<7>, STORERS_CAP> storeTag;
+  std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> storeTag;
   std::array<Wire<32>, STORERS_CAP> addr;
   std::array<Wire<32>, STORERS_CAP> value;
   std::array<Wire<1>, STORERS_CAP> foundKnownSame;
-  std::array<Wire<7>, STORERS_CAP> knownTag;
+  std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> knownTag;
   std::array<Wire<1>, STORERS_CAP> foundUnknown;
-  std::array<Wire<7>, STORERS_CAP> unknownTag;
+  std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> unknownTag;
 };
 struct SQOutputNotifyAddr {
   Wire<1> valid;
-  Wire<7> storeTag;
+  Wire<ROB_TAG_WIDTH> storeTag;
   Wire<32> addr;
   Wire<32> value;
   Wire<1> foundKnownSame;
-  Wire<7> knownTag;
+  Wire<ROB_TAG_WIDTH> knownTag;
   Wire<1> foundUnknown;
-  Wire<7> unknownTag;
+  Wire<ROB_TAG_WIDTH> unknownTag;
 };
 // StoreResponse: the store-forward reply to the AGU-head load query.
 struct SQOutputReply {
@@ -92,14 +96,14 @@ struct SQInner {
 
 struct StoreNotify {
   bool valid = false;
-  uint8_t storeTag = 0; // robTag of the broadcasting source store
+  RobTag storeTag = 0; // robTag of the broadcasting source store
   uint32_t addr = 0;    // store address (ready)
   int value = 0;        // store data
   bool foundKnownSame =
       false; // a younger store with the same known address exists
-  uint8_t knownSameAddressOldestTag = 0; // robTag of the oldest of those
+  RobTag knownSameAddressOldestTag = 0; // robTag of the oldest of those
   bool foundUnknown = false;    // a younger store with unknown address exists
-  uint8_t unknownOldestTag = 0; // robTag of the oldest of those
+  RobTag unknownOldestTag = 0; // robTag of the oldest of those
 };
 
 struct StoreResponse {
@@ -108,12 +112,6 @@ struct StoreResponse {
 };
 
 struct SQ : public dark::Module<SQInput, SQOutput, SQInner> {
-  void flush(uint8_t tailSnapshot);
-  void pushStore(RobTag robTag, int n_bytes);
-  void pop();
-  void writeAddress(uint32_t address, int index);
-  void writeValue(int32_t value, int index);
-
 public:
   bool isEmpty() const;
   bool isFull() const;
@@ -126,10 +124,13 @@ public:
     return static_cast<uint32_t>((tail + 1) & SQ_MASK);
   }
   bool isReadyToCommit(int index) const;
+  bool isCommitted(int index) const {
+    return isActive(index) && static_cast<bool>(SQqueue[index].isCommitted);
+  }
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;
-  auto headRobTag() const -> uint8_t;
-  auto getRobTag(int index) const -> uint8_t;
+  auto headRobTag() const -> RobTag;
+  auto getRobTag(int index) const -> RobTag;
   auto getNBytes(int index) const -> int;
   bool isAddressReady(int index) const {
     return static_cast<bool>(SQqueue[index].isAddressReady);
@@ -139,7 +140,7 @@ public:
   }
   auto planDataForward(int index, int32_t value) const -> StoreNotify;
   auto planAddressForward(int index, uint32_t address) const -> StoreNotify;
-  auto replyToLoadRequest(uint32_t addr, uint8_t loadTag) const
+  auto replyToLoadRequest(uint32_t addr, RobTag loadTag) const
       -> StoreResponse;
   bool canDispatchLoad(uint32_t addr, RobTag loadTag) const;
   void work() override;

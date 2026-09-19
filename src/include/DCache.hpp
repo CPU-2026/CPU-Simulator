@@ -26,7 +26,7 @@ struct DCacheInput {
   // squash guard for load responses (only needSquash/SquashTag are used by
   // the logic; PC/CkptId ride along for plan fidelity)
   Wire<1> squashNeed;
-  Wire<7> squashTag;
+  Wire<ROB_TAG_WIDTH> squashTag;
   // MemDispatchDecision, split field-by-field (MemArbiter Output wires)
   Wire<1> decisionValid;
   Wire<5> decisionOp; // Operation encoding (Load/Store)
@@ -34,7 +34,7 @@ struct DCacheInput {
   Wire<32> decisionAddr;
   Wire<1> decisionIsSigned;
   Wire<2> decisionNBytes; // 2b encoding: 0->1B, 1->2B, 2->4B (nEnc)
-  Wire<7> decisionRobTag;
+  Wire<ROB_TAG_WIDTH> decisionRobTag;
   Wire<7> decisionMemIndex;
   // DMEM completion observation (_M_old view through the bridge accessors)
   Wire<1> dmemReadBusy;
@@ -48,7 +48,7 @@ struct DCacheOutput {
   // loadResp -> LQ (squash guard inlined: valid && (!needSquash || isOlder))
   Wire<1> loadRespValid;
   Wire<7> loadRespMemIndex;
-  Wire<7> loadRespRobTag;
+  Wire<ROB_TAG_WIDTH> loadRespRobTag;
   Wire<32> loadRespValue;
   // forwardRequest -> DMEM dual-port pulses (registered, one-cycle visible)
   Wire<1> reqReadValid;
@@ -92,13 +92,13 @@ struct DCacheInner {
   Register<32> parkAddr;
   Register<1> parkIsSigned;
   Register<2> parkNBytes; // nEnc encoding (see decisionNBytes)
-  Register<7> parkRobTag;
+  Register<ROB_TAG_WIDTH> parkRobTag;
   Register<7> parkMemIndex;
   Register<2> parkTargetWay; // allocateWay result, 0..3
   // self-answer / fill-serve load response (one-cycle pulse)
   Register<1> lbValid; // loadBuffer (Inner side renamed: Output uses loadResp*)
   Register<7> lbMemIndex;
-  Register<7> lbRobTag;
+  Register<ROB_TAG_WIDTH> lbRobTag;
   Register<32> lbValue;
   // forwarded request pulses (cleared each cycle, claimed by DMEM next)
   Register<1> rqReadValid; // Output side keeps the reqRead* names

@@ -7,14 +7,14 @@ constexpr int sliceShiftWithShiftD = 27;
 constexpr int sliceShiftNoShiftD = 26;
 struct DIVInput {
   Wire<1> needSquash;
-  Wire<7> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
   Wire<1> dispatchValid;
   Wire<32> src1Value;
   Wire<32> src2Value;
   Wire<5> op;
-  Wire<7> dispatchRobTag;
+  Wire<ROB_TAG_WIDTH> dispatchRobTag;
   Wire<1> cdbValid;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
 };
 struct DIVOutput {
   Register<1> resultValid;
@@ -25,7 +25,7 @@ struct DIVInner {
   Register<1> loopValid;
   Register<1> prepareValid;
   Register<5> operationType;
-  Register<7> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
   Register<32> remain;
   Register<32> quotient;
   Register<5> dSlice;  // divisor estimate slice, <= 31
@@ -66,7 +66,7 @@ struct DIV : dark::Module<DIVInput, DIVOutput, DIVInner> {
            !static_cast<bool>(fullAdderValid) &&
            !static_cast<bool>(resultValid);
   }
-  uint8_t getResultRobtag() const { return static_cast<uint32_t>(robTag); }
+  RobTag getResultRobtag() const { return static_cast<uint32_t>(robTag); }
   int32_t getValue() const {
     if (static_cast<uint32_t>(operationType) == static_cast<uint32_t>(Operation::DIV)) {
       if (static_cast<bool>(isResultNegative)) {

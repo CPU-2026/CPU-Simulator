@@ -10,7 +10,7 @@ struct RSUnit;
 struct ROB;
 struct DMEM;
 struct LQEntry {
-  Register<7> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
   Register<32> address;
   Register<32> value;
   Register<2> n_bytes;
@@ -21,12 +21,12 @@ struct LQEntry {
 };
 struct LQInputSquash {
   Wire<1> needSquash;
-  Wire<7> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
 };
 struct LQInputIssue {
   Wire<1> issueValid;
   Wire<1> issueLoad;
-  Wire<7> issueTag;
+  Wire<ROB_TAG_WIDTH> issueTag;
   Wire<2> issueBytes;
   Wire<1> issueIsUnsigned;
 };
@@ -37,20 +37,21 @@ struct LQInputCDB {
 struct LQInputAGU {
   Wire<1> isAGUEmpty;
   Wire<7> aguHeadMemIndex;
-  Wire<7> aguHeadRobTag;
+  Wire<ROB_TAG_WIDTH> aguHeadRobTag;
   Wire<32> aguHeadValue;
   Wire<1> sqReplyValid;
   Wire<32> sqReplyValue;
 };
 struct LQInputROB {
   Wire<1> isROBEmpty;
-  Wire<7> robHeadTag;
+  Wire<ROB_TAG_WIDTH> robHeadTag;
   Wire<7> squashLQTailSnapshot;
+  Wire<1> squashTagMatch;
 };
 struct LQInputLoadResp {
   Wire<1> loadRespValid;
   Wire<7> loadRespMemIndex;
-  Wire<7> loadRespRobTag;
+  Wire<ROB_TAG_WIDTH> loadRespRobTag;
   Wire<32> loadRespValue;
 };
 struct LQInputMemDispatch {
@@ -61,22 +62,22 @@ struct LQInputMemDispatch {
 struct LQInputStoreNotifies {
   // Per-store-value-RS data-forward notify; sn prefix retained from prior design.
   std::array<Wire<1>, STORERS_CAP> snValid;
-  std::array<Wire<7>, STORERS_CAP> snStoreTag;
+  std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> snStoreTag;
   std::array<Wire<32>, STORERS_CAP> snAddr;
   std::array<Wire<32>, STORERS_CAP> snValue;
   std::array<Wire<1>, STORERS_CAP> snFoundKnownSame;
-  std::array<Wire<7>, STORERS_CAP> snKnownTag;
+  std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> snKnownTag;
   std::array<Wire<1>, STORERS_CAP> snFoundUnknown;
-  std::array<Wire<7>, STORERS_CAP> snUnknownTag;
+  std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> snUnknownTag;
   // single address-forward notify — san prefix retained
   Wire<1> sanValid;
-  Wire<7> sanStoreTag;
+  Wire<ROB_TAG_WIDTH> sanStoreTag;
   Wire<32> sanAddr;
   Wire<32> sanValue;
   Wire<1> sanFoundKnownSame;
-  Wire<7> sanKnownTag;
+  Wire<ROB_TAG_WIDTH> sanKnownTag;
   Wire<1> sanFoundUnknown;
-  Wire<7> sanUnknownTag;
+  Wire<ROB_TAG_WIDTH> sanUnknownTag;
 };
 struct LQInput {
   LQInputSquash squash;
@@ -115,8 +116,8 @@ public:
   }
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;
-  auto headRobTag() const -> uint8_t;
-  auto getRobTag(int index) const -> uint8_t;
+  auto headRobTag() const -> RobTag;
+  auto getRobTag(int index) const -> RobTag;
   auto getIsUnsigned(int index) const -> bool;
   auto getNBytes(int index) const -> int;
   bool isAddressReady(int index) const { return static_cast<bool>(LQqueue[index].isAddressReady); }

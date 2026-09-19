@@ -10,7 +10,7 @@ static_assert(MEM_STORE_BIT == 0x40 && LQ_CAP <= 64 && SQ_CAP <= 64);
 
 struct AGUInput {
   Wire<1> needSquash;
-  Wire<8> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
   // dispatch payload from the DispatchArbiter's agu grant (wired with lambdas
   // that guard on dispatch.valid; the load/store RS array choice is made
   // inside the wiring lambdas)
@@ -18,12 +18,12 @@ struct AGUInput {
   Wire<32> src1Value;
   Wire<32> src2Value;
   Wire<7> memIndex;
-  Wire<8> dispatchRobTag;
+  Wire<ROB_TAG_WIDTH> dispatchRobTag;
 };
 
 struct AGUEntry {
   Register<32> value;
-  Register<8> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
   Register<7> memIndex;
 };
 
@@ -39,7 +39,7 @@ public:
   bool isFull() const;
   bool isEmpty() const;
   int32_t headValue() const;
-  uint8_t headRobTag() const;
+  RobTag headRobTag() const;
   uint8_t headMemIndex() const;
   void work() override;
 };

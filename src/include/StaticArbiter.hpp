@@ -34,27 +34,27 @@ struct MemArbInput {
   // store side (SQ head payload; addr/value gated at the wiring site so the
   // un-ready throw paths are never reached)
   Wire<1> sqEmpty;            // SQModule.isEmpty()
-  Wire<7> sqHeadRobTag;       // SQModule.headRobTag()
+  Wire<ROB_TAG_WIDTH> sqHeadRobTag; // SQModule.headRobTag()
   Wire<4> sqHead;             // SQModule.getHead() (SQ slot index)
   Wire<2> sqHeadNEnc;         // head n_bytes 2b encoding (0->1B,1->2B,2->4B)
   Wire<32> sqHeadAddr;        // gated: !isEmpty && isAddressReady(head)
   Wire<32> sqHeadValue;       // gated: !isEmpty && isValueReady(head)
   // store commit permission (ROB view of the SQ head store)
-  Wire<1> robHeadEmpty;       // ROBModule.headView.isEmpty
-  Wire<7> robHeadTag;         // ROBModule.headView.head
-  Wire<1> robHeadCommitReady; // entry.isCommitReady[robSlot(sqHeadRobTag)]
+  Wire<1> sqHeadCommitted;
+  Wire<ROB_TAG_WIDTH> robHeadTag;
+  Wire<1> robStoreWillCommit;
   // load side (LQ LoadDetect hit; payload gated by loadValid -- LoadDetect
   // only returns address-ready entries)
   Wire<1> loadValid;          // LQModule.LoadDetect() != 0xFFFFFFFF
   Wire<4> loadIndex;          // hit ? LQ index : 0
   Wire<32> loadAddr;          // gated by loadValid
-  Wire<7> loadRobTag;         // gated by loadValid
+  Wire<ROB_TAG_WIDTH> loadRobTag; // gated by loadValid
   Wire<1> loadIsSigned;       // gated: !LQModule.getIsUnsigned(idx)
   Wire<2> loadNEnc;           // gated, 2b encoding
   Wire<1> loadCanDispatch;    // CPU-side SQModule.canDispatchLoad(addr, tag)
   // squash guard (load branch only)
   Wire<1> squashNeed;
-  Wire<7> squashTag;
+  Wire<ROB_TAG_WIDTH> squashTag;
 };
 static_assert(SQ_CAP <= 16 && LQ_CAP <= 16,
               "MemArbInput sqHead/loadIndex use 4-bit slot indexes");
@@ -65,7 +65,7 @@ struct MemArbOutput {
   Wire<32> address;
   Wire<1> isSigned;
   Wire<2> nEnc;     // 0->1B, 1->2B, 2->4B
-  Wire<7> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex; // store: MEM_STORE_BIT | SQ slot; load: raw LQ index
 };
 struct MemArbiter : dark::Module<MemArbInput, MemArbOutput> {
@@ -96,36 +96,42 @@ struct DispatchArbInput {
   // dispatch gate is the unit's own canAccept() (all stage-valid bits and
   // resultValid low) rather than an isFull().
   Wire<1> divAccept; // DIVModule.canAccept()
-  // RS slot-field buses (raw; src tags are Wire<7> -- the 8th sentinel bit of
-  // the Register<8> is clipped at the wiring site, so a tag always indexes
-  // prdReady in-bounds; stale free-slot tags are killed by busy=0)
+  // RS slot-field buses. Physical source tags stay 7b for PRF indexing;
+  // ROB identity tags use the packed ROB width. Stale free-slot fields are
+  // killed by busy=0.
   std::array<Wire<1>, INTEGERRS_CAP> intBusy;
-  std::array<Wire<7>, INTEGERRS_CAP> intSrc1Tag, intSrc2Tag, intRobTag;
+  std::array<Wire<7>, INTEGERRS_CAP> intSrc1Tag, intSrc2Tag;
+  std::array<Wire<ROB_TAG_WIDTH>, INTEGERRS_CAP> intRobTag;
   std::array<Wire<1>, LOADRS_CAP> loadBusy;
-  std::array<Wire<7>, LOADRS_CAP> loadSrc1Tag, loadSrc2Tag, loadRobTag;
+  std::array<Wire<7>, LOADRS_CAP> loadSrc1Tag, loadSrc2Tag;
+  std::array<Wire<ROB_TAG_WIDTH>, LOADRS_CAP> loadRobTag;
   std::array<Wire<1>, STORERS_CAP> saBusy; // store-addr: single operand
-  std::array<Wire<7>, STORERS_CAP> saSrc1Tag, saRobTag;
+  std::array<Wire<7>, STORERS_CAP> saSrc1Tag;
+  std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> saRobTag;
   std::array<Wire<1>, BRANCHRS_CAP> brBusy;
-  std::array<Wire<7>, BRANCHRS_CAP> brSrc1Tag, brSrc2Tag, brRobTag;
+  std::array<Wire<7>, BRANCHRS_CAP> brSrc1Tag, brSrc2Tag;
+  std::array<Wire<ROB_TAG_WIDTH>, BRANCHRS_CAP> brRobTag;
   std::array<Wire<1>, MULTIPLYRS_CAP> mulBusy;
-  std::array<Wire<7>, MULTIPLYRS_CAP> mulSrc1Tag, mulSrc2Tag, mulRobTag;
+  std::array<Wire<7>, MULTIPLYRS_CAP> mulSrc1Tag, mulSrc2Tag;
+  std::array<Wire<ROB_TAG_WIDTH>, MULTIPLYRS_CAP> mulRobTag;
   std::array<Wire<1>, DIVIDERS_CAP> divBusy;
-  std::array<Wire<7>, DIVIDERS_CAP> divSrc1Tag, divSrc2Tag, divRobTag;
+  std::array<Wire<7>, DIVIDERS_CAP> divSrc1Tag, divSrc2Tag;
+  std::array<Wire<ROB_TAG_WIDTH>, DIVIDERS_CAP> divRobTag;
   std::array<Wire<1>, PRF_CAP> prdReady; // PRF ready bitmap bus
   Wire<1> squashNeed;
-  Wire<7> squashTag;
+  Wire<ROB_TAG_WIDTH> squashTag;
 };
 static_assert(INTEGERRS_CAP <= 16, "rsIndex is 4-bit");
 struct DispArbOutInfo {
   Wire<1> valid;
   Wire<4> rsIndex; // RS slot (0 when !valid; the -1 sentinel dies -- every
                    // consumer gates on valid)
-  Wire<7> robTag;  // winner slot tag (0 when !valid, verbatim default)
+  Wire<ROB_TAG_WIDTH> robTag; // winner tag (0 when !valid)
 };
 struct DispArbOutAguInfo {
   Wire<1> valid;
   Wire<4> rsIndex;
-  Wire<7> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<3> rsType;  // RSType encoding (Integer..StoreAddr, 5 values)
 };
 struct DispatchArbOutput {
@@ -138,7 +144,7 @@ struct DispatchArbiter : dark::Module<DispatchArbInput, DispatchArbOutput> {
 private:
   struct WinResult {
     bool v;
-    uint32_t tag;
+    RobTag tag;
     uint32_t idx;
   };
   void wire_output();
@@ -151,7 +157,7 @@ private:
   WinResult selectOldest(const std::array<Wire<1>, N> &busy,
                          const std::array<Wire<7>, N> &src1Tag,
                          const std::array<Wire<7>, N> &src2Tag,
-                         const std::array<Wire<7>, N> &tags) const;
+                          const std::array<Wire<ROB_TAG_WIDTH>, N> &tags) const;
   WinResult aluSelect() const;
   WinResult bruSelect() const;
   WinResult mulSelect() const; // multiplyRS pool, same shape as aluSelect
@@ -188,7 +194,7 @@ struct IssueArbInputDec {
 };
 struct IssueArbInputRob {
   Wire<1> isFull;
-  Wire<7> nextTag;
+  Wire<ROB_TAG_WIDTH> nextTag;
 };
 // Raw busy bitmaps: the module runs first-fit free-slot scans.
 struct IssueArbInputRs {
@@ -265,7 +271,7 @@ struct IssueArbOutputCore {
   Wire<1> valid;
   Wire<1> allocDest;
   Wire<7> phy;
-  Wire<7> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<1> isLoad, isStore, isControl;
   Wire<3> nBytes; // 0/1/2/4 bytes (LQ/SQ remap to 2b at their wiring)
   Wire<1> isUnsigned;
@@ -284,40 +290,40 @@ struct IssueArbOutIntP {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
 };
 struct IssueArbOutLoadP {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct IssueArbOutSaP {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct IssueArbOutSvP {
   Wire<7> dataTag;
   Wire<32> dataImm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct IssueArbOutBrP {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
   Wire<32> imm, pc;
 };
 struct IssueArbOutMulP {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
 };
 // DIV/REM payload: shape-identical to IssueArbOutMulP; issued into the
 // dedicated divideRS pool by issue_Divide in the reference implementation.
@@ -325,7 +331,7 @@ struct IssueArbOutDivP {
   Wire<5> op;
   Wire<7> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
-  Wire<8> robTag;
+  Wire<ROB_TAG_WIDTH> robTag;
 };
 struct IssueArbOutRobEntry {
   Wire<2> type;

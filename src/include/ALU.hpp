@@ -9,19 +9,19 @@ static_assert(static_cast<uint32_t>(Operation::OP_INVALID) < 32); // op fits Wir
 
 struct ALUInput {
   Wire<1> needSquash;
-  Wire<7> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
   Wire<1> dispatchValid;
   Wire<32> src1Value;
   Wire<32> src2Value;
   Wire<5> op;
-  Wire<7> dispatchRobTag;
+  Wire<ROB_TAG_WIDTH> dispatchRobTag;
   Wire<1> cdbValid;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
 };
 
 struct ALUEntry {
   Register<32> value;
-  Register<7> robTag;
+  Register<ROB_TAG_WIDTH> robTag;
   Register<1> isControl;
 };
 
@@ -37,7 +37,7 @@ public:
   bool isFull() const;
   bool isEmpty() const;
   int32_t headValue() const;
-  uint8_t headRobTag() const;
+  RobTag headRobTag() const;
   bool headIsControl() const;
   void work() override;
 };

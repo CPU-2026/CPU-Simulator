@@ -371,6 +371,13 @@ Plan updateJumpPlan(const Snap &snap, const TrainReq &req) {
   p.put(T_BHT, p2 & (BHT_CAP - 1), ((bhr << 1) | 1) & 0xFF);
   return p;
 }
+
+bool robTagMatches(const BPUInputROB &rob, RobTag tag) {
+  if (static_cast<bool>(rob.isROBEmpty))
+    return false;
+  const uint32_t slot = robSlot(tag);
+  return slot < ROB_CAP && static_cast<uint32_t>(rob.robTag[slot]) == tag;
+}
 }  // namespace
 
 PredictInfo BPU::predict(int32_t pc) const {
@@ -561,13 +568,13 @@ void BPU::work() {
 
   Snap snap(this);
   bool needSquash = static_cast<bool>(squash.needSquash);
-  uint32_t squashTag = static_cast<uint32_t>(squash.SquashTag);
+  RobTag squashTag = static_cast<uint32_t>(squash.SquashTag);
   uint32_t squashCkpt = static_cast<uint32_t>(squash.SquashCkpt);
 
   // ---- decode both train requests (once per cycle) ----
   TrainReq trBru, trCdb;
-  if (static_cast<bool>(bru.isBRUEmpty) == false) {
-    auto brRobTag = static_cast<uint32_t>(bru.bruHeadRobTag);
+  const RobTag brRobTag = static_cast<uint32_t>(bru.bruHeadRobTag);
+  if (!static_cast<bool>(bru.isBRUEmpty) && robTagMatches(rob, brRobTag)) {
     auto pcResult = static_cast<uint32_t>(bru.bruHeadPCResult);
     auto pcFrom = static_cast<uint32_t>(bru.bruHeadPCFrom);
     ++branchTotal;
@@ -600,11 +607,10 @@ void BPU::work() {
           static_cast<uint8_t>(static_cast<uint32_t>(dir.tmeta[cid].baseCnt));
     }
   }
+  const RobTag cdbRobTag = static_cast<uint32_t>(cdb.cdbRobTag);
   if (static_cast<bool>(cdb.cdbValid) && static_cast<bool>(cdb.cdbIsControl) &&
-      static_cast<bool>(rob.isROBEmpty) == false &&
-      !ROB::isOlder(static_cast<uint32_t>(cdb.cdbRobTag),
-                    static_cast<uint32_t>(rob.robHeadTag))) {
-    auto robIdx = robSlot(static_cast<uint32_t>(cdb.cdbRobTag));
+      robTagMatches(rob, cdbRobTag)) {
+    auto robIdx = robSlot(cdbRobTag);
     auto pc = static_cast<uint32_t>(cdb.cdbValue);
     if (!needSquash ||
         ROB::isOlder(static_cast<uint32_t>(cdb.cdbRobTag), squashTag)) {

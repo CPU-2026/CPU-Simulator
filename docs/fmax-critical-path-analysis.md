@@ -136,7 +136,7 @@ DIV 的 SRT 循环每拍只执行一轮并由 `loopTimes`/stage valid 寄存器�
 
 | 项 | 当前源码状态 | 时序含义 |
 |---|---|---|
-| ROB ready 去重 | **2026-09-18 已完成。**旧 `seen[]/nSeen` 已删除。BRU、SQ 扫描窗口以及 ALU/LQ/MUL/DIV 四条 CDB 的请求 OR 入零初始化的 `std::array<bool, ROB_CAP> readyBits{}`，最后固定遍历 ROB，每槽至多写一次 `isCommitReady`。 | 删除动态长度线性去重链和经验数组上界；保留 Register 单写纪律。 |
+| ROB ready 去重 | **2026-09-18 已完成。**旧 `seen[]/nSeen` 已删除。BRU、SQ 扫描窗口以及 ALU/LQ/MUL/DIV 四条 CDB 的请求经完整 RobTag 校验后归约到逐槽 `readyWrite[]/readyData[]` 写意图，最后固定遍历 ROB，每槽至多写一次 `isCommitReady`。 | 删除动态长度线性去重链和经验数组上界；保留 Register 单写纪律。 |
 | BPU folded history | 稳态预测直接读取 `fhIdx/fhTag8/fhTag7`；GHR shift 时增量更新，squash 时用编译期定界的 `refoldViewT` 重建。 | 预测热路径不再现场遍历 48 位 GHR。当前 tagged TAGE 表为 **4 x 128**（7 位索引）；T0 保留独立的 1024 项 local base table。 |
 | dead unresolved-store Wire | `sqHasOlderUnresolvedAddressStore` 已从模板源码消失，当前全树无定义或消费者。 | 不再存在误接后展开大规模冗余 CAM 的风险。 |
 | 固定边界循环 | DCache 字节装配/写入均为固定 4 lane 加条件使能；FlushArbiter 插入定位和搬移均以 `FLUSHARBITER_CAP` 为常量边界；fold rebuild 使用模板常量边界。 | 循环可以展开为有限组合网络，不再由运行期长度决定 trip count。 |

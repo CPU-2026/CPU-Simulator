@@ -16,7 +16,7 @@ enum class ROBType : dark::max_size_t {
 // ---- Input ----
 struct ROBInputSquash {
   Wire<1> needSquash;
-  Wire<7> SquashTag;
+  Wire<ROB_TAG_WIDTH> SquashTag;
 };
 struct ROBInputEntry {
   Wire<2> type;
@@ -43,28 +43,29 @@ struct ROBInputIssue {
 // payload).
 struct ROBInputCDBAlu {
   Wire<1> cdbValid;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
 };
 struct ROBInputCDBLq {
   Wire<1> cdbValid;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
 };
 struct ROBInputCDBMul {
   Wire<1> cdbValid;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
 };
 struct ROBInputCDBDiv {
   Wire<1> cdbValid;
-  Wire<7> cdbRobTag;
+  Wire<ROB_TAG_WIDTH> cdbRobTag;
 };
 struct ROBInputBRU {
   Wire<1> isBRUEmpty;
-  Wire<7> bruHeadRobTag;
+  Wire<ROB_TAG_WIDTH> bruHeadRobTag;
 };
 struct ROBInputSQ {
   std::array<Wire<1>, SQ_CAP> sqValid;
   std::array<Wire<1>, SQ_CAP> sqReadyToCommit;
-  std::array<Wire<7>, SQ_CAP> sqRobTag;
+  std::array<Wire<1>, SQ_CAP> sqCommitted;
+  std::array<Wire<ROB_TAG_WIDTH>, SQ_CAP> sqRobTag;
   Wire<4> sqHead;
 };
 struct ROBInput {
@@ -81,7 +82,7 @@ struct ROBInput {
 // ---- Output: 10-scalar view (group name headView avoids base-class name-hiding
 // with bridge accessor methods isEmpty/isFull/isHeadCommitReady/isHeadHalt/headType/headDest) + flat entry arrays ----
 struct ROBOutputHeadView {
-  Wire<7> head;
+  Wire<ROB_TAG_WIDTH> head;
   Wire<1> isEmpty;
   Wire<1> isHeadCommitReady;
   Wire<1> isHeadHalt;
@@ -91,6 +92,7 @@ struct ROBOutput {
   ROBOutputHeadView headView;
   // Per-entry views consumed outside the ROB.
   struct Entry {
+    std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> tag;
     std::array<Wire<1>, ROB_CAP> isCommitReady;
     std::array<Wire<1>, ROB_CAP> isCall;
     std::array<Wire<1>, ROB_CAP> isRet;
@@ -107,6 +109,7 @@ struct ROBOutput {
 
 // Inner: flat ROBEntryReg array + state — keep in sync
 struct ROBEntryReg {
+  Register<ROB_TAG_WIDTH> tag;
   Register<2> type;
   Register<1> isCommitReady;
   Register<5> dest;
@@ -123,8 +126,8 @@ struct ROBEntryReg {
 };
 struct ROBInner {
   std::array<ROBEntryReg, ROB_CAP> ROBqueue;
-  Register<7> robHead;
-  Register<7> next;
+  Register<ROB_TAG_WIDTH> robHead;
+  Register<ROB_TAG_WIDTH> next;
   Register<1> robHaltCommitted;
   Register<5> robHaltRd;
 };
@@ -133,17 +136,17 @@ struct ROB : dark::Module<ROBInput, ROBOutput, ROBInner> {
   friend struct ReorderTester;
 private:
   void wire_output();
-  void updateNextTag();
-  void pop();
-  void flush(uint32_t squashTag);
 public:
   ROB();
   static bool isOlder(RobTag tag_a, RobTag tag_b);
   static bool isYounger(RobTag tag_a, RobTag tag_b);
   bool isFull() const;
   bool isEmpty() const;
+  bool matchesTag(RobTag tag) const;
+  bool willCommit() const;
+  bool storeWillCommit() const;
   bool isHaltCommitted() const;
   uint32_t getHaltRd() const;
-  uint32_t getNextTag() const;
+  RobTag getNextTag() const;
   void work() override;
 };

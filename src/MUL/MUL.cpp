@@ -39,19 +39,19 @@ void MUL::work() {
   // Register reads are cycle-stable, so helper-free ordering below is
   // irrelevant to the result; section order only mirrors the reference tick.
   const bool squash = static_cast<bool>(needSquash);
-  const uint32_t squashTag = static_cast<uint32_t>(SquashTag);
+  const RobTag squashTag = static_cast<uint32_t>(SquashTag);
   const bool dValid = static_cast<bool>(dispatchValid);
-  const uint32_t dTag = static_cast<uint32_t>(dispatchRobTag);
+  const RobTag dTag = static_cast<uint32_t>(dispatchRobTag);
   const Operation dOp = static_cast<Operation>(static_cast<uint32_t>(op));
   const bool grant = static_cast<bool>(cdbValid);
-  const uint32_t cdbTag = static_cast<uint32_t>(cdbRobTag);
+  const RobTag cdbTag = static_cast<uint32_t>(cdbRobTag);
 
   const bool boothOld = static_cast<bool>(partialRes.valid);
   const bool scOld = static_cast<bool>(scRes.valid);
   const RobTag partialTag =
-      static_cast<uint8_t>(static_cast<uint32_t>(partialRes.robTag));
+      static_cast<RobTag>(static_cast<uint32_t>(partialRes.robTag));
   const RobTag scTag =
-      static_cast<uint8_t>(static_cast<uint32_t>(scRes.robTag));
+      static_cast<RobTag>(static_cast<uint32_t>(scRes.robTag));
   const Operation scOp =
       static_cast<Operation>(static_cast<uint32_t>(scRes.op));
   const Operation partialOp =
@@ -214,7 +214,7 @@ void MUL::work() {
   const bool fillFlushed = squash && !ROB::isOlder(scTag, squashTag);
   for (uint32_t i = 0; i < MUL_CAP; ++i) {
     const bool old_v = static_cast<bool>(slotValid[i]);
-    const uint32_t tag_i = static_cast<uint32_t>(slots[i].robTag);
+    const RobTag tag_i = static_cast<uint32_t>(slots[i].robTag);
     const bool removed = grant && old_v && tag_i == cdbTag;
     const bool flushed =
         squash && old_v && !ROB::isOlder(tag_i, squashTag);
@@ -243,8 +243,8 @@ int32_t MUL::headValue() const {
     if (static_cast<bool>(slotValid[i]) &&
         (best == -1 ||
          ROB::isOlder(
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[i].robTag)),
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[best].robTag)))))
+              static_cast<RobTag>(static_cast<uint32_t>(slots[i].robTag)),
+              static_cast<RobTag>(static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
   return best >= 0
@@ -252,17 +252,17 @@ int32_t MUL::headValue() const {
              : 0;
 }
 
-uint8_t MUL::headRobTag() const {
+RobTag MUL::headRobTag() const {
   int best = -1;
   for (int i = 0; i < MUL_CAP; i++) {
     if (static_cast<bool>(slotValid[i]) &&
         (best == -1 ||
          ROB::isOlder(
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[i].robTag)),
-             static_cast<uint8_t>(static_cast<uint32_t>(slots[best].robTag)))))
+              static_cast<RobTag>(static_cast<uint32_t>(slots[i].robTag)),
+              static_cast<RobTag>(static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
   return best >= 0
-             ? static_cast<uint8_t>(static_cast<uint32_t>(slots[best].robTag))
+              ? static_cast<RobTag>(static_cast<uint32_t>(slots[best].robTag))
              : 0;
 }

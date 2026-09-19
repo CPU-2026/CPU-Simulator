@@ -133,9 +133,15 @@ store 地址由 AGU 解析后，FlushArbiter 会扫描更年轻、已经取值�
 
 - `InvalidPhy = 0` 是整个物理寄存器域的唯一哨兵；P0 永不分配、永不建立 RAT 映射，当前真实 phy 为 `1..63`。
 - `Operand.tag == InvalidPhy` 表示立即数/常量路径；PRF pop/push、RAT 写映射和源操作数解析都要守住非零断言。
-- `RobTag` 是 7-bit 模 128 序列身份；16 项 ROB 的物理槽只由 `robSlot(tag)`（当前低 4 位）投影得到。
-- 不再维护 `robIndex`、`SquashIndex`、`getIndexByTag` 等第二身份域。年龄比较始终在 RobTag 模 128 域完成，数组索引才走 `robSlot(tag)`。
-- 用 tag 索引前仍要先做存活与 squash 窗口检查；删除冗余 index 不等于删除生命周期守卫。
+- `RobTag` 是 packed `{epoch, slot}` 序列身份：slot 宽度为 `bit_width(ROB_CAP-1)`，
+  `ROB_TAG_WIDTH` 再加 1 个 epoch bit。当前 ROB16 为 5 bit；slot 只分配
+  `0..ROB_CAP-1`，非二次幂容量的空洞编码由 `robNextTag()` 跳过。
+- 不再维护 `robIndex`、`SquashIndex`、`getIndexByTag` 等第二身份域。数组索引只走
+  `robSlot(tag)`；年龄比较按 epoch/slot 规则完成，不对含空洞的 packed 数值做 `%`。
+- 模板所有语义 RobTag `Wire/Register` 使用 `ROB_TAG_WIDTH`，phy tag、`memIndex`、
+  opcode 等独立 7-bit 域不随之收窄。ROB16→ROB12 实测双仓库 18/18 x10 与 cycles
+  逐项一致，覆盖 slot 12..15 空洞跳转。
+- 用 tag 索引前先验证 ROB 条目保存的完整 tag；删除冗余 index 不等于删除生命周期守卫。
 
 ### 零初始化
 
@@ -195,12 +201,13 @@ head-ready 可由位图归约得到，不必保留容易与槽状态失配的冗
 
 ## 固定归约与可综合循环
 
-### ROB ready 位图
+### ROB ready 写意图
 
 ROB 原先用动态长度 `seen[]` 线性查重，既有经验上界越界风险，也不符合固定硬件结构。
-现在所有 BRU、SQ、四路 CDB ready 请求先幂等 OR 到 one-hot 风格的零初始化逐槽位图
-`std::array<bool, ROB_CAP> readyBits{}`，再固定遍历 `ROB_CAP`，每槽至多执行一次
-`isCommitReady <= true`。`{}` 零初始化是承重条件；遗漏它会产生幽灵 ready 和双写。
+现在所有 BRU、SQ、四路 CDB ready 请求先校验完整 RobTag，再幂等归约到零初始化的
+逐槽 `readyWrite[]/readyData[]` 写意图；issue 初始化与完成置位按固定优先级归并，最后
+固定遍历 `ROB_CAP`，每槽至多执行一次 `isCommitReady <= ...`。`{}` 零初始化与单点写
+mux 都是承重条件；遗漏会产生幽灵 ready 或 Register 双写。
 
 ### 固定四 lane 字节通路
 
