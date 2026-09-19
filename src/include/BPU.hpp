@@ -13,7 +13,7 @@ constexpr int TAGE_NTABLES = 4;
 static_assert((TAGE_NTABLES & (TAGE_NTABLES - 1)) == 0,
               "TAGE_NTABLES must be a power of two (allocation uses & (N-1))");
 constexpr int TAGE_HIST[TAGE_NTABLES] = {6, 12, 24, 48};
-constexpr int TAGE_IDX_BIT = 9;  // 512 entries per table
+constexpr int TAGE_IDX_BIT = 7;  // 128 entries per table
 constexpr int TAGE_TAG_BIT = 8;
 constexpr uint8_t BANKTICK_MAX = 63;
 constexpr uint8_t LFSR_TAPS = 0xB8; // 8-bit Galois taps
@@ -185,8 +185,8 @@ struct DirectionPred {
   std::array<Register<2>, T0_CAP> t0;
   std::array<Register<12>, LHT_CAP>
       LHT; // per-PC local history (12b), non-speculative
-  std::array<std::array<TageEntry, 512>, TAGE_NTABLES> tn;
-  std::array<Register<9>, TAGE_NTABLES> fhIdx; // W = TAGE_IDX_BIT
+  std::array<std::array<TageEntry, 1 << TAGE_IDX_BIT>, TAGE_NTABLES> tn;
+  std::array<Register<TAGE_IDX_BIT>, TAGE_NTABLES> fhIdx;
   std::array<Register<8>, TAGE_NTABLES> fhTag8; // W = TAGE_TAG_BIT
   std::array<Register<7>, TAGE_NTABLES>
       fhTag7; // W = TAGE_TAG_BIT - 1   （tag = 8位折 ^ 7位折）
@@ -200,8 +200,8 @@ struct DirectionPred {
 
 // Target prediction ("where to jump"): BTB (targets + jump type) and the
 // SARAS ring return-address stack with its correction queue. All three
-// ring counters are uint8_t and wrap at 256 (safe: in-flight <64, and
-// ALIGNQ_CAP=32/RAS_CAP=16).
+// ring counters are uint8_t and wrap at 256, well beyond the current
+// ROB_CAP=16 and local queue capacities (ALIGNQ_CAP=16/RAS_CAP=8).
 struct TargetPred {
   std::array<Register<8>, BHT_CAP> BHT;
   std::array<Register<32>, TARGETCACHE_CAP> TargetCache;

@@ -304,8 +304,7 @@ void CPU::wire() {
   MemArbiterModule.robHeadCommitReady = [this]() {
     return static_cast<bool>(
                ROBModule.entry
-                   .isCommitReady[static_cast<uint32_t>(SQModule.headRobTag()) &
-                                  0x3F])
+                    .isCommitReady[robSlot(SQModule.headRobTag())])
                ? 1u
                : 0u;
   };
@@ -707,7 +706,7 @@ void CPU::wire() {
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(
         ROBModule.entry
-            .newPhy[static_cast<uint32_t>(AluCDBArbiterModule.robTag) & 0x3F]);
+            .newPhy[robSlot(static_cast<uint32_t>(AluCDBArbiterModule.robTag))]);
   };
   PRFModule.cdbOfLQ.cdbValid = [this]() {
     return LqCDBArbiterModule.valid ? 1u : 0u;
@@ -723,7 +722,7 @@ void CPU::wire() {
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(
         ROBModule.entry
-            .newPhy[static_cast<uint32_t>(LqCDBArbiterModule.robTag) & 0x3F]);
+            .newPhy[robSlot(static_cast<uint32_t>(LqCDBArbiterModule.robTag))]);
   };
   // MUL write port: never a control op, so no isControl wire (loads and
   // multiplies share that port saving).
@@ -740,8 +739,7 @@ void CPU::wire() {
     if (!static_cast<bool>(MulCDBModule.valid))
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(
-        ROBModule.entry.newPhy[static_cast<uint32_t>(MulCDBModule.robTag) &
-                               0x3F]);
+        ROBModule.entry.newPhy[robSlot(static_cast<uint32_t>(MulCDBModule.robTag))]);
   };
   PRFModule.cdbOfDIV.cdbValid = [this]() {
     return DivCDBModule.valid ? 1u : 0u;
@@ -756,8 +754,7 @@ void CPU::wire() {
     if (!static_cast<bool>(DivCDBModule.valid))
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(
-        ROBModule.entry.newPhy[static_cast<uint32_t>(DivCDBModule.robTag) &
-                               0x3F]);
+        ROBModule.entry.newPhy[robSlot(static_cast<uint32_t>(DivCDBModule.robTag))]);
   };
   PRFModule.issue.issueValid = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.valid);
@@ -794,7 +791,7 @@ void CPU::wire() {
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(
         ROBModule.entry
-            .oldPhy[static_cast<uint32_t>(ROBModule.headView.head) & 0x3F]);
+            .oldPhy[robSlot(static_cast<uint32_t>(ROBModule.headView.head))]);
   };
 
   // Wire RAT's Input Wires
@@ -1302,8 +1299,7 @@ void CPU::wire() {
   LQModule.rob.squashLQTailSnapshot = [this]() {
     return static_cast<uint32_t>(
         ROBModule.entry
-            .lqTailSnapshot[static_cast<uint32_t>(flushArbiter.SquashTag) &
-                            0x3F]);
+            .lqTailSnapshot[robSlot(static_cast<uint32_t>(flushArbiter.SquashTag))]);
   };
   // loadResp now comes from the DCache (hit self-answer or fill serve); the
   // squash guard lives inside DCache::wire_output (valid && (!needSquash ||
@@ -1416,8 +1412,7 @@ void CPU::wire() {
   SQModule.rob.squashSQTailSnapshot = [this]() {
     return static_cast<uint32_t>(
         ROBModule.entry
-            .sqTailSnapshot[static_cast<uint32_t>(flushArbiter.SquashTag) &
-                            0x3F]);
+            .sqTailSnapshot[robSlot(static_cast<uint32_t>(flushArbiter.SquashTag))]);
   };
   SQModule.agu.isAGUEmpty = [this]() { return AGUModule.isEmpty(); };
   SQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };

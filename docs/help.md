@@ -135,13 +135,12 @@ VERBOSE=clock,branch,icache ./code < data/testcases/gcd.data
 
 ## 4. 回归与性能脚本
 
-模板目录中的三个脚本以父仓库文档为权威数据源。相对模板目录的根级 SSOT 路径是
+模板目录中的两个脚本以父仓库文档为权威数据源。相对模板目录的根级 SSOT 路径是
 `../docs/benchmarks.md` 和 `../docs/ipc_benchmarks.md`；模板 `docs/` 不再保留同名副本。
 
 | 脚本 | 输入 | 根级 SSOT 或输出 | 行为 |
 | --- | --- | --- | --- |
-| `./test.sh [pattern]` | `data/testcases/*.data` | `../docs/benchmarks.md` | 检查退出码与 x10，报告 clock、retired、IPC、分支率；完整运行含慢用例 `pi` |
-| `./test_M.sh [pattern]` | `data/testcases_rv32im/{M,I}` | `../docs/benchmarks.md` | 对比 RV32IM 硬件乘除与 RV32I 软件例程，检查两臂 x10 和 golden |
+| `./test.sh [pattern]` | `data/testcases/*.data` | `../docs/benchmarks.md` | 严格检查 RV32IM 镜像的退出码、x10 与 cycles，报告 retired、IPC、分支率；完整运行含 `pi` |
 | `./test_IPC.sh` | `data/testcases_ipc/*/*.data` | 写入 `../docs/ipc_benchmarks.md` | 运行 IPC 语料并重新生成根级报告，不是只读测试 |
 
 常用命令：
@@ -151,16 +150,12 @@ VERBOSE=clock,branch,icache ./code < data/testcases/gcd.data
 ./test.sh '*sort*'
 ./test.sh
 
-./test_M.sh gcd
-QUICK=1 ./test_M.sh        # 跳过 pi
-
 BP_BIN=./build-assert/code ./test.sh gcd
 BP_BIN=./build-release/code ./test_IPC.sh
 ```
 
-`BP_BIN` 可覆盖待测二进制。`test.sh` 的判定硬门槛是 x10；表中的 cycles 同时作为报告和架构
-对拍基线。`test_M.sh` 对 RV32M/RV32I 两臂的 clock 做 A/B 比较，但根级 benchmark 表只为这两臂
-提供 x10 golden。运行 `test_IPC.sh` 前应确认确实要改写根级 IPC 报告。
+`BP_BIN` 可覆盖待测二进制。`test.sh` 将 x10 和 cycles 都作为硬门槛，同时拒绝缺失语料、
+缺失 golden 与零用例。运行 `test_IPC.sh` 前应确认确实要改写根级 IPC 报告。
 
 ## 5. 文档地图
 

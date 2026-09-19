@@ -572,7 +572,7 @@ void BPU::work() {
     auto pcFrom = static_cast<uint32_t>(bru.bruHeadPCFrom);
     ++branchTotal;
     bool correct =
-        pcResult == static_cast<uint32_t>(rob.robPredictPC[brRobTag & 0x3F]);
+        pcResult == static_cast<uint32_t>(rob.robPredictPC[robSlot(brRobTag)]);
     if (correct) ++branchCorrect;
     if (!needSquash || ROB::isOlder(brRobTag, squashTag)) {
       trBru.valid = true;
@@ -580,7 +580,7 @@ void BPU::work() {
       trBru.pc = pcFrom;
       trBru.taken = pcResult != pcFrom + 4;
       trBru.target = pcResult;
-      auto cid = static_cast<uint32_t>(rob.robCkptId[brRobTag & 0x3F]);
+      auto cid = static_cast<uint32_t>(rob.robCkptId[robSlot(brRobTag)]);
       // bpCkpt/tmeta are written only by fetch allocation and read by squash;
       // same-cycle alloc and rollback use distinct ckptIds -- no race.
       trBru.ghr =
@@ -604,7 +604,7 @@ void BPU::work() {
       static_cast<bool>(rob.isROBEmpty) == false &&
       !ROB::isOlder(static_cast<uint32_t>(cdb.cdbRobTag),
                     static_cast<uint32_t>(rob.robHeadTag))) {
-    auto robIdx = static_cast<uint32_t>(cdb.cdbRobTag) & 0x3F;
+    auto robIdx = robSlot(static_cast<uint32_t>(cdb.cdbRobTag));
     auto pc = static_cast<uint32_t>(cdb.cdbValue);
     if (!needSquash ||
         ROB::isOlder(static_cast<uint32_t>(cdb.cdbRobTag), squashTag)) {

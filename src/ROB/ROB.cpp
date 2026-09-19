@@ -4,9 +4,8 @@
 #include <cstdint>
 
 bool ROB::isOlder(RobTag tag_a, RobTag tag_b) {
-  if ((tag_a >> 6) != (tag_b >> 6))
-    return ((tag_a & 63) > (tag_b & 63));
-  return ((tag_a & 63) < (tag_b & 63));
+  const uint8_t distance = (tag_b - tag_a) & ROB_TAG_MASK;
+  return distance != 0 && distance < ROB_TAG_HALF_RANGE;
 }
 bool ROB::isYounger(RobTag tag_a, RobTag tag_b) {
   return isOlder(tag_b, tag_a);
@@ -26,7 +25,7 @@ void ROB::wire_output() {
     if (static_cast<uint32_t>(robHead) == static_cast<uint32_t>(next))
       return 0u;
     return static_cast<bool>(
-               ROBqueue[static_cast<uint32_t>(robHead) & 0x3F].isCommitReady)
+               ROBqueue[robSlot(static_cast<uint32_t>(robHead))].isCommitReady)
                ? 1u
                : 0u;
   };
@@ -34,7 +33,7 @@ void ROB::wire_output() {
     if (static_cast<uint32_t>(robHead) == static_cast<uint32_t>(next))
       return 0u;
     return static_cast<bool>(
-               ROBqueue[static_cast<uint32_t>(robHead) & 0x3F].halt)
+               ROBqueue[robSlot(static_cast<uint32_t>(robHead))].halt)
                ? 1u
                : 0u;
   };
@@ -42,7 +41,7 @@ void ROB::wire_output() {
     if (static_cast<uint32_t>(robHead) == static_cast<uint32_t>(next))
       return 0u;
     return static_cast<uint32_t>(
-        ROBqueue[static_cast<uint32_t>(robHead) & 0x3F].type);
+        ROBqueue[robSlot(static_cast<uint32_t>(robHead))].type);
   };
   for (int i = 0; i < ROB_CAP; ++i) {
     entry.isCommitReady[i] = [this, i]() -> uint32_t {
@@ -84,25 +83,27 @@ bool ROB::isHaltCommitted() const {
 uint32_t ROB::getHaltRd() const { return static_cast<uint32_t>(robHaltRd); }
 uint32_t ROB::getNextTag() const { return static_cast<uint32_t>(next); }
 void ROB::updateNextTag() {
-  next <= static_cast<uint32_t>((static_cast<uint32_t>(next) + 1) & 0x7F);
+  next <= static_cast<uint32_t>((static_cast<uint32_t>(next) + 1) & ROB_TAG_MASK);
 }
 bool ROB::isFull() const {
-  return (static_cast<uint32_t>(robHead) ^ static_cast<uint32_t>(next)) == 0x40;
+  return ((static_cast<uint32_t>(next) - static_cast<uint32_t>(robHead)) &
+          ROB_TAG_MASK) == ROB_CAP;
 }
 bool ROB::isEmpty() const {
   return static_cast<uint32_t>(robHead) == static_cast<uint32_t>(next);
 }
 void ROB::pop() {
-  robHead <= static_cast<uint32_t>((static_cast<uint32_t>(robHead) + 1) & 0x7F);
+  robHead <= static_cast<uint32_t>((static_cast<uint32_t>(robHead) + 1) &
+                                   ROB_TAG_MASK);
 }
 void ROB::flush(uint32_t squashTag) {
-  next <= static_cast<uint32_t>((squashTag + 1) & 0x7F);
+  next <= static_cast<uint32_t>((squashTag + 1) & ROB_TAG_MASK);
 }
 
 void ROB::work() {
   bool issueValid = static_cast<bool>(issue.issueValid);
   if (issueValid) {
-    uint32_t q = static_cast<uint32_t>(next) & 0x3F;
+    uint32_t q = robSlot(static_cast<uint32_t>(next));
     ROBqueue[q].type <= static_cast<uint32_t>(issue.entry.type);
     ROBqueue[q].isCommitReady <=
         static_cast<uint32_t>(issue.entry.isCommitReady);
@@ -137,13 +138,13 @@ void ROB::work() {
   if (!static_cast<bool>(bru.isBRUEmpty)) {
     uint32_t brTag = static_cast<uint32_t>(bru.bruHeadRobTag);
     if (!needSquash || ROB::isOlder(brTag, squashTag)) {
-      markReady(brTag & 0x3F);
+      markReady(robSlot(brTag));
     }
   }
   {
     uint32_t sqHead = static_cast<uint32_t>(sq.sqHead);
     for (int k = 0; k < MEMQ_SCAN_WINDOW; ++k) {
-      uint32_t i = (sqHead + k) & 0x0F;
+      uint32_t i = (sqHead + k) & SQ_MASK;
       if (!static_cast<bool>(sq.sqValid[i]))
         continue;
       if (!static_cast<bool>(sq.sqReadyToCommit[i]))
@@ -155,14 +156,14 @@ void ROB::work() {
         continue;
       if (curEmpty)
         continue;
-      markReady(sqTag & 0x3F);
+      markReady(robSlot(sqTag));
     }
   }
   if (static_cast<bool>(cdbOfALU.cdbValid)) {
     uint32_t cdbTag = static_cast<uint32_t>(cdbOfALU.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
       if (!curEmpty && !ROB::isOlder(cdbTag, curHead)) {
-        markReady(cdbTag & 0x3F);
+        markReady(robSlot(cdbTag));
       }
     }
   }
@@ -170,7 +171,7 @@ void ROB::work() {
     uint32_t cdbTag = static_cast<uint32_t>(cdbOfLQ.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
       if (!curEmpty && !ROB::isOlder(cdbTag, curHead)) {
-        markReady(cdbTag & 0x3F);
+        markReady(robSlot(cdbTag));
       }
     }
   }
@@ -178,7 +179,7 @@ void ROB::work() {
     uint32_t cdbTag = static_cast<uint32_t>(cdbOfMUL.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
       if (!curEmpty && !ROB::isOlder(cdbTag, curHead)) {
-        markReady(cdbTag & 0x3F);
+        markReady(robSlot(cdbTag));
       }
     }
   }
@@ -187,7 +188,7 @@ void ROB::work() {
     uint32_t cdbTag = static_cast<uint32_t>(cdbOfDIV.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
       if (!curEmpty && !ROB::isOlder(cdbTag, curHead)) {
-        markReady(cdbTag & 0x3F);
+        markReady(robSlot(cdbTag));
       }
     }
   }
@@ -200,11 +201,11 @@ void ROB::work() {
   } else {
     bool headReadyNow = false;
     if (!curEmpty) {
-      if (static_cast<bool>(ROBqueue[curHead & 0x3F].isCommitReady))
+      if (static_cast<bool>(ROBqueue[robSlot(curHead)].isCommitReady))
         headReadyNow = true;
     }
     if (!curEmpty && headReadyNow) {
-      uint32_t oldIdx = curHead & 0x3F;
+      uint32_t oldIdx = robSlot(curHead);
       bool oldHalt = static_cast<bool>(ROBqueue[oldIdx].halt);
       uint32_t oldDest = static_cast<uint32_t>(ROBqueue[oldIdx].dest);
       pop();

@@ -9,7 +9,7 @@ bool SQ::isEmpty() const {
 }
 
 bool SQ::isFull() const {
-  return ((static_cast<uint32_t>(tail) + 1) & 0x0F) ==
+  return ((static_cast<uint32_t>(tail) + 1) & SQ_MASK) ==
          static_cast<uint32_t>(head);
 }
 
@@ -18,13 +18,13 @@ bool SQ::isActive(uint8_t index) const {
     return false;
   return ((static_cast<uint32_t>(index) - static_cast<uint32_t>(head) +
            SQ_CAP) &
-          0x0F) <
+           SQ_MASK) <
          ((static_cast<uint32_t>(tail) - static_cast<uint32_t>(head) +
            SQ_CAP) &
-          0x0F);
+           SQ_MASK);
 }
 
-void SQ::pop() { head <= ((static_cast<uint32_t>(head) + 1) & 0xF); }
+void SQ::pop() { head <= ((static_cast<uint32_t>(head) + 1) & SQ_MASK); }
 
 void SQ::pushStore(RobTag robTag, int n_bytes) {
   auto t = static_cast<uint32_t>(tail);
@@ -32,7 +32,7 @@ void SQ::pushStore(RobTag robTag, int n_bytes) {
   SQqueue[t].n_bytes <= static_cast<uint32_t>(n_bytes); // already 2b encoded
   SQqueue[t].isAddressReady <= false;
   SQqueue[t].isValueReady <= false;
-  tail <= ((t + 1) & 0xF);
+  tail <= ((t + 1) & SQ_MASK);
 }
 
 uint8_t SQ::getHead() const { return static_cast<uint32_t>(head); }
@@ -88,10 +88,10 @@ auto SQ::planDataForward(int index, int32_t value) const -> StoreNotify {
   bool FoundKnownSameAddressOldest = false;
   bool FoundUnknownOldest = false;
   for (int k = 1; k <= SQ_CAP; ++k) {
-    uint8_t i = (index + k) & 0x0F;
+    uint8_t i = (index + k) & SQ_MASK;
     if (i == index || !isActive(i))
       continue;
-    if (((i - index) & 0x0F) >= ((tail - index) & 0x0F))
+    if (((i - index) & SQ_MASK) >= ((tail - index) & SQ_MASK))
       continue;
     if (SQqueue[i].address == SQqueue[index].address &&
         SQqueue[i].isAddressReady && !FoundKnownSameAddressOldest) {
@@ -123,10 +123,10 @@ auto SQ::planAddressForward(int index, uint32_t address) const -> StoreNotify {
   bool FoundKnownSameAddressOldest = false;
   bool FoundUnknownOldest = false;
   for (int k = 1; k <= SQ_CAP; ++k) {
-    uint8_t i = (index + k) & 0x0F;
+    uint8_t i = (index + k) & SQ_MASK;
     if (i == index || !isActive(i))
       continue;
-    if (((i - index) & 0x0F) >= ((tail - index) & 0x0F))
+    if (((i - index) & SQ_MASK) >= ((tail - index) & SQ_MASK))
       continue;
     if (SQqueue[i].address == address && SQqueue[i].isAddressReady &&
         !FoundKnownSameAddressOldest) {
@@ -154,7 +154,7 @@ auto SQ::replyToLoadRequest(uint32_t addr,
   bool FoundUnknown = false;
   bool SameAddrValueReady = false;
   for (int k = 0; k < SQ_CAP; k++) {
-    auto index = static_cast<uint32_t>((head + k) & 0x0F);
+    auto index = static_cast<uint32_t>((head + k) & SQ_MASK);
     if (!isActive(index))
       break;
     if (ROB::isYounger(static_cast<uint32_t>(SQqueue[index].robTag), loadTag))
@@ -184,7 +184,7 @@ bool SQ::canDispatchLoad(uint32_t addr, RobTag loadTag) const {
   for (int k = 0; k < SQ_CAP; k++) {
     if (hasSameAddressStore)
       continue;
-    uint8_t cur = static_cast<uint32_t>((head + k) & 0xF);
+    uint8_t cur = static_cast<uint32_t>((head + k) & SQ_MASK);
     if (!isActive(cur))
       continue;
     if (!ROB::isOlder(static_cast<uint32_t>(SQqueue[cur].robTag), loadTag))

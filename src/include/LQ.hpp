@@ -59,7 +59,7 @@ struct LQInputMemDispatch {
   Wire<7> memDispatchMemIndex;
 };
 struct LQInputStoreNotifies {
-  // per-slot data-forward notify (8 slots) — sn prefix retained from prior design
+  // Per-store-value-RS data-forward notify; sn prefix retained from prior design.
   std::array<Wire<1>, STORERS_CAP> snValid;
   std::array<Wire<7>, STORERS_CAP> snStoreTag;
   std::array<Wire<32>, STORERS_CAP> snAddr;
@@ -110,7 +110,9 @@ public:
   // exactly one entry at [tail] later this cycle). Distinct from the raw
   // tail: memIndex wants "my slot" (= old tail), squash snapshots want
   // "the border that keeps me alive" (= old tail + 1).
-  uint8_t getTailSnapshot() const { return static_cast<uint32_t>((tail + 1) & 0x0F); }
+  uint8_t getTailSnapshot() const {
+    return static_cast<uint32_t>((tail + 1) & LQ_MASK);
+  }
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;
   auto headRobTag() const -> uint8_t;

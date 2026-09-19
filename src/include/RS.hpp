@@ -7,7 +7,7 @@
 // Register-based RS entries (flat, no inheritance): the ReservationStation /
 // AddressRS hierarchy was retired at the RS Register migration. Widths follow
 // the tight-fit discipline: op < 32 (ALU static_assert), phy tag 7b
-// (InvalidPhy=0 sentinel, real tags 1..127), robTag 8b (0xFF sentinel domain
+// (InvalidPhy=0 sentinel, real tags 1..PRF_CAP-1), robTag 8b (0xFF sentinel domain
 // preserved), memIndex 7b (MEM_STORE_BIT + 6b slot).
 struct RegOperand {
   Register<7> tag;
@@ -57,8 +57,8 @@ struct RSInputIssueSel {
   Wire<2> loadSlot;
   Wire<3> storeAddrSlot, storeValueSlot;
   Wire<2> branchSlot;
-  Wire<2> multiplySlot; // MULTIPLYRS_CAP == 4
-  Wire<2> divideSlot;   // DIVIDERS_CAP == 4
+  Wire<2> multiplySlot;
+  Wire<2> divideSlot;
 };
 // Issue push payloads (flattened from IssuePacket; free is not carried --
 // push always allocates). One payload group per RS array.
@@ -125,8 +125,8 @@ struct RSInputIssueData {
 struct RSInputDispatch {
   Wire<1> aluValid, aguValid, bruValid, mulValid, divValid;
   Wire<4> aluIdx, aguIdx, bruIdx;
-  Wire<2> mulIdx;  // MULTIPLYRS_CAP == 4
-  Wire<2> divIdx;  // DIVIDERS_CAP == 4
+  Wire<2> mulIdx;
+  Wire<2> divIdx;
   Wire<1> aguIsLoad;
 };
 struct RSInputSquash {
@@ -159,8 +159,8 @@ struct RSInner {
   // the multiply or integer RS, so a div-heavy stream cannot starve either.
   std::array<IntRS, DIVIDERS_CAP> divideRS;
 };
-static_assert(MULTIPLYRS_CAP == 4, "multiply slot scans are fixed-length");
-static_assert(DIVIDERS_CAP == 4, "divide slot scans are fixed-length");
+static_assert(MULTIPLYRS_CAP <= 4, "multiply slot index uses a 2-bit wire");
+static_assert(DIVIDERS_CAP <= 4, "divide slot index uses a 2-bit wire");
 
 struct RSUnit
     : public dark::Module<RSInput, dark::details::empty_class, RSInner> {

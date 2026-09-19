@@ -86,7 +86,7 @@
 - CDB、Mem、Dispatch、Issue 等无状态仲裁器没有 Register。把它们建成 Module 的原因是让 `sync()` 统一清 Wire 缓存，而不是给组合逻辑增加状态。
 - checkpoint 是状态复制，不是普通通信总线。RAT、PRF、BPU 的 checkpoint 数组保留为本地 Register 状态，恢复时逐槽写回。
 - IMEM/DMEM 的大存储阵列和缓存数据阵列不因模板化而机械变成 Register 阵列；端口、控制状态和拍级握手才进入模块同步模型。
-- 位宽按值域收紧，并以 `static_assert` 守住容量假设；环形指针和 checkpoint id 不使用宿主 `int` 充当隐式硬件位宽。
+- 逻辑索引按 CAP 掩码收紧，并以 `static_assert` 守住容量假设；容量缩减后部分接口载体有意保持原宽度，实际有效范围仍由 CAP 限定。
 
 ## 现行验证政策
 
@@ -97,7 +97,7 @@
 2. `x10 & 0xFF` 与性能基线只认 [`../../docs/benchmarks.md`](../../docs/benchmarks.md)；文档内不复制易过期的总拍数。
 3. Release 验证功能与时序，`_DEBUG` 验证 Register 单写、索引和结构不变量。
 4. 纯表示变换不得改变 clock；有意的微架构改动必须单独说明原因、验证结果和基线更新，不能用“模板天然漂移”解释差异。
-5. RV32I 课程镜像和含真实 `mul/div/rem` 的 RV32IM 镜像分别覆盖基本路径与扩展单元；长用例只作为里程碑，不把临时耗时写入本文。
+5. 统一 RV32IM 镜像同时覆盖基础整数路径与真实 `mul/div/rem` 路径；不含 M 指令的 `naive` 作为阴性对照，长用例只作为里程碑，不把临时耗时写入本文。
 
 `run_once_shuffle()` 仍是框架能力，也曾证明 Wire/Register 结构没有隐藏的模块执行顺序依赖；
 但在测试目录清理后，它不再属于日常验证政策。
@@ -120,7 +120,7 @@
 ## AGU 访存违例：重放必须使用真实 PC
 
 store 地址由 AGU 解析后，FlushArbiter 会扫描更年轻、已经取值或正在取值的同址 load。
-发生违例时，squash 对象是该 **load**，重放地址必须是 `ROB.pc[violTag & 0x3F]`。
+发生违例时，squash 对象是该 **load**，重放地址必须是 `ROB.pc[robSlot(violTag)]`。
 
 曾经错误地读取 `ROB.predictedPC`。load 的 ROB 项不会由 INT/BR/UJ 发射路径填写该字段，
 因此值恒为 0，机器会重定向到地址 0 并从启动区重跑。修复是给 FlushArbiter 接入真实
@@ -131,10 +131,10 @@ store 地址由 AGU 解析后，FlushArbiter 会扫描更年轻、已经取值�
 
 ### InvalidPhy 与 tag 单域
 
-- `InvalidPhy = 0` 是整个物理寄存器域的唯一哨兵；P0 永不分配、永不建立 RAT 映射，真实 phy 为 `1..127`。
+- `InvalidPhy = 0` 是整个物理寄存器域的唯一哨兵；P0 永不分配、永不建立 RAT 映射，当前真实 phy 为 `1..63`。
 - `Operand.tag == InvalidPhy` 表示立即数/常量路径；PRF pop/push、RAT 写映射和源操作数解析都要守住非零断言。
-- `RobTag` 是 7-bit epoch+slot 身份；64 项 ROB 的物理槽只由 `tag & 0x3F` 投影得到。
-- 不再维护 `robIndex`、`SquashIndex`、`getIndexByTag` 等第二身份域。年龄比较始终在 RobTag 模 128 域完成，数组索引才切低 6 位。
+- `RobTag` 是 7-bit 模 128 序列身份；16 项 ROB 的物理槽只由 `robSlot(tag)`（当前低 4 位）投影得到。
+- 不再维护 `robIndex`、`SquashIndex`、`getIndexByTag` 等第二身份域。年龄比较始终在 RobTag 模 128 域完成，数组索引才走 `robSlot(tag)`。
 - 用 tag 索引前仍要先做存活与 squash 窗口检查；删除冗余 index 不等于删除生命周期守卫。
 
 ### 零初始化

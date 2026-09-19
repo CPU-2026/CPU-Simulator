@@ -51,7 +51,7 @@ struct SQInput {
 };
 
 // --- Output: combinational public views (assigns over committed state) ---
-// StoreNotify packet: data-forward per storeValueRS slot (8) and the single
+// StoreNotify packet: data-forward per storeValueRS slot and the single
 // AGU-head-driven address-forward.
 struct SQOutputNotifyData {
   std::array<Wire<1>, STORERS_CAP> valid;
@@ -123,7 +123,7 @@ public:
   // Occupancy boundary AFTER this cycle's own enqueue (see
   // LQ::getTailSnapshot).
   uint8_t getTailSnapshot() const {
-    return static_cast<uint32_t>((tail + 1) & 0xF);
+    return static_cast<uint32_t>((tail + 1) & SQ_MASK);
   }
   bool isReadyToCommit(int index) const;
   auto getAddress(int index) const -> uint32_t;

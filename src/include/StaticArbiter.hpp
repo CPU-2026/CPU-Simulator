@@ -42,7 +42,7 @@ struct MemArbInput {
   // store commit permission (ROB view of the SQ head store)
   Wire<1> robHeadEmpty;       // ROBModule.headView.isEmpty
   Wire<7> robHeadTag;         // ROBModule.headView.head
-  Wire<1> robHeadCommitReady; // entry.isCommitReady[sqHeadRobTag & 0x3F]
+  Wire<1> robHeadCommitReady; // entry.isCommitReady[robSlot(sqHeadRobTag)]
   // load side (LQ LoadDetect hit; payload gated by loadValid -- LoadDetect
   // only returns address-ready entries)
   Wire<1> loadValid;          // LQModule.LoadDetect() != 0xFFFFFFFF
@@ -56,8 +56,8 @@ struct MemArbInput {
   Wire<1> squashNeed;
   Wire<7> squashTag;
 };
-static_assert(SQ_CAP == 16 && LQ_CAP == 16,
-              "MemArbInput sqHead/loadIndex are 4-bit slot indexes");
+static_assert(SQ_CAP <= 16 && LQ_CAP <= 16,
+              "MemArbInput sqHead/loadIndex use 4-bit slot indexes");
 struct MemArbOutput {
   Wire<1> valid;
   Wire<5> op;       // Operation encoding (0 when idle, verbatim default)
@@ -163,8 +163,8 @@ static_assert(static_cast<uint32_t>(Operation::OP_INVALID) < 32,
               "payload op rides a 5b wire");
 static_assert(static_cast<uint32_t>(ROBType::LINK) < 4,
               "robEntry.type rides a 2b wire");
-static_assert(MEM_STORE_BIT == 0x40 && SQ_CAP <= 16,
-              "saMemIndex packs a 4b SQ tail at bit 6 into a 7b wire");
+static_assert(MEM_STORE_BIT == 0x40 && SQ_CAP <= 64 && LQ_CAP <= 64,
+              "memIndex keeps bit 6 as the store discriminator");
 
 // ---- Input: explicit port view over the seven producer modules (the
 // retired IssueArbiterInput held 7 module references + a plain SquashInfo;

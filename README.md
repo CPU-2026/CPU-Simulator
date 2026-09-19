@@ -37,7 +37,7 @@ VERBOSE=clock,icache ./code < data/testcases/gcd.data
 ```text
  TAGE / BTB / RAS
          |
- Fetch -> ICache -> FQ(8) -> Decode / IQ(16)
+ Fetch -> ICache -> FQ(4) -> Decode / IQ(4)
    |                                  |
  IMEM                           Issue + Rename
                                RAT / PRF / ROB
@@ -55,12 +55,12 @@ VERBOSE=clock,icache ./code < data/testcases/gcd.data
 | --- | --- |
 | ISA | RV32I 整数核心指令 + RV32M |
 | 取指 / 发射 / 提交宽度 | 1 / 1 / 1 |
-| ROB / PRF / RAT | 64 / 128 / 32 |
-| FQ / IQ | 8 / 16 |
-| Integer RS | 8 |
-| MUL / DIV / Load / Branch RS | 各 4 |
+| ROB / PRF / RAT | 16 / 64 / 32 |
+| FQ / IQ | 4 / 4 |
+| Integer RS | 4 |
+| MUL / DIV / Load / Branch RS | 2 / 1 / 4 / 4 |
 | Store Address / Store Value RS | 各 4 |
-| LQ / SQ | 16 / 16 |
+| LQ / SQ | 8 / 8 |
 | 结果总线 | ALU、Load、MUL、DIV 四路独立 CDB |
 | ICache | 8 KiB，直接映射，16 B line |
 | DCache | 64 KiB，4 路，16 B line，write-back |
@@ -110,8 +110,8 @@ include/             Register/Wire/Bit/Module 框架
 src/CPU/             顶层接线与运行循环
 src/include/         CPU 模块声明和公共常量
 src/                 各流水线模块实现
-data/testcases/      课程测试镜像
-data/testcases_rv32im/  RV32M A/B 测试镜像
+data/testcases/      RV32IM 测试源、镜像与反汇编
+data/testcases_ipc/  RV32IM IPC 工作负载
 docs/                使用、架构、迁移回顾和 fmax 文档
 ```
 
@@ -130,19 +130,22 @@ docs/                使用、架构、迁移回顾和 fmax 文档
 
 ## 测试
 
-行为回归：
+RV32IM 行为与周期回归：
 
 ```bash
 ./test.sh gcd
 ./test.sh
 ```
 
-RV32M 硬件/软件 A/B：
+IPC 工作负载与报告更新：
 
 ```bash
-./test_M.sh gcd
-QUICK=1 ./test_M.sh
+./test_IPC.sh
 ```
+
+`test.sh` 同时严格检查 x10 和 `../docs/benchmarks.md` 中的 cycles；缺失镜像、缺失
+golden 或零用例都会失败。历史扩展收益数据只保留在根级 benchmark 文档中，不再提供
+对应的可运行资产。
 
 `reorder_test` 已随旧测试脚手架退役。框架仍提供 `run_once_shuffle()`，但它不再是仓库的日常回归入口。
 

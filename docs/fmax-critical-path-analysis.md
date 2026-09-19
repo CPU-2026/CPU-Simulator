@@ -1,6 +1,6 @@
 # fmax 关键路径分析（当前模板基线）
 
-> 分析对象：`RISC-V-Simulator-Template` 当前源码（2026-09-18）
+> 分析对象：`RISC-V-Simulator-Template` 当前源码（2026-09-19，容量缩减后）
 > 分析口径：将 `Register` 视为周期边界，将 `Wire`、桥接访问器、无状态 Module 和 `work()` 中写入
 > `Register` 前的计算视为组合逻辑。
 
@@ -64,11 +64,11 @@ Fetch PC + folded-history registers + predictor tables
 
 | 通道 | 候选槽数 |
 |---|---:|
-| ALU / integer RS | 8 |
+| ALU / integer RS | 4 |
 | AGU / load + store-address RS | 4 + 4 = 8 |
 | BRU | 4 |
-| MUL | 4 |
-| DIV | 4 |
+| MUL | 2 |
+| DIV | 1 |
 
 选择结果同拍继续索引 RS payload、读取 PRF value，再进入功能单元组合逻辑。这条“选择 -> 读操作数 -> 执行”
 链是最强的结构性关键路径候选。`valid`、`rsIndex`、`robTag` 等输出 Wire 又分别调用选择函数；工具可能做
@@ -99,10 +99,10 @@ DIV 的 SRT 循环每拍只执行一轮并由 `loopTimes`/stage valid 寄存器�
 
 | 位置 | 当前重复形态 | 风险与机会 |
 |---|---|---|
-| SQ data notify | 每个 store-value 槽的 8 个输出字段分别调用 `planDataForward()`；4 槽合计 32 次固定 16 项扫描 | C++ 仿真确定重复；RTL 是否 CSE 取决于 lowering/综合器 |
+| SQ data notify | 每个 store-value 槽的 8 个输出字段分别调用 `planDataForward()`；4 槽合计 32 次固定 8 项扫描 | C++ 仿真确定重复；RTL 是否 CSE 取决于 lowering/综合器 |
 | SQ address notify | 8 个字段分别调用 `planAddressForward()` | 同一 CAM/优先语义可能被复制 |
 | SQ load reply | `valid` 与 `value` 分别调用 `replyToLoadRequest()` | 可共享一个结构化结果 |
-| LQ dispatch/CDB | `LoadDetect()` 在接线层调用 7 次，`CDBDetect()` 调用 4 次 | 固定 16 项 first-found 扫描可能重复 |
+| LQ dispatch/CDB | `LoadDetect()` 在接线层调用 7 次，`CDBDetect()` 调用 4 次 | 固定 8 项 first-found 扫描可能重复 |
 | BPU fetch output | `mid.predPC` 与 `mid.packed` 各调用一次 `predict()` | 当前最多两次完整预测；是否共享表读和命中逻辑不确定 |
 
 这些函数内部均含固定容量扫描，其中 first-found/年龄选择带优先语义。合理方向是在所属 Module 内建立一个
@@ -137,7 +137,7 @@ DIV 的 SRT 循环每拍只执行一轮并由 `loopTimes`/stage valid 寄存器�
 | 项 | 当前源码状态 | 时序含义 |
 |---|---|---|
 | ROB ready 去重 | **2026-09-18 已完成。**旧 `seen[]/nSeen` 已删除。BRU、SQ 扫描窗口以及 ALU/LQ/MUL/DIV 四条 CDB 的请求 OR 入零初始化的 `std::array<bool, ROB_CAP> readyBits{}`，最后固定遍历 ROB，每槽至多写一次 `isCommitReady`。 | 删除动态长度线性去重链和经验数组上界；保留 Register 单写纪律。 |
-| BPU folded history | 稳态预测直接读取 `fhIdx/fhTag8/fhTag7`；GHR shift 时增量更新，squash 时用编译期定界的 `refoldViewT` 重建。 | 预测热路径不再现场遍历 48 位 GHR。当前 tagged TAGE 表为 **4 x 512**（9 位索引）；T0 是独立的 1024 项 local base table。 |
+| BPU folded history | 稳态预测直接读取 `fhIdx/fhTag8/fhTag7`；GHR shift 时增量更新，squash 时用编译期定界的 `refoldViewT` 重建。 | 预测热路径不再现场遍历 48 位 GHR。当前 tagged TAGE 表为 **4 x 128**（7 位索引）；T0 保留独立的 1024 项 local base table。 |
 | dead unresolved-store Wire | `sqHasOlderUnresolvedAddressStore` 已从模板源码消失，当前全树无定义或消费者。 | 不再存在误接后展开大规模冗余 CAM 的风险。 |
 | 固定边界循环 | DCache 字节装配/写入均为固定 4 lane 加条件使能；FlushArbiter 插入定位和搬移均以 `FLUSHARBITER_CAP` 为常量边界；fold rebuild 使用模板常量边界。 | 循环可以展开为有限组合网络，不再由运行期长度决定 trip count。 |
 

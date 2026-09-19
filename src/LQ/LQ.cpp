@@ -27,12 +27,12 @@ struct LQWriteIntent {
 
 bool LQ::isEmpty() const { return static_cast<uint32_t>(tail) == static_cast<uint32_t>(head); }
 
-bool LQ::isFull() const { return ((static_cast<uint32_t>(tail) + 1) & 0x0F) == static_cast<uint32_t>(head); }
+bool LQ::isFull() const { return ((static_cast<uint32_t>(tail) + 1) & LQ_MASK) == static_cast<uint32_t>(head); }
 
 bool LQ::isActive(uint8_t index) const {
   if (static_cast<uint32_t>(head) == static_cast<uint32_t>(tail))
     return false;
-  return ((index - static_cast<uint32_t>(head) + LQ_CAP) & 0x0F) < ((static_cast<uint32_t>(tail) - static_cast<uint32_t>(head) + LQ_CAP) & 0x0F);
+  return ((index - static_cast<uint32_t>(head) + LQ_CAP) & LQ_MASK) < ((static_cast<uint32_t>(tail) - static_cast<uint32_t>(head) + LQ_CAP) & LQ_MASK);
 }
 
 uint8_t LQ::getHead() const { return static_cast<uint32_t>(head); }
@@ -74,7 +74,7 @@ int LQ::LoadDetect() const {
   int UnloadIndex = 0;
   bool foundUnload = false;
   for (int k = 0; k < LQ_CAP; k++) {
-    uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & 0x0F);
+    uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & LQ_MASK);
     if (!isActive(cur) || foundUnload)
       continue;
     if (LQqueue[cur].isAddressReady &&
@@ -93,7 +93,7 @@ int LQ::CDBDetect() const {
   bool found = false;
   int detectedIndex = 0xFFFFFFFF;
   for (int k = 0; k < LQ_CAP; ++k) {
-    uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & 0x0F);
+    uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & LQ_MASK);
     if (!isActive(cur) || found)
       continue;
     if (LQqueue[cur].isAddressReady &&
@@ -150,7 +150,7 @@ void LQ::work() {
     intent[static_cast<int>(t)].bcastWrite = true;
     intent[static_cast<int>(t)].bcastData = false;
     tailWritten = true;
-    tailData = (t + 1) & 0xF;
+    tailData = (t + 1) & LQ_MASK;
   }
 
   // 2. store-forward broadcasts from SQ (data-ready events pre-computed in comb)
@@ -169,7 +169,7 @@ void LQ::work() {
     // applyStoreForward (intent version): conditions read cycle-start values,
     // exactly as the main tree reads the live entry before any AGU writes.
     for (int k = 0; k < LQ_CAP; ++k) {
-      uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & 0x0F);
+      uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & LQ_MASK);
       if (!isActive(cur))
         break;
       if (LQqueue[cur].isAddressReady == 0)
@@ -199,7 +199,7 @@ void LQ::work() {
     n.foundUnknown = static_cast<bool>(storeNotifies.sanFoundUnknown);
     n.unknownOldestTag = static_cast<uint32_t>(storeNotifies.sanUnknownTag);
     for (int k = 0; k < LQ_CAP; ++k) {
-      uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & 0x0F);
+      uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & LQ_MASK);
       if (!isActive(cur))
         break;
       if (LQqueue[cur].isAddressReady == 0)
@@ -246,7 +246,7 @@ void LQ::work() {
                     (static_cast<bool>(rob.isROBEmpty) ||
                      ROB::isOlder(headRobTag(), static_cast<uint32_t>(rob.robHeadTag)));
   if (retireLoad) {
-    head <= ((static_cast<uint32_t>(head) + 1) & 0xF);
+    head <= ((static_cast<uint32_t>(head) + 1) & LQ_MASK);
   }
 
   // 6. load response — checks the state accumulated by this cycle's earlier

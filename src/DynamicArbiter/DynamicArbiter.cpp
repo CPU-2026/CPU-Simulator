@@ -106,15 +106,6 @@ void FlushArbiter::work() {
   }
 
   // Stage 2-4: detection stages -> ordered inserts.
-  if (debug::enabled(debug::TOPIC_BRANCH))
-    debug::print(
-        "F2 e=%d tag=%x res=%x pred=%x sqn=%d\n",
-        static_cast<uint32_t>(bru.isBRUEmpty),
-        static_cast<uint32_t>(bru.bruHeadRobTag),
-        static_cast<uint32_t>(bru.bruHeadPCResult),
-        static_cast<uint32_t>(
-            rob.robPredictPC[static_cast<uint32_t>(bru.bruHeadRobTag) & 0x3F]),
-        static_cast<bool>(squash.needSquash) ? 1 : 0);
   if (bru.isBRUEmpty == 0) {
     SquashInfo BranchSquash;
     auto brRobTag = static_cast<uint32_t>(bru.bruHeadRobTag);
@@ -124,7 +115,7 @@ void FlushArbiter::work() {
         (squash.needSquash &&
          ROB::isOlder(brRobTag, static_cast<uint32_t>(squash.SquashTag)))) {
       auto actualPC = pcResult;
-      auto predPC = static_cast<uint32_t>(rob.robPredictPC[brRobTag & 0x3F]);
+      auto predPC = static_cast<uint32_t>(rob.robPredictPC[robSlot(brRobTag)]);
       if (actualPC != predPC) {
         if (debug::enabled(debug::TOPIC_BRANCH))
           debug::print("squash tag=%u pc=%u (from %u)\n", brRobTag, actualPC,
@@ -133,7 +124,7 @@ void FlushArbiter::work() {
         BranchSquash.SquashPC = actualPC;
         BranchSquash.SquashTag = brRobTag;
         BranchSquash.CkptId = static_cast<uint32_t>(
-            rob.robCkptId[static_cast<uint32_t>(brRobTag & 0x3F)]);
+            rob.robCkptId[robSlot(brRobTag)]);
       }
     }
     if (BranchSquash.needSquash)
@@ -153,7 +144,7 @@ void FlushArbiter::work() {
         SquashInfo JumpSquash;
         const auto pc = static_cast<uint32_t>(cdb.cdbValue);
         if (pc !=
-            rob.robPredictPC[static_cast<uint32_t>(cdb.cdbRobTag & 0x3F)]) {
+            rob.robPredictPC[robSlot(static_cast<uint32_t>(cdb.cdbRobTag))]) {
           if (debug::enabled(debug::TOPIC_BRANCH))
             debug::print("squash tag=%u pc=%u (jalr)\n",
                          static_cast<uint32_t>(cdb.cdbRobTag), pc);
@@ -161,7 +152,7 @@ void FlushArbiter::work() {
           JumpSquash.SquashPC = pc;
           JumpSquash.SquashTag = static_cast<uint32_t>(cdb.cdbRobTag);
           JumpSquash.CkptId = static_cast<uint32_t>(
-              rob.robCkptId[static_cast<uint32_t>(cdb.cdbRobTag & 0x3F)]);
+              rob.robCkptId[robSlot(static_cast<uint32_t>(cdb.cdbRobTag))]);
         }
         if (JumpSquash.needSquash)
           insertPlain(cur, JumpSquash);
@@ -179,7 +170,7 @@ void FlushArbiter::work() {
       auto lqHead = static_cast<uint32_t>(lq.lqHead);
       bool violationHandled = false;
       for (int k = 0; k < LQ_CAP; ++k) {
-        uint8_t i = (lqHead + k) & 0x0F;
+        uint8_t i = (lqHead + k) & LQ_MASK;
         if (violationHandled)
           continue;
         if (lq.lqActive[i] == 0)
@@ -203,8 +194,8 @@ void FlushArbiter::work() {
             // NOT its predictedPC: load ROB entries carry predictedPC == 0
             // (only INT/BR/UJ issuers assign it), so robPredictPC would
             // squash the machine to address 0 and restart the whole program.
-            viol.SquashPC = static_cast<uint32_t>(rob.robPC[violTag & 0x3F]);
-            viol.CkptId = static_cast<uint32_t>(rob.robCkptId[violTag & 0x3F]);
+            viol.SquashPC = static_cast<uint32_t>(rob.robPC[robSlot(violTag)]);
+            viol.CkptId = static_cast<uint32_t>(rob.robCkptId[robSlot(violTag)]);
             insertPlain(cur, viol);
             violationHandled = true;
           }
