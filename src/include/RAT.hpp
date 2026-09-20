@@ -11,16 +11,17 @@ struct OperandInfo {
 };
 struct RATInput {
   Wire<1> needSquash;
-  Wire<8> SquashCkptId;
+  Wire<CKPT_ID_WIDTH> SquashCkptId;
   Wire<1> issueValid;
-  Wire<7> issuePhy;
+  Wire<PHY_TAG_WIDTH> issuePhy;
   Wire<5> issueDest;
   Wire<1> issueAllocDest;
-  Wire<8> issueCkptId;
+  Wire<CKPT_ID_WIDTH> issueCkptId;
 };
 struct RATInner {
-  std::array<Register<7>, REGISTER_CAP> RAT_PRF;
-  std::array<std::array<Register<7>, REGISTER_CAP>, CKPT_CAP> ratCkpt;
+  std::array<Register<PHY_TAG_WIDTH>, REGISTER_CAP> RAT_PRF;
+  std::array<std::array<Register<PHY_TAG_WIDTH>, REGISTER_CAP>, CKPT_CAP>
+      ratCkpt;
   Register<1> bootDone;
 };
 

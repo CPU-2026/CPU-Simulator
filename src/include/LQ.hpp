@@ -45,7 +45,7 @@ struct LQInputAGU {
 struct LQInputROB {
   Wire<1> isROBEmpty;
   Wire<ROB_TAG_WIDTH> robHeadTag;
-  Wire<7> squashLQTailSnapshot;
+  Wire<LQ_PTR_WIDTH> squashLQTailSnapshot;
   Wire<1> squashTagMatch;
 };
 struct LQInputLoadResp {
@@ -91,8 +91,8 @@ struct LQInput {
 };
 struct LQInner {
   std::array<LQEntry, LQ_CAP> LQqueue;
-  Register<4> head;
-  Register<4> tail;
+  Register<LQ_PTR_WIDTH> head;
+  Register<LQ_PTR_WIDTH> tail;
 };
 class LQ : public dark::Module<LQInput, LQInner> {
   // (2026-09-01) The former private mutators (pushLoad/pop/writeAddress/

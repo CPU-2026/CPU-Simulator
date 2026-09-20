@@ -4,8 +4,8 @@
 #include <array>
 #include <cstdint>
 
-static_assert(IQ_CAP <= 16);   // head/tail use an over-wide 4-bit carrier
-static_assert(CKPT_CAP <= (1 << 6)); // ckptId retains a 6-bit carrier
+static_assert(IQ_CAP == (1 << IQ_PTR_WIDTH));   // head/tail carrier is exact
+static_assert(CKPT_CAP == (1 << CKPT_ID_WIDTH)); // ckptId carrier is exact
 
 class Decoder {
 public:
@@ -22,7 +22,7 @@ struct DecodeInput {
   Wire<32> fqHeadRaw;
   Wire<32> fqHeadPc;
   Wire<32> fqHeadPredictedPC;
-  Wire<6> fqHeadCkptId;
+  Wire<CKPT_ID_WIDTH> fqHeadCkptId;
 };
 
 struct UopEntry {
@@ -38,12 +38,12 @@ struct UopEntry {
   Register<1> isHalt;
   Register<1> allocDest;
   Register<32> predictedPC;
-  Register<6> ckptId;
+  Register<CKPT_ID_WIDTH> ckptId;
 };
 
 struct IQOutput {
-  Register<4> head;
-  Register<4> tail;
+  Register<IQ_PTR_WIDTH> head;
+  Register<IQ_PTR_WIDTH> tail;
 };
 
 struct IQInner {

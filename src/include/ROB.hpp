@@ -25,13 +25,13 @@ struct ROBInputEntry {
   Wire<1> halt;
   Wire<1> isCall;
   Wire<1> isRet;
-  Wire<6> ckptId;
+  Wire<CKPT_ID_WIDTH> ckptId;
   Wire<32> predictedPC;
   Wire<32> pc;
-  Wire<4> lqTailSnapshot;
-  Wire<4> sqTailSnapshot;
-  Wire<7> newPhy;
-  Wire<7> oldPhy;
+  Wire<LQ_PTR_WIDTH> lqTailSnapshot;
+  Wire<SQ_PTR_WIDTH> sqTailSnapshot;
+  Wire<PHY_TAG_WIDTH> newPhy;
+  Wire<PHY_TAG_WIDTH> oldPhy;
 };
 struct ROBInputIssue {
   Wire<1> issueValid;
@@ -66,7 +66,7 @@ struct ROBInputSQ {
   std::array<Wire<1>, SQ_CAP> sqReadyToCommit;
   std::array<Wire<1>, SQ_CAP> sqCommitted;
   std::array<Wire<ROB_TAG_WIDTH>, SQ_CAP> sqRobTag;
-  Wire<4> sqHead;
+  Wire<SQ_PTR_WIDTH> sqHead;
 };
 struct ROBInput {
   ROBInputSquash squash;
@@ -96,13 +96,13 @@ struct ROBOutput {
     std::array<Wire<1>, ROB_CAP> isCommitReady;
     std::array<Wire<1>, ROB_CAP> isCall;
     std::array<Wire<1>, ROB_CAP> isRet;
-    std::array<Wire<6>, ROB_CAP> ckptId;
+    std::array<Wire<CKPT_ID_WIDTH>, ROB_CAP> ckptId;
     std::array<Wire<32>, ROB_CAP> predictedPC;
     std::array<Wire<32>, ROB_CAP> pc;
-    std::array<Wire<4>, ROB_CAP> lqTailSnapshot;
-    std::array<Wire<4>, ROB_CAP> sqTailSnapshot;
-    std::array<Wire<7>, ROB_CAP> newPhy;
-    std::array<Wire<7>, ROB_CAP> oldPhy;
+    std::array<Wire<LQ_PTR_WIDTH>, ROB_CAP> lqTailSnapshot;
+    std::array<Wire<SQ_PTR_WIDTH>, ROB_CAP> sqTailSnapshot;
+    std::array<Wire<PHY_TAG_WIDTH>, ROB_CAP> newPhy;
+    std::array<Wire<PHY_TAG_WIDTH>, ROB_CAP> oldPhy;
   };
   Entry entry;
 };
@@ -116,13 +116,13 @@ struct ROBEntryReg {
   Register<1> halt;
   Register<1> isCall;
   Register<1> isRet;
-  Register<6> ckptId;
+  Register<CKPT_ID_WIDTH> ckptId;
   Register<32> predictedPC;
   Register<32> pc;
-  Register<4> lqTailSnapshot;
-  Register<4> sqTailSnapshot;
-  Register<7> newPhy;
-  Register<7> oldPhy;
+  Register<LQ_PTR_WIDTH> lqTailSnapshot;
+  Register<SQ_PTR_WIDTH> sqTailSnapshot;
+  Register<PHY_TAG_WIDTH> newPhy;
+  Register<PHY_TAG_WIDTH> oldPhy;
 };
 struct ROBInner {
   std::array<ROBEntryReg, ROB_CAP> ROBqueue;

@@ -21,7 +21,7 @@ struct ICacheInput {
   Wire<1> fetchValid;
   Wire<32> fetchPC;
   Wire<32> fetchPredictPC;
-  Wire<6> fetchCkptId;
+  Wire<CKPT_ID_WIDTH> fetchCkptId;
   Wire<1> popConsume;
   LineReturn lineReturn;
 };
@@ -35,7 +35,7 @@ struct ICacheOutput {
     Register<32> raw_inst;
     Register<32> PC;
     Register<32> predictPC;
-    Register<6> ckptId;
+    Register<CKPT_ID_WIDTH> ckptId;
     Register<1> valid;
     Register<1> ready;
   };

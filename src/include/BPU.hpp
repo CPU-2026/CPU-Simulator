@@ -19,8 +19,8 @@ constexpr uint8_t BANKTICK_MAX = 63;
 constexpr uint8_t LFSR_TAPS = 0xB8; // 8-bit Galois taps
 constexpr uint8_t LFSR_SEED = 0xAC;
 // The common-header CKPT_LIVE_MAX guard covers every checkpoint retained in
-// ROB, ICache, FQ, or IQ before an ID can be recycled. Six-bit carriers are
-// intentionally retained while the logical pool uses IDs 0..CKPT_CAP-1.
+// ROB, ICache, FQ, or IQ before an ID can be recycled; CKPT_ID_WIDTH is the
+// exact carrier for the logical pool IDs 0..CKPT_CAP-1.
 // BP update arbitration input: both table-training sources (BRU branch results
 // and CDB JAL/JALR transfers) converge to this single point so that the two
 // update calls keep a fixed order (BRU candidate first) regardless of stage
@@ -28,7 +28,7 @@ constexpr uint8_t LFSR_SEED = 0xAC;
 struct BPUInputSquash {
   Wire<1> needSquash;
   Wire<ROB_TAG_WIDTH> SquashTag;
-  Wire<6> SquashCkpt;
+  Wire<CKPT_ID_WIDTH> SquashCkpt;
 };
 struct BPUInputCDB {
   Wire<1> cdbValid;
@@ -50,7 +50,7 @@ struct BPUInputROB {
   std::array<Wire<32>, ROB_CAP> robPC;
   std::array<Wire<1>, ROB_CAP> robIsCall;
   std::array<Wire<1>, ROB_CAP> robIsRet;
-  std::array<Wire<6>, ROB_CAP> robCkptId;
+  std::array<Wire<CKPT_ID_WIDTH>, ROB_CAP> robCkptId;
 };
 // Fetch-context ports feeding the prediction bundle: the fetch stage hands
 // the predictor the current PC plus the fetch-stall/squash gates; the
@@ -101,7 +101,7 @@ struct BPUOutputFetch {
   Wire<32> predictedPC;
   Wire<1> shift;
   Wire<1> shiftValue;
-  Wire<6> ckptId;
+  Wire<CKPT_ID_WIDTH> ckptId;
   Wire<1> provValid; // a Tn table hit supplied the prediction
   Wire<2> provIdx;   // which table (T1..T4) 0->T1, 1->T2, 2->T3, 3->T4
   Wire<8> provCtr;   // 3b provider counter, zero-extended
@@ -222,7 +222,7 @@ struct BPUInner {
   DirectionPred dir;
   TargetPred tgt;
   std::array<BPUSnapshotReg, CKPT_CAP> bpCkpt;
-  Register<6> nextCkptId;
+  Register<CKPT_ID_WIDTH> nextCkptId;
   Register<1> bootDone; // cycle-0 init: t0=1, useAltOnNa=8
 };
 struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {

@@ -35,7 +35,7 @@ struct MemArbInput {
   // un-ready throw paths are never reached)
   Wire<1> sqEmpty;            // SQModule.isEmpty()
   Wire<ROB_TAG_WIDTH> sqHeadRobTag; // SQModule.headRobTag()
-  Wire<4> sqHead;             // SQModule.getHead() (SQ slot index)
+  Wire<SQ_PTR_WIDTH> sqHead;  // SQModule.getHead() (SQ slot index)
   Wire<2> sqHeadNEnc;         // head n_bytes 2b encoding (0->1B,1->2B,2->4B)
   Wire<32> sqHeadAddr;        // gated: !isEmpty && isAddressReady(head)
   Wire<32> sqHeadValue;       // gated: !isEmpty && isValueReady(head)
@@ -46,7 +46,7 @@ struct MemArbInput {
   // load side (LQ LoadDetect hit; payload gated by loadValid -- LoadDetect
   // only returns address-ready entries)
   Wire<1> loadValid;          // LQModule.LoadDetect() != 0xFFFFFFFF
-  Wire<4> loadIndex;          // hit ? LQ index : 0
+  Wire<LQ_PTR_WIDTH> loadIndex; // hit ? LQ index : 0
   Wire<32> loadAddr;          // gated by loadValid
   Wire<ROB_TAG_WIDTH> loadRobTag; // gated by loadValid
   Wire<1> loadIsSigned;       // gated: !LQModule.getIsUnsigned(idx)
@@ -56,8 +56,9 @@ struct MemArbInput {
   Wire<1> squashNeed;
   Wire<ROB_TAG_WIDTH> squashTag;
 };
-static_assert(SQ_CAP <= 16 && LQ_CAP <= 16,
-              "MemArbInput sqHead/loadIndex use 4-bit slot indexes");
+static_assert(SQ_CAP <= (1 << SQ_PTR_WIDTH) &&
+                  LQ_CAP <= (1 << LQ_PTR_WIDTH),
+              "MemArbInput sqHead/loadIndex use the derived slot widths");
 struct MemArbOutput {
   Wire<1> valid;
   Wire<5> op;       // Operation encoding (0 when idle, verbatim default)
@@ -96,26 +97,27 @@ struct DispatchArbInput {
   // dispatch gate is the unit's own canAccept() (all stage-valid bits and
   // resultValid low) rather than an isFull().
   Wire<1> divAccept; // DIVModule.canAccept()
-  // RS slot-field buses. Physical source tags stay 7b for PRF indexing;
+  // RS slot-field buses. Physical source tags use the derived PHY_TAG_WIDTH
+  // carrier for PRF indexing;
   // ROB identity tags use the packed ROB width. Stale free-slot fields are
   // killed by busy=0.
   std::array<Wire<1>, INTEGERRS_CAP> intBusy;
-  std::array<Wire<7>, INTEGERRS_CAP> intSrc1Tag, intSrc2Tag;
+  std::array<Wire<PHY_TAG_WIDTH>, INTEGERRS_CAP> intSrc1Tag, intSrc2Tag;
   std::array<Wire<ROB_TAG_WIDTH>, INTEGERRS_CAP> intRobTag;
   std::array<Wire<1>, LOADRS_CAP> loadBusy;
-  std::array<Wire<7>, LOADRS_CAP> loadSrc1Tag, loadSrc2Tag;
+  std::array<Wire<PHY_TAG_WIDTH>, LOADRS_CAP> loadSrc1Tag, loadSrc2Tag;
   std::array<Wire<ROB_TAG_WIDTH>, LOADRS_CAP> loadRobTag;
   std::array<Wire<1>, STORERS_CAP> saBusy; // store-addr: single operand
-  std::array<Wire<7>, STORERS_CAP> saSrc1Tag;
+  std::array<Wire<PHY_TAG_WIDTH>, STORERS_CAP> saSrc1Tag;
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> saRobTag;
   std::array<Wire<1>, BRANCHRS_CAP> brBusy;
-  std::array<Wire<7>, BRANCHRS_CAP> brSrc1Tag, brSrc2Tag;
+  std::array<Wire<PHY_TAG_WIDTH>, BRANCHRS_CAP> brSrc1Tag, brSrc2Tag;
   std::array<Wire<ROB_TAG_WIDTH>, BRANCHRS_CAP> brRobTag;
   std::array<Wire<1>, MULTIPLYRS_CAP> mulBusy;
-  std::array<Wire<7>, MULTIPLYRS_CAP> mulSrc1Tag, mulSrc2Tag;
+  std::array<Wire<PHY_TAG_WIDTH>, MULTIPLYRS_CAP> mulSrc1Tag, mulSrc2Tag;
   std::array<Wire<ROB_TAG_WIDTH>, MULTIPLYRS_CAP> mulRobTag;
   std::array<Wire<1>, DIVIDERS_CAP> divBusy;
-  std::array<Wire<7>, DIVIDERS_CAP> divSrc1Tag, divSrc2Tag;
+  std::array<Wire<PHY_TAG_WIDTH>, DIVIDERS_CAP> divSrc1Tag, divSrc2Tag;
   std::array<Wire<ROB_TAG_WIDTH>, DIVIDERS_CAP> divRobTag;
   std::array<Wire<1>, PRF_CAP> prdReady; // PRF ready bitmap bus
   Wire<1> squashNeed;
@@ -155,8 +157,8 @@ private:
   // -- dead logic in RTL since busy slots hold unique tags, kept verbatim).
   template <std::size_t N>
   WinResult selectOldest(const std::array<Wire<1>, N> &busy,
-                         const std::array<Wire<7>, N> &src1Tag,
-                         const std::array<Wire<7>, N> &src2Tag,
+                         const std::array<Wire<PHY_TAG_WIDTH>, N> &src1Tag,
+                         const std::array<Wire<PHY_TAG_WIDTH>, N> &src2Tag,
                           const std::array<Wire<ROB_TAG_WIDTH>, N> &tags) const;
   WinResult aluSelect() const;
   WinResult bruSelect() const;
@@ -190,7 +192,7 @@ struct IssueArbInputDec {
   Wire<1> isHalt;
   Wire<1> allocDest;
   Wire<32> predictedPC;
-  Wire<6> ckptId;
+  Wire<CKPT_ID_WIDTH> ckptId;
 };
 struct IssueArbInputRob {
   Wire<1> isFull;
@@ -211,24 +213,26 @@ struct IssueArbInputRs {
 // ring mechanics.
 struct IssueArbInputPrf {
   Wire<1> freeListEmpty;
-  Wire<7> freePhy;
+  Wire<PHY_TAG_WIDTH> freePhy;
 };
 struct IssueArbInputLsq {
   Wire<1> lqFull, sqFull;
-  Wire<4> lqTail, sqTail;
-  Wire<4> lqTailSnapshot, sqTailSnapshot;
+  Wire<LQ_PTR_WIDTH> lqTail;
+  Wire<SQ_PTR_WIDTH> sqTail;
+  Wire<LQ_PTR_WIDTH> lqTailSnapshot;
+  Wire<SQ_PTR_WIDTH> sqTailSnapshot;
 };
 // Raw RAT operand read; the ready->constant resolve lives in the module
 // (verbatim resolveSrc, gated exactly like the former per-branch call
 // sites because its assert is not superset-safe).
 struct IssueArbOperandView {
   Wire<1> ready;
-  Wire<7> phy;
+  Wire<PHY_TAG_WIDTH> phy;
   Wire<32> value;
 };
 struct IssueArbInputRat {
   IssueArbOperandView s1, s2;
-  Wire<7> rdOldPhy;
+  Wire<PHY_TAG_WIDTH> rdOldPhy;
 };
 struct IssueArbInput {
   IssueArbInputDec dec;
@@ -270,7 +274,7 @@ struct IssueArbInner {
 struct IssueArbOutputCore {
   Wire<1> valid;
   Wire<1> allocDest;
-  Wire<7> phy;
+  Wire<PHY_TAG_WIDTH> phy;
   Wire<ROB_TAG_WIDTH> robTag;
   Wire<1> isLoad, isStore, isControl;
   Wire<3> nBytes; // 0/1/2/4 bytes (LQ/SQ remap to 2b at their wiring)
@@ -288,40 +292,40 @@ struct IssueArbOutputSelect {
 };
 struct IssueArbOutIntP {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
 };
 struct IssueArbOutLoadP {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct IssueArbOutSaP {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct IssueArbOutSvP {
-  Wire<7> dataTag;
+  Wire<PHY_TAG_WIDTH> dataTag;
   Wire<32> dataImm;
   Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct IssueArbOutBrP {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
   Wire<32> imm, pc;
 };
 struct IssueArbOutMulP {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
 };
@@ -329,7 +333,7 @@ struct IssueArbOutMulP {
 // dedicated divideRS pool by issue_Divide in the reference implementation.
 struct IssueArbOutDivP {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
 };
@@ -338,11 +342,12 @@ struct IssueArbOutRobEntry {
   Wire<1> isCommitReady;
   Wire<5> dest;
   Wire<1> halt, isCall, isRet;
-  Wire<6> ckptId;
+  Wire<CKPT_ID_WIDTH> ckptId;
   Wire<32> predictedPC;
   Wire<32> pc;
-  Wire<4> lqTailSnapshot, sqTailSnapshot;
-  Wire<7> newPhy, oldPhy;
+  Wire<LQ_PTR_WIDTH> lqTailSnapshot;
+  Wire<SQ_PTR_WIDTH> sqTailSnapshot;
+  Wire<PHY_TAG_WIDTH> newPhy, oldPhy;
 };
 struct IssueArbOutput {
   IssueArbOutputCore core;

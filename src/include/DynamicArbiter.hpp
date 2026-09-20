@@ -17,7 +17,7 @@ struct FlushRequest {
   // (selectOldest() != nullptr).
   Register<ROB_TAG_WIDTH> SquashTag;
   Register<32> SquashPC;
-  Register<6> CkptId;
+  Register<CKPT_ID_WIDTH> CkptId;
   Register<1> valid;
 };
 
@@ -43,10 +43,10 @@ struct FlushArbiterInputROB {
   std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> robTag;
   std::array<Wire<32>, ROB_CAP> robPredictPC;
   std::array<Wire<32>, ROB_CAP> robPC; // true fetch PC (load entries included)
-  std::array<Wire<6>, ROB_CAP> robCkptId;
+  std::array<Wire<CKPT_ID_WIDTH>, ROB_CAP> robCkptId;
 };
 struct FlushArbiterInputLQ {
-  Wire<8> lqHead;
+  Wire<LQ_PTR_WIDTH> lqHead;
   std::array<Wire<1>, LQ_CAP> lqActive;
   std::array<Wire<1>, LQ_CAP> lqAddressReady;
   std::array<Wire<ROB_TAG_WIDTH>, LQ_CAP> lqRobTags;
@@ -86,7 +86,7 @@ struct FlushArbiterOutput {
   Wire<1> needSquash;
   Wire<ROB_TAG_WIDTH> SquashTag;
   Wire<32> SquashPC;
-  Wire<6> CkptId;
+  Wire<CKPT_ID_WIDTH> CkptId;
 };
 struct FlushArbiter : dark::Module<FlushArbiterInput, FlushArbiterOutput,
                                    FlushArbiterInner>{

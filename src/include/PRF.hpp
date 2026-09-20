@@ -10,7 +10,7 @@ struct PRFEntry {
 struct PRFInputSquash {
   Wire<1> needSquash;
   Wire<ROB_TAG_WIDTH> SquashTag;
-  Wire<8> CkptId;
+  Wire<CKPT_ID_WIDTH> CkptId;
 };
 // Quad-CDB write ports (mirrors the main tree's
 // PRFInput.cdbOfALU/cdbOfLQ/cdbOfMul/cdbOfDiv): the ALU group gates on
@@ -22,39 +22,39 @@ struct PRFInputCDBAlu {
   Wire<32> cdbValue;
   Wire<ROB_TAG_WIDTH> cdbRobTag;
   Wire<1> cdbIsControl;
-  Wire<7> cdbNewPhy;
+  Wire<PHY_TAG_WIDTH> cdbNewPhy;
 };
 struct PRFInputCDBLq {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
   Wire<ROB_TAG_WIDTH> cdbRobTag;
-  Wire<7> cdbNewPhy;
+  Wire<PHY_TAG_WIDTH> cdbNewPhy;
 };
 struct PRFInputCDBMul {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
   Wire<ROB_TAG_WIDTH> cdbRobTag;
-  Wire<7> cdbNewPhy;
+  Wire<PHY_TAG_WIDTH> cdbNewPhy;
 };
 struct PRFInputCDBDiv {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
   Wire<ROB_TAG_WIDTH> cdbRobTag;
-  Wire<7> cdbNewPhy;
+  Wire<PHY_TAG_WIDTH> cdbNewPhy;
 };
 struct PRFInputIssue {
   Wire<1> issueValid;
-  Wire<7> issuePhy;
+  Wire<PHY_TAG_WIDTH> issuePhy;
   Wire<1> issueAllocDest;
   Wire<32> issuePC;
   Wire<1> issueIsControl;
-  Wire<8> issueCkptId;
+  Wire<CKPT_ID_WIDTH> issueCkptId;
 };
 struct PRFInputROB {
   Wire<1> robWillCommit;
   Wire<1> robHeadIsHalt;
   Wire<2> robHeadType;
-  Wire<7> robHeadOldPhy;
+  Wire<PHY_TAG_WIDTH> robHeadOldPhy;
 };
 struct PRFInput {
   PRFInputSquash squash;
@@ -67,7 +67,7 @@ struct PRFInput {
 };
 struct PRFInner {
   std::array<PRFEntry, PRF_CAP> PhysicalRegs;
-  std::array<Register<7>, PRF_CAP> freeList;
+  std::array<Register<PHY_TAG_WIDTH>, PRF_CAP> freeList;
   std::array<Register<PRF_SEQ_WIDTH>, CKPT_CAP> PRFHeadCkpt;
   Register<PRF_SEQ_WIDTH> headSeq;
   Register<PRF_SEQ_WIDTH> tailSeq;

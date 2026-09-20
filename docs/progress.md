@@ -84,7 +84,7 @@
 - `work()` 对应 `always_ff`：读 `_M_old`，计算所有 next-state，每个 Register 保持单写口；不使用提前 `return` 隐藏部分写集。
 - `Wire` 对应 `always_comb`：构造/接线阶段赋一次 lambda，按拍懒求值；组合模块的 `work()` 可以为空。
 - CDB、Mem、Dispatch、Issue 等无状态仲裁器没有 Register。把它们建成 Module 的原因是让 `sync()` 统一清 Wire 缓存，而不是给组合逻辑增加状态。
-- checkpoint 是状态复制，不是普通通信总线。RAT、PRF、BPU 的 checkpoint 数组保留为本地 Register 状态，恢复时逐槽写回。活动 `CKPT_CAP=32`，`CKPT_LIVE_MAX=26` 覆盖 ROB/ICache/FQ/IQ 的全部存活 ID；逻辑 ID 为 5 bit，既有 6/8-bit 运输载体保留。PRF 的 `headSeq/tailSeq/PRFHeadCkpt` 统一为 packed 循环序号（`{epoch,index}`，PRF64 为 7 bit）：写入与恢复都取 canonical 值，恢复距离用 `prfSeqDistance` 校验。
+- checkpoint 是状态复制，不是普通通信总线。RAT、PRF、BPU 的 checkpoint 数组保留为本地 Register 状态，恢复时逐槽写回。活动 `CKPT_CAP=32`，`CKPT_LIVE_MAX=26` 覆盖 ROB/ICache/FQ/IQ 的全部存活 ID；逻辑 ID 与运输载体均为 5 bit（`CKPT_ID_WIDTH`）。PRF 的 `headSeq/tailSeq/PRFHeadCkpt` 统一为 packed 循环序号（`{epoch,index}`，PRF64 为 7 bit）：写入与恢复都取 canonical 值，恢复距离用 `prfSeqDistance` 校验。
 - IMEM/DMEM 的大存储阵列和缓存数据阵列不因模板化而机械变成 Register 阵列；端口、控制状态和拍级握手才进入模块同步模型。
 - 逻辑索引按 CAP 掩码收紧，并以 `static_assert` 守住容量假设；容量缩减后部分接口载体有意保持原宽度，实际有效范围仍由 CAP 限定。
 
@@ -223,8 +223,8 @@ DMEM/DCache 中 `i < n_bytes` 的运行期循环全部改为固定 `i < 4`，`i 
 `prfSeqDistance` 以 index 差加 epoch 对应的 `±PRF_CAP` 重建模 `2*PRF_CAP` 距离，
 因此非 2 次幂容量仍能检出过期 checkpoint，且数据通路全程无乘除。checkpoint 写入
 **分配后的 canonical head**，squash 恢复可与严格更老 head 的同拍 commit 并存。
-PRF33..64 的 seq/checkpoint 载体均为 7 bit，PRF65..128 为 8 bit；phy tag 载体仍保持
-7 bit 以覆盖 P0..P127。
+PRF33..64 的 seq/checkpoint 载体均为 7 bit，PRF65..128 为 8 bit；phy tag 载体为派生
+`PHY_TAG_WIDTH`（当前 P48 为 6 bit）。
 
 非 2 次幂门禁在最终 `CKPT_CAP=32` 配置下完成：P64 主树/模板 Release/模板 `_DEBUG`
 均为 18/18 x10+cycles 对活动 golden；P48 Release 18/18 双树逐拍一致且 `_DEBUG`
@@ -232,6 +232,22 @@ magic/qsort/tak 零断言；P65 重点+快用例 12/12、`_DEBUG` 3/3；P33 的
 magic/qsort/tak 3/3 x10 对 golden且双树 clock 一致（pi 因极限停顿按计划跳过）。
 CKPT32 下 PRF seq/checkpoint 存储为 P33..64 的 238 bit、P65..128 的 272 bit；
 checkpoint 数组深度 64→32 另在 BPU/RAT/PRF 合计节省 10,592 bit。
+
+### 运输载体就紧（PHY_TAG_WIDTH / CKPT_ID_WIDTH / 队列指针）
+
+容量缩减期有意保留的超宽运输载体已按派生宽度收紧：`include/common.h` 新增
+`PHY_TAG_WIDTH = bit_width(PRF_CAP-1)`、`CKPT_ID_WIDTH = bit_width(CKPT_CAP-1)`、
+`FQ/IQ/LQ/SQ_PTR_WIDTH = bit_width(CAP-1)` 及对应 `static_assert`；RAT/PRF/ROB/RS、四条 CDB
+与七个 RS payload 的 phy tag 由 7→6 bit，ckptId 由 6/8→5 bit，FQ/IQ/LQ/SQ 指针及 ROB 的
+LSQ snapshots 收到逻辑宽度（2/2/3/3 bit）。`memIndex` 仍保持 7-bit 编码（store 判别位
+bit6），PRF `{epoch,index}` 序号、RobTag 与 BPU 的 256 回绕计数器同样有意不动
+（回卷代数语义，不是槽索引）。
+
+纯载体收窄，行为等价：模板 Release 18/18 x10+cycles 对 golden；`_DEBUG` 定向
+gcd/magic/qsort/tak/multiarray 全对且零断言；IPC 语料双树（主树 `./code` 与本树 `code`）
+逐例 clock/IPC 逐位一致，cycles 加权 IPC **0.696150**。全模板共省 **1,253 bit** 状态位
+（phy 1,178 + ckpt 33 + 指针/快照 42）。本次同时用当前基线刷新了
+`docs/ipc_benchmarks.md`（旧表为更早容量配置遗留）。
 
 ### 固定容量 FlushArbiter
 

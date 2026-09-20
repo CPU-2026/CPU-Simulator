@@ -6,12 +6,13 @@
 
 // Register-based RS entries (flat, no inheritance): the ReservationStation /
 // AddressRS hierarchy was retired at the RS Register migration. Widths follow
-// the tight-fit discipline: op < 32 (ALU static_assert), phy tag 7b
-// (InvalidPhy=0 sentinel, real tags 1..PRF_CAP-1), robTag ROB_TAG_WIDTH,
+// the tight-fit discipline: op < 32 (ALU static_assert), phy tag
+// PHY_TAG_WIDTH (InvalidPhy=0 sentinel, real tags 1..PRF_CAP-1), robTag
+// ROB_TAG_WIDTH,
 // memIndex 7b (MEM_STORE_BIT + 6b slot). Slot busy bits alone determine
 // validity; robTag has no sentinel value.
 struct RegOperand {
-  Register<7> tag;
+  Register<PHY_TAG_WIDTH> tag;
   Register<32> imm;
 };
 struct IntRS {
@@ -65,40 +66,40 @@ struct RSInputIssueSel {
 // push always allocates). One payload group per RS array.
 struct RSInputIntPayload {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
 };
 struct RSInputLoadPayload {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct RSInputStoreAddrPayload {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct RSInputStoreValuePayload {
-  Wire<7> dataTag;
+  Wire<PHY_TAG_WIDTH> dataTag;
   Wire<32> dataImm;
   Wire<ROB_TAG_WIDTH> robTag;
   Wire<7> memIndex;
 };
 struct RSInputBranchPayload {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
   Wire<32> imm, pc;
 };
 struct RSInputMulPayload {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
 };
@@ -108,7 +109,7 @@ struct RSInputMulPayload {
 // reference drives a separate divideRS payload).
 struct RSInputDivPayload {
   Wire<5> op;
-  Wire<7> s1Tag, s2Tag;
+  Wire<PHY_TAG_WIDTH> s1Tag, s2Tag;
   Wire<32> s1Imm, s2Imm;
   Wire<ROB_TAG_WIDTH> robTag;
 };

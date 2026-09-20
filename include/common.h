@@ -12,6 +12,13 @@ constexpr int LQ_CAP = 8;
 constexpr int SQ_CAP = 8;
 constexpr int LQ_MASK = LQ_CAP - 1;
 constexpr int SQ_MASK = SQ_CAP - 1;
+// Tight hardware carrier widths for the queue pointer domains: each is the
+// smallest field holding 0..CAP-1, and every wrap uses & (CAP-1), so a
+// power-of-two CAP needs exactly bit_width(CAP-1) bits.
+constexpr int LQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(LQ_CAP - 1));
+constexpr int SQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(SQ_CAP - 1));
+static_assert((1u << LQ_PTR_WIDTH) == static_cast<uint32_t>(LQ_CAP));
+static_assert((1u << SQ_PTR_WIDTH) == static_cast<uint32_t>(SQ_CAP));
 constexpr int MEMQ_SCAN_WINDOW = SQ_CAP < 8 ? SQ_CAP : 8;
 constexpr uint8_t MEM_STORE_BIT = 0x40;
 inline bool isStoreMem(uint8_t m) { return (m & MEM_STORE_BIT) != 0; }
@@ -40,6 +47,10 @@ static_assert(ROB_TAG_WIDTH <= 8,
                "RobTag is uint8_t: packed tag must fit in 8 bits");
 constexpr int FQ_CAP = 4;
 constexpr int IQ_CAP = 4;
+constexpr int FQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(FQ_CAP - 1));
+constexpr int IQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(IQ_CAP - 1));
+static_assert((1u << FQ_PTR_WIDTH) == static_cast<uint32_t>(FQ_CAP));
+static_assert((1u << IQ_PTR_WIDTH) == static_cast<uint32_t>(IQ_CAP));
 constexpr int REGISTER_CAP = 32;
 constexpr int FLUSHARBITER_CAP = 4;
 constexpr int ALU_CAP = 4;
@@ -57,12 +68,13 @@ constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
 constexpr int RAS_CAP = 8;
 constexpr int ALIGNQ_CAP = 16;
-#ifndef PRF_CAP_N
-#define PRF_CAP_N 64
-#endif
-static_assert(PRF_CAP_N > REGISTER_CAP && PRF_CAP_N <= 128,
-              "PRF_CAP_N must fit the 7-bit physical-tag domain");
-constexpr uint8_t PRF_CAP = PRF_CAP_N;
+constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
+// Smallest carrier for a physical-register tag: real tags are 1..PRF_CAP-1
+// (P0 is the InvalidPhy sentinel), so bit_width(PRF_CAP-1) bits suffice.
+constexpr int PHY_TAG_WIDTH =
+    std::bit_width(static_cast<uint32_t>(PRF_CAP - 1));
+static_assert(static_cast<uint32_t>(PRF_CAP) <= (1u << PHY_TAG_WIDTH),
+              "physical-tag carrier too narrow for PRF_CAP");
 // Packed free-list sequence = {1-bit epoch, index}. Only indices
 // 0..PRF_CAP-1 are allocated; codes PRF_CAP..PRF_INDEX_MASK are holes.
 // For power-of-two capacities the helpers below reduce exactly to masked
@@ -137,6 +149,11 @@ static_assert(ROB_CAP < (static_cast<uint32_t>(PRF_CAP) << 1),
 inline constexpr int InvalidPhy = 0;
 constexpr int IMEM_CAP = 16;
 constexpr int CKPT_CAP = 32;
+// IDs are 0..CKPT_CAP-1 and CKPT_CAP is a power of two: derived width is exact.
+constexpr int CKPT_ID_WIDTH =
+    std::bit_width(static_cast<uint32_t>(CKPT_CAP - 1));
+static_assert(static_cast<uint32_t>(CKPT_CAP) == (1u << CKPT_ID_WIDTH),
+              "checkpoint carrier must hold every ID exactly");
 constexpr int CACHE_BLOCK_CAP = 16;
 constexpr int CACHE_CAP = 512; // 8KB direct-mapped (512x16B), mirrors main tree
 constexpr int REQUEST_CAP = 4;

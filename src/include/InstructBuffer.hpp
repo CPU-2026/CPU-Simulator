@@ -4,14 +4,14 @@
 #include <array>
 #include <cstdint>
 
-static_assert(FQ_CAP <= 8);    // head/tail use an over-wide 3-bit carrier
-static_assert(CKPT_CAP <= (1 << 6)); // ckptId retains a 6-bit carrier
+static_assert(FQ_CAP == (1 << FQ_PTR_WIDTH));   // head/tail carrier is exact
+static_assert(CKPT_CAP == (1 << CKPT_ID_WIDTH)); // ckptId carrier is exact
 
 struct InstructBufferEntry {
   Register<32> raw;
   Register<32> pc;
   Register<32> predictedPC;
-  Register<6> ckptId;
+  Register<CKPT_ID_WIDTH> ckptId;
 };
 
 struct FQInput {
@@ -21,13 +21,13 @@ struct FQInput {
   Wire<32> icacheReturnRaw;
   Wire<32> icacheReturnPC;
   Wire<32> icacheReturnPredictedPC;
-  Wire<6> icacheReturnCkptId;
+  Wire<CKPT_ID_WIDTH> icacheReturnCkptId;
   Wire<1> decodeFull;
 };
 
 struct FQOutput {
-  Register<3> head;
-  Register<3> tail;
+  Register<FQ_PTR_WIDTH> head;
+  Register<FQ_PTR_WIDTH> tail;
   // Pre-decode observation of the last push (committed next cycle): feeds
   // the BPU's scanner for RAS maintenance / early BTB training.
   Register<1> lastValid;

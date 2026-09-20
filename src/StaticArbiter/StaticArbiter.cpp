@@ -86,8 +86,9 @@ bool DispatchArbiter::readyOf(uint32_t tag) const {
 
 template <std::size_t N>
 DispatchArbiter::WinResult DispatchArbiter::selectOldest(
-    const std::array<Wire<1>, N> &busy, const std::array<Wire<7>, N> &src1Tag,
-    const std::array<Wire<7>, N> &src2Tag,
+    const std::array<Wire<1>, N> &busy,
+    const std::array<Wire<PHY_TAG_WIDTH>, N> &src1Tag,
+    const std::array<Wire<PHY_TAG_WIDTH>, N> &src2Tag,
     const std::array<Wire<ROB_TAG_WIDTH>, N> &tags) const {
   WinResult w{false, 0, 0};
   for (uint32_t i = 0; i < N; ++i) {

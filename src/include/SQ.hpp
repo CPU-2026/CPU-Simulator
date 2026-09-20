@@ -23,7 +23,7 @@ struct SQInputMemDispatch {
   Wire<1> memDispatchIsStore;
 };
 struct SQInputROB {
-  Wire<7> squashSQTailSnapshot;
+  Wire<SQ_PTR_WIDTH> squashSQTailSnapshot;
   Wire<1> squashTagMatch;
   Wire<ROB_TAG_WIDTH> robHeadTag;
   Wire<1> storeWillCommit;
@@ -90,8 +90,8 @@ struct SQOutput {
 
 struct SQInner {
   std::array<SQEntry, SQ_CAP> SQqueue;
-  Register<4> head;
-  Register<4> tail;
+  Register<SQ_PTR_WIDTH> head;
+  Register<SQ_PTR_WIDTH> tail;
 };
 
 struct StoreNotify {
