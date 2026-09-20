@@ -22,6 +22,11 @@ inline Csa3 csa3(uint64_t a, uint64_t b, uint64_t c) {
 inline uint64_t join64(uint32_t hi, uint32_t lo) {
   return (static_cast<uint64_t>(hi) << 32) | lo;
 }
+// Sign-extend a 32-bit bit vector to 64 bits (RV32 signed operand width):
+// the conversion chain is well-defined in C++20 (modulo / two's complement).
+inline uint64_t signExtend32(uint32_t v) {
+  return static_cast<uint64_t>(static_cast<int32_t>(v));
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -126,11 +131,9 @@ void MUL::work() {
   // ---- 3. stage 1 (Booth): latch the newly dispatched op into rows.
   // radix-4 digit rows of the multiplier with unsigned-operand fixups.
   if (dValid) {
-    const int32_t op1 =
-        static_cast<int32_t>(static_cast<uint32_t>(src1Value));
-    const int32_t op2 =
-        static_cast<int32_t>(static_cast<uint32_t>(src2Value));
-    const uint64_t A = static_cast<uint64_t>(op1); // sign-extending: the
+    const uint32_t op1 = static_cast<uint32_t>(src1Value);
+    const uint32_t op2 = static_cast<uint32_t>(src2Value);
+    const uint64_t A = signExtend32(op1); // sign-extending: the
     // positive-digit rows inherit A's sign extension, which the MULH/MULHSU
     // high halves depend on when op1 < 0. Do NOT route through uint32_t
     // (zero extension breaks the high half; LCG gate caught this once).
@@ -138,9 +141,9 @@ void MUL::work() {
                         // negative-digit row (classic Booth neg bits)
     for (int i = 0; i < 16; ++i) {
       // 3-bit window y[2i+1], y[2i], y[2i-1]; row 0 pads y[-1] = 0.
-      const uint32_t triple =
-          (i == 0) ? ((static_cast<uint32_t>(op2) & 0b11) << 1)
-                   : ((static_cast<uint32_t>(op2) >> ((i << 1) - 1)) & 0b111);
+      const uint32_t triple = (i == 0)
+                                  ? ((op2 & 0b11) << 1)
+                                  : ((op2 >> ((i << 1) - 1)) & 0b111);
 
       uint64_t row = 0; // |digit| multiple of A, before the sign handling
       bool neg = false;
@@ -177,18 +180,14 @@ void MUL::work() {
     // full 64-bit domain the one's complement already carries its own sign
     // extension, so no truncated-field repayment row is required beyond
     // the row18 corrections above.
-    const uint64_t signA = (static_cast<uint32_t>(op1) >> 31) & 1;
-    const uint64_t signB = (static_cast<uint32_t>(op2) >> 31) & 1;
+    const uint64_t signA = (op1 >> 31) & 1;
+    const uint64_t signB = (op2 >> 31) & 1;
     const bool isMulhu = (dOp == Operation::MULHU);
     const bool isMulhsu = (dOp == Operation::MULHSU);
     const uint64_t fixup16 =
-        (isMulhu && signA)
-            ? (static_cast<uint64_t>(static_cast<uint32_t>(op2)) << 32)
-            : 0;
+        (isMulhu && signA) ? (static_cast<uint64_t>(op2) << 32) : 0;
     const uint64_t fixup17 =
-        ((isMulhu || isMulhsu) && signB)
-            ? (static_cast<uint64_t>(static_cast<int64_t>(op1)) << 32)
-            : 0;
+        ((isMulhu || isMulhsu) && signB) ? (signExtend32(op1) << 32) : 0;
     partialRes.rows[16].lo <= static_cast<uint32_t>(fixup16);
     partialRes.rows[16].hi <= static_cast<uint32_t>(fixup16 >> 32);
     partialRes.rows[17].lo <= static_cast<uint32_t>(fixup17);
@@ -237,7 +236,7 @@ bool MUL::isEmpty() const {
   return true;
 }
 
-int32_t MUL::headValue() const {
+uint32_t MUL::headValue() const {
   int best = -1;
   for (int i = 0; i < MUL_CAP; i++) {
     if (static_cast<bool>(slotValid[i]) &&
@@ -247,9 +246,7 @@ int32_t MUL::headValue() const {
               static_cast<RobTag>(static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
-  return best >= 0
-             ? static_cast<int32_t>(static_cast<uint32_t>(slots[best].value))
-             : 0;
+  return best >= 0 ? static_cast<uint32_t>(slots[best].value) : 0;
 }
 
 RobTag MUL::headRobTag() const {

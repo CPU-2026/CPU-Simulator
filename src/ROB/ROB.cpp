@@ -52,9 +52,6 @@ void ROB::wire_output() {
     entry.isCommitReady[i] = [this, i]() -> uint32_t {
       return static_cast<bool>(ROBqueue[i].isCommitReady) ? 1u : 0u;
     };
-    entry.isCall[i] = [this, i]() -> uint32_t {
-      return static_cast<bool>(ROBqueue[i].isCall) ? 1u : 0u;
-    };
     entry.isRet[i] = [this, i]() -> uint32_t {
       return static_cast<bool>(ROBqueue[i].isRet) ? 1u : 0u;
     };
@@ -129,6 +126,10 @@ void ROB::work() {
   std::array<bool, ROB_CAP> readyWrite{};
   std::array<bool, ROB_CAP> readyData{};
 
+  // The issue path must gate on fullness: a push into a full ROB silently
+  // overwrites the head entry.
+  dark::debug::assert(!(issueValid && isFull()),
+                      "ROB push into a full ROB overwrites the head entry");
   if (issueValid) {
     const uint32_t q = issueSlot;
     ROBqueue[q].tag <= curNext;
@@ -137,7 +138,6 @@ void ROB::work() {
     readyData[q] = static_cast<bool>(issue.entry.isCommitReady);
     ROBqueue[q].dest <= static_cast<uint32_t>(issue.entry.dest);
     ROBqueue[q].halt <= static_cast<uint32_t>(issue.entry.halt);
-    ROBqueue[q].isCall <= static_cast<uint32_t>(issue.entry.isCall);
     ROBqueue[q].isRet <= static_cast<uint32_t>(issue.entry.isRet);
     ROBqueue[q].ckptId <= static_cast<uint32_t>(issue.entry.ckptId);
     ROBqueue[q].predictedPC <= static_cast<uint32_t>(issue.entry.predictedPC);

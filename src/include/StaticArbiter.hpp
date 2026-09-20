@@ -341,7 +341,7 @@ struct IssueArbOutRobEntry {
   Wire<2> type;
   Wire<1> isCommitReady;
   Wire<5> dest;
-  Wire<1> halt, isCall, isRet;
+  Wire<1> halt, isRet;
   Wire<CKPT_ID_WIDTH> ckptId;
   Wire<32> predictedPC;
   Wire<32> pc;

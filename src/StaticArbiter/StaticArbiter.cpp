@@ -562,7 +562,8 @@ void IssueArbiter::wire_output() {
                  ? 1u
                  : 0u;
     case 2u: // HALT
-      return 2u;
+      // HALT still consumes a ROB slot: never push into a full ROB.
+      return !robFull ? 2u : 0u;
     case 3u: // LOAD
       return (!robFull && !static_cast<bool>(lsq.lqFull) &&
               static_cast<bool>(loadFree) &&
@@ -584,7 +585,8 @@ void IssueArbiter::wire_output() {
                  ? 6u
                  : 0u;
     case 7u: // RV_INVALID
-      return 7u;
+      // The invalid row still consumes a ROB slot: never push when full.
+      return !robFull ? 7u : 0u;
     case 8u: // MUL (issue_Multiply: funct3 0..3)
       return (!robFull && static_cast<bool>(mulFree) &&
               (!static_cast<bool>(dec.allocDest) ||
@@ -1015,14 +1017,6 @@ void IssueArbiter::wire_output() {
   };
   robEntry.halt = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 2u ? 1u : 0u;
-  };
-  robEntry.isCall = [this]() -> uint32_t {
-    // JAL with return address register
-    return (static_cast<uint32_t>(win) == 6u &&
-            static_cast<bool>(ujIsControl) &&
-            static_cast<uint32_t>(dec.rd) == 1u)
-               ? 1u
-               : 0u;
   };
   robEntry.isRet = [this]() -> uint32_t {
     // JALR x0, 0(x1): return

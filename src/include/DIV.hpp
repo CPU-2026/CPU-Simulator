@@ -52,7 +52,7 @@ struct DIVInner {
   Register<32> unsignedDividend; // |x|, raw at receive / <<clzX after prepare
 };
 struct DIV : dark::Module<DIVInput, DIVOutput, DIVInner> {
-  void receive(int32_t op1, int32_t op2, RobTag tag, Operation op);
+  void receive(uint32_t op1, uint32_t op2, RobTag tag, Operation op);
   void prepare();
   void loop();
   void calculateResult();
@@ -67,26 +67,28 @@ struct DIV : dark::Module<DIVInput, DIVOutput, DIVInner> {
            !static_cast<bool>(resultValid);
   }
   RobTag getResultRobtag() const { return static_cast<uint32_t>(robTag); }
-  int32_t getValue() const {
-    if (static_cast<uint32_t>(operationType) == static_cast<uint32_t>(Operation::DIV)) {
-      if (static_cast<bool>(isResultNegative)) {
-        return -static_cast<int32_t>(static_cast<uint32_t>(quotient));
-      } else {
-        return static_cast<int32_t>(static_cast<uint32_t>(quotient));
-      }
+  uint32_t getValue() const {
+    // Results are uint32 bit vectors. The sign fixups run on uint32 so that
+    // INT32_MIN never invokes host signed negate UB (no -fwrapv).
+    if (static_cast<uint32_t>(operationType) ==
+        static_cast<uint32_t>(Operation::DIV)) {
+      return static_cast<bool>(isResultNegative)
+                 ? 0u - static_cast<uint32_t>(quotient)
+                 : static_cast<uint32_t>(quotient);
     }
-    if (static_cast<uint32_t>(operationType) == static_cast<uint32_t>(Operation::DIVU)) {
-      return static_cast<int32_t>(static_cast<uint32_t>(quotient));
+    if (static_cast<uint32_t>(operationType) ==
+        static_cast<uint32_t>(Operation::DIVU)) {
+      return static_cast<uint32_t>(quotient);
     }
-    if (static_cast<uint32_t>(operationType) == static_cast<uint32_t>(Operation::REM)) {
-      if (static_cast<bool>(isDividendNegative)) {
-        return -static_cast<int32_t>(static_cast<uint32_t>(remain));
-      } else {
-        return static_cast<int32_t>(static_cast<uint32_t>(remain));
-      }
+    if (static_cast<uint32_t>(operationType) ==
+        static_cast<uint32_t>(Operation::REM)) {
+      return static_cast<bool>(isDividendNegative)
+                 ? 0u - static_cast<uint32_t>(remain)
+                 : static_cast<uint32_t>(remain);
     }
-    if (static_cast<uint32_t>(operationType) == static_cast<uint32_t>(Operation::REMU)) {
-      return static_cast<int32_t>(static_cast<uint32_t>(remain));
+    if (static_cast<uint32_t>(operationType) ==
+        static_cast<uint32_t>(Operation::REMU)) {
+      return static_cast<uint32_t>(remain);
     }
     throw std::runtime_error("not DIV operation!");
   }
