@@ -39,8 +39,8 @@ public:
   // working
   bool isFull() const;
   bool isEmpty() const;
-  int32_t headPCFrom() const;
-  int32_t headPCResult() const;
+  uint32_t headPCFrom() const;
+  uint32_t headPCResult() const;
   RobTag headRobTag() const;
   void work() override;
 };

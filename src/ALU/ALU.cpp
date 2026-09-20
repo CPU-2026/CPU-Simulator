@@ -3,9 +3,15 @@
 #include <cstdint>
 
 namespace {
-int32_t evaluate(Operation op, int32_t op1, int32_t op2) {
+uint32_t evaluate(Operation op, uint32_t op1, uint32_t op2) {
+  // Operands and the result are uint32 bit vectors (RTL semantics).
+  // Signedness is selected by the instruction: only SLT/SLTI and SRA
+  // interpret the operand as int32_t; every other op is pure bit-vector
+  // arithmetic.
   if (isControlOp(op))
-    return op1 + op2;
+    // JALR clears the target's bit 0 (RISC-V: (rs1 + imm) & ~1). J-type
+    // imm bit0 is always 0, so the same mask is harmless for JAL.
+    return (op1 + op2) & 0xFFFFFFFEu;
   switch (op) {
   case Operation::ADD:
   case Operation::AUIPC:
@@ -19,15 +25,16 @@ int32_t evaluate(Operation op, int32_t op1, int32_t op2) {
   case Operation::AND:
     return op1 & op2;
   case Operation::SL:
-    return static_cast<int32_t>(static_cast<uint32_t>(op1) << (op2 & 0x1F));
+    return op1 << (op2 & 0x1F);
   case Operation::SRL:
-    return static_cast<int32_t>(static_cast<uint32_t>(op1) >> (op2 & 0x1F));
-  case Operation::SRA:
     return op1 >> (op2 & 0x1F);
+  case Operation::SRA:
+    // C++20: right shift of a negative signed value is arithmetic.
+    return static_cast<uint32_t>(static_cast<int32_t>(op1) >> (op2 & 0x1F));
   case Operation::SLT:
-    return op1 < op2 ? 1 : 0;
+    return static_cast<int32_t>(op1) < static_cast<int32_t>(op2) ? 1u : 0u;
   case Operation::SLTU:
-    return static_cast<uint32_t>(op1) < static_cast<uint32_t>(op2) ? 1 : 0;
+    return op1 < op2 ? 1u : 0u;
   case Operation::LUI:
     return op2;
   default:
@@ -50,7 +57,7 @@ bool ALU::isEmpty() const {
   return true;
 }
 
-int32_t ALU::headValue() const {
+uint32_t ALU::headValue() const {
   int best = -1;
   for (int i = 0; i < ALU_CAP; i++) {
     if (static_cast<bool>(slotValid[i]) &&
@@ -61,8 +68,7 @@ int32_t ALU::headValue() const {
                   static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
-  return best >= 0 ?
-             static_cast<int32_t>(static_cast<uint32_t>(slots[best].value)) : 0;
+  return best >= 0 ? static_cast<uint32_t>(slots[best].value) : 0;
 }
 
 RobTag ALU::headRobTag() const {
@@ -122,9 +128,8 @@ void ALU::work() {
   // flushed after push had overwritten the payload)
   const bool pushFlushed = squash && !ROB::isOlder(dTag, squashTag);
 
-  const int32_t v = evaluate(
-      dOp, static_cast<int32_t>(static_cast<uint32_t>(src1Value)),
-      static_cast<int32_t>(static_cast<uint32_t>(src2Value)));
+  const uint32_t v = evaluate(dOp, static_cast<uint32_t>(src1Value),
+                              static_cast<uint32_t>(src2Value));
 
   // single-assignment convergence: push/remove/flush all land on one final
   // value per slot; priority flush > remove > keep, push only into dead slots
@@ -135,7 +140,7 @@ void ALU::work() {
     const bool flushed = squash && old_v && !ROB::isOlder(tag_i, squashTag);
     const bool here = pushHere && i == target;
     if (here) {
-      slots[i].value <= static_cast<uint32_t>(v);
+      slots[i].value <= v;
       slots[i].robTag <= dTag;
       slots[i].isControl <= isControlOp(dOp);
     }

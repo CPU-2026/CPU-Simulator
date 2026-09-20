@@ -38,7 +38,7 @@ public:
   // so unconverted consumers (LQ/SQ/MemRequestArbiter/FlushArbiter) keep working
   bool isFull() const;
   bool isEmpty() const;
-  int32_t headValue() const;
+  uint32_t headValue() const;
   RobTag headRobTag() const;
   uint8_t headMemIndex() const;
   void work() override;

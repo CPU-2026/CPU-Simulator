@@ -24,7 +24,7 @@
 | CPU 运行时 | 模块按值归 `CPU` 所有，以非拥有指针注册到 `dark::CPU`，每拍调用 `run_once()` |
 | 旧机制 | `comb()`、`tick()`、模块快照成员和周期性 `memcpy` 已退出模板树 |
 | 执行/写回 | ALU、LQ、MUL、DIV 四路独立结果总线；MUL 与 DIV 有专用 RS 和派发通道 |
-| 分支预测 | Tournament：local/global/selector 各 256×2b，16-bit GHR；目标侧 BTB64/BHT256/TargetCache32/RAS8/SARAS16/condSeen512 |
+| 分支预测 | Tournament：local/global/selector 各 256×2b，16-bit GHR；目标侧 BTB64/RAS8/SARAS16/condSeen512（BHT/Target Cache 已删除） |
 | 恢复 | ROB tag、checkpoint、FlushArbiter 和各模块本地恢复状态共同完成整窗 squash |
 | 验证 | 双树 `x10` 与等价改动的 `clock` 对拍，加 Release、`_DEBUG` 单写断言和基准表核验 |
 
@@ -200,6 +200,16 @@ A/B 使用同一架构与语料，只改变条件方向是否受 BTB hit 门控�
 `x10` 和 clock 全部逐项一致，总 cycles **12,237,892**，加权 IPC **0.553703**，分支
 正确率 **93.8367%（1,307,716 / 1,393,609）**；独立 IPC 语料 **6/6** 逐项一致。
 
+### 2026-09-20：间接目标缓存删除
+
+方向侧改用 Tournament 后，BHT256 与 TargetCache32（及 `isCall/isIndirect` BTB 元数据）只彼此
+服务。两套活动语料（18 例 + IPC 6 例）中 JALR 全部是返回或调用，唯一真间接站点是 `towers`
+的 `auipc + jalr x0, -924(x6)`，目标固定，TC 与 BTB last-target 相同；收益不可观测，遂按
+面积/效率权衡删除。模板 Register 状态再省 **3,104 bit**（BHT 2,048 + TC 1,024 + valid 32），
+完整 BPU 由 **12,558 bit** 降至 **9,454 bit**（相对 TAGE 基线 24,357 bit 为 −61.19%）。
+`Plan` 的 `T_BHT/T_TC/T_TCV/T_BTB_CALL/T_BTB_IND` 与 ROB `isCall` 链路一并删除；
+主树与模板树 Release 18/18 x10+clock 逐位一致，IPC 6/6 不变。
+
 ### FlushArbiter needSquash
 
 四个请求槽删除了逐槽 `needSquash` Register。BRU、CDB、AGU 三条插入路径只会插入真实 squash，
@@ -288,7 +298,7 @@ TAGE 表更新来源并收紧容器，但 `mergeIn` 的来源遍历、嵌套查�
 
 目标改写是按资源拆成固定写意图与 valid/one-hot enable，或至少固定 32 路遍历并以 valid
 门控，复用 ROB ready 位图的“固定归约、唯一写回”原则。改动必须同时守住：合并优先级
-`fi > cdb > bru`、BHT 同槽碰撞修正、BTB 更新的既定覆盖顺序、每个物理 Register 单写，
+`fi > cdb > bru`、BTB 更新的既定覆盖顺序、每个物理 Register 单写，
 以及两个训练口共享周期初旧快照。若机械展开 32×32 查重网络代价过大，应改为按表资源直接
 仲裁，而不是保留运行期循环。
 

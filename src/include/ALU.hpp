@@ -36,7 +36,7 @@ public:
   // stateless arbiters' CPU-side input wiring
   bool isFull() const;
   bool isEmpty() const;
-  int32_t headValue() const;
+  uint32_t headValue() const;
   RobTag headRobTag() const;
   bool headIsControl() const;
   void work() override;

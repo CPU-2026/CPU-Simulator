@@ -34,7 +34,6 @@ struct BPUInputROB {
   std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> robTag;
   std::array<Wire<32>, ROB_CAP> robPredictPC;
   std::array<Wire<32>, ROB_CAP> robPC;
-  std::array<Wire<1>, ROB_CAP> robIsCall;
   std::array<Wire<1>, ROB_CAP> robIsRet;
   std::array<Wire<CKPT_ID_WIDTH>, ROB_CAP> robCkptId;
 };
@@ -113,9 +112,7 @@ struct BTBEntryReg {
   Register<32> target;
   Register<1> valid;
   Register<1> unconditional;
-  Register<1> isCall;
   Register<1> isRet;
-  Register<1> isIndirect;
 };
 // Register-storage mirror of the plain BPUSnapshot (comb-domain).
 struct BPUSnapshotReg {
@@ -140,9 +137,6 @@ struct DirectionPred {
 // ring counters are uint8_t and wrap at 256, well beyond the current
 // ROB_CAP=16 and local queue capacities (ALIGNQ_CAP=16/RAS_CAP=8).
 struct TargetPred {
-  std::array<Register<8>, BHT_CAP> BHT;
-  std::array<Register<32>, TARGETCACHE_CAP> TargetCache;
-  std::array<Register<1>, TARGETCACHE_CAP> TargetValid;
   std::array<BTBEntryReg, BTB_CAP> BTB;
   std::array<RASEntry, RAS_CAP> RAS;
   Register<8> RAS_top; // ring write pointer (wraps at 256)

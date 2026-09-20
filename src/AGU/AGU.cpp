@@ -16,7 +16,7 @@ bool AGU::isEmpty() const {
   return true;
 }
 
-int32_t AGU::headValue() const {
+uint32_t AGU::headValue() const {
   int best = -1;
   for (int i = 0; i < AGU_CAP; i++) {
     if (static_cast<bool>(slotValid[i]) &&
@@ -27,8 +27,7 @@ int32_t AGU::headValue() const {
                   static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
-  return best >= 0 ?
-             static_cast<int32_t>(static_cast<uint32_t>(slots[best].value)) : 0;
+  return best >= 0 ? static_cast<uint32_t>(slots[best].value) : 0;
 }
 
 RobTag AGU::headRobTag() const {
@@ -87,9 +86,11 @@ void AGU::work() {
   // flushed after push had overwritten the payload)
   const bool pushFlushed = squash && !ROB::isOlder(dTag, squashTag);
 
-  const uint32_t v = static_cast<uint32_t>(
-      static_cast<int32_t>(static_cast<uint32_t>(src1Value)) +
-      static_cast<int32_t>(static_cast<uint32_t>(src2Value)));
+  // The redundant int32_t adds above the outer cast used to be evaluated
+  // first and could overflow int32_t (host UB). Plain uint32 add wraps
+  // by definition.
+  const uint32_t v =
+      static_cast<uint32_t>(src1Value) + static_cast<uint32_t>(src2Value);
   const uint32_t dMem = static_cast<uint32_t>(memIndex);
 
   // single-assignment convergence: push/removeHead/flush all land on one

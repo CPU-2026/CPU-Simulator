@@ -23,7 +23,6 @@ struct ROBInputEntry {
   Wire<1> isCommitReady;
   Wire<5> dest;
   Wire<1> halt;
-  Wire<1> isCall;
   Wire<1> isRet;
   Wire<CKPT_ID_WIDTH> ckptId;
   Wire<32> predictedPC;
@@ -94,7 +93,6 @@ struct ROBOutput {
   struct Entry {
     std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> tag;
     std::array<Wire<1>, ROB_CAP> isCommitReady;
-    std::array<Wire<1>, ROB_CAP> isCall;
     std::array<Wire<1>, ROB_CAP> isRet;
     std::array<Wire<CKPT_ID_WIDTH>, ROB_CAP> ckptId;
     std::array<Wire<32>, ROB_CAP> predictedPC;
@@ -114,7 +112,6 @@ struct ROBEntryReg {
   Register<1> isCommitReady;
   Register<5> dest;
   Register<1> halt;
-  Register<1> isCall;
   Register<1> isRet;
   Register<CKPT_ID_WIDTH> ckptId;
   Register<32> predictedPC;

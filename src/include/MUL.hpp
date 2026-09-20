@@ -41,7 +41,7 @@ struct MulInner {
 struct MUL : dark::Module<MulInput, MulOutput, MulInner> {
   bool isFull() const;
   bool isEmpty() const;
-  int32_t headValue() const;
+  uint32_t headValue() const;
   RobTag headRobTag() const;
   void work() override;
 };

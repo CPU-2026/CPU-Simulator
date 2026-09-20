@@ -37,7 +37,7 @@ bool BRU::isEmpty() const {
   return true;
 }
 
-int32_t BRU::headPCFrom() const {
+uint32_t BRU::headPCFrom() const {
   int best = -1;
   for (int i = 0; i < BRU_CAP; i++) {
     if (static_cast<bool>(slotValid[i]) &&
@@ -48,11 +48,10 @@ int32_t BRU::headPCFrom() const {
                   static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
-  return best >= 0 ?
-             static_cast<int32_t>(static_cast<uint32_t>(slots[best].pcFrom)) : 0;
+  return best >= 0 ? static_cast<uint32_t>(slots[best].pcFrom) : 0;
 }
 
-int32_t BRU::headPCResult() const {
+uint32_t BRU::headPCResult() const {
   int best = -1;
   for (int i = 0; i < BRU_CAP; i++) {
     if (static_cast<bool>(slotValid[i]) &&
@@ -63,8 +62,7 @@ int32_t BRU::headPCResult() const {
                   static_cast<uint32_t>(slots[best].robTag)))))
       best = i;
   }
-  return best >= 0 ? static_cast<int32_t>(
-                         static_cast<uint32_t>(slots[best].pcResult)) : 0;
+  return best >= 0 ? static_cast<uint32_t>(slots[best].pcResult) : 0;
 }
 
 RobTag BRU::headRobTag() const {
@@ -106,18 +104,17 @@ void BRU::work() {
   // a freshly pushed entry is flushed by judging its NEW tag
   const bool pushFlushed = squash && !ROB::isOlder(dTag, squashTag);
 
-  const int32_t s1 =
-      static_cast<int32_t>(static_cast<uint32_t>(src1Value));
-  const int32_t s2 =
-      static_cast<int32_t>(static_cast<uint32_t>(src2Value));
+  // Signed compare only for the LT/GE classes: the bit vector is
+  // interpreted as int32_t there; LTU/GEU compare the raw 32-bit patterns.
+  const int32_t s1 = static_cast<int32_t>(static_cast<uint32_t>(src1Value));
+  const int32_t s2 = static_cast<int32_t>(static_cast<uint32_t>(src2Value));
   // pc/imm are inherited Input wires; no shadowing locals
-  const int32_t pcV = static_cast<int32_t>(static_cast<uint32_t>(pc));
-  const int32_t immV = static_cast<int32_t>(static_cast<uint32_t>(imm));
+  const uint32_t pcV = static_cast<uint32_t>(pc);
+  const uint32_t immV = static_cast<uint32_t>(imm);
   const auto dOp = static_cast<Operation>(static_cast<uint32_t>(op));
 
-  const uint32_t from = static_cast<uint32_t>(pcV);
-  const uint32_t to =
-      static_cast<uint32_t>(branchTaken(dOp, s1, s2) ? pcV + immV : pcV + 4);
+  const uint32_t from = pcV;
+  const uint32_t to = branchTaken(dOp, s1, s2) ? pcV + immV : pcV + 4u;
 
   // single-assignment convergence: push/removeHead/flush all land on one
   // final value per slot; priority flush > removeHead > keep, push only into

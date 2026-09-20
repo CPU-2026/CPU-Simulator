@@ -1,5 +1,5 @@
 #pragma once
-#include "../include/common.h"
+#include "common.h"
 #include "module.h"
 #include "tools.h"
 #include <array>

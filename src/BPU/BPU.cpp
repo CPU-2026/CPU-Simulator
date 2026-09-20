@@ -27,9 +27,6 @@ struct Snap {
   bool condSeen(uint32_t i) const {
     return static_cast<bool>(st->tgt.condSeen[i]);
   }
-  uint32_t BHT(uint32_t i) const {
-    return static_cast<uint32_t>(st->tgt.BHT[i]);
-  }
   bool BTBValid(uint32_t i) const {
     return static_cast<bool>(st->tgt.BTB[i].valid);
   }
@@ -42,20 +39,8 @@ struct Snap {
   bool BTBUncond(uint32_t i) const {
     return static_cast<bool>(st->tgt.BTB[i].unconditional);
   }
-  bool BTBCall(uint32_t i) const {
-    return static_cast<bool>(st->tgt.BTB[i].isCall);
-  }
   bool BTBRet(uint32_t i) const {
     return static_cast<bool>(st->tgt.BTB[i].isRet);
-  }
-  bool BTBIndirect(uint32_t i) const {
-    return static_cast<bool>(st->tgt.BTB[i].isIndirect);
-  }
-  bool TargetValid(uint32_t i) const {
-    return static_cast<bool>(st->tgt.TargetValid[i]);
-  }
-  uint32_t TargetCache(uint32_t i) const {
-    return static_cast<uint32_t>(st->tgt.TargetCache[i]);
   }
   uint16_t ghr() const { return static_cast<uint32_t>(st->dir.GHR); }
 };
@@ -65,9 +50,7 @@ struct TrainReq {
   bool valid = false;
   bool isJump = false;  // updateJump vs update
   bool taken = false;
-  bool isCall = false;
   bool isRet = false;
-  bool isIndirect = false;  // main-tree Cand never sets it on either port
   uint32_t pc = 0;
   uint32_t target = 0;
   uint16_t ghr = 0;
@@ -83,12 +66,7 @@ enum TabKind : uint8_t {
   T_BTB_TGT,
   T_BTB_V,
   T_BTB_UN,
-  T_BTB_CALL,
   T_BTB_RET,
-  T_BTB_IND,
-  T_BHT,
-  T_TC,
-  T_TCV,
 };
 struct TabEntry {
   uint8_t kind;
@@ -98,26 +76,14 @@ struct TabEntry {
 struct Plan {
   TabEntry tab[32];
   uint32_t nTab = 0;
-  bool bht_we = false;
-  uint16_t bht_idx = 0;
-  uint32_t bht_val = 0;
-  uint8_t bht_tabIdx = 0;  // tab slot of this port's T_BHT (RMW fixup)
   void put(uint8_t kind, uint32_t idx, uint32_t val) {
     dark::debug::assert(nTab < 32, "plan overflow: raise Plan::tab");
     if (nTab >= 32) return;
-    if (kind == T_BHT) {
-      // Mirror for the per-port BHT collision check (each port puts one
-      // T_BHT). `merged` may hold two, so no uniqueness assert here.
-      bht_we = true;
-      bht_idx = idx;
-      bht_val = val;
-      bht_tabIdx = static_cast<uint8_t>(nTab);  // slot this entry occupies
-    }
     tab[nTab++] = {kind, static_cast<uint16_t>(idx), val};
   }
 };
-// Per-port bounds: fetch-info <=6, conditional BRU <=12, jump CDB <=10.
-static_assert(6 + 12 + 10 <= 32, "merged plan worst case must fit Plan::tab");
+// Per-port worst cases: fetch-info <=5, conditional BRU <=9, jump CDB <=6.
+static_assert(5 + 9 + 6 <= 32, "merged plan worst case must fit Plan::tab");
 
 // ---- update: pure function, reads snap, fills a plan, zero `<=`.
 //      BRU port may set ghr/ras; CDB port is commit (tables only). ----
@@ -159,16 +125,12 @@ Plan updatePlan(const Snap &snap, const TrainReq &req) {
     p.put(T_BTB_TGT, BTB_index, req.target);
     p.put(T_BTB_V, BTB_index, 1);
     p.put(T_BTB_UN, BTB_index, 0);
-    p.put(T_BTB_CALL, BTB_index, 0);
     p.put(T_BTB_RET, BTB_index, 0);
-    p.put(T_BTB_IND, BTB_index, 0);
   }
-  uint32_t bhr = snap.BHT(p2 & (BHT_CAP - 1));
-  p.put(T_BHT, p2 & (BHT_CAP - 1), ((bhr << 1) | (req.taken ? 1 : 0)) & 0xFF);
   return p;
 }
 
-Plan updateJumpPlan(const Snap &snap, const TrainReq &req) {
+Plan updateJumpPlan(const TrainReq &req) {
   Plan p;
   const uint32_t p2 = req.pc >> 2;
   auto BTB_index = p2 & (BTB_CAP - 1);
@@ -176,22 +138,7 @@ Plan updateJumpPlan(const Snap &snap, const TrainReq &req) {
   p.put(T_BTB_TGT, BTB_index, req.target);
   p.put(T_BTB_V, BTB_index, 1);
   p.put(T_BTB_UN, BTB_index, 1);
-  p.put(T_BTB_CALL, BTB_index, req.isCall ? 1 : 0);
   p.put(T_BTB_RET, BTB_index, req.isRet ? 1 : 0);
-  // main tree writes the isIndirect PARAM (the CDB candidate never sets it,
-  // so committed jumps always train ind=0); the hardcoded 1 diverged hanoi.
-  p.put(T_BTB_IND, BTB_index, req.isIndirect ? 1u : 0u);
-
-  const uint32_t bhr = snap.BHT(p2 & (BHT_CAP - 1));
-  // main tree gates Target-Cache training on isIndirect too (never set on the
-  // CDB candidate -> never trained); verbatim equivalence.
-  if (req.isIndirect && req.isCall == false &&
-      req.isRet == false) {  // true indirect
-    const uint32_t tcHash = (p2 ^ bhr) & (TARGETCACHE_CAP - 1);
-    p.put(T_TC, tcHash, req.target);
-    p.put(T_TCV, tcHash, 1);
-  }
-  p.put(T_BHT, p2 & (BHT_CAP - 1), ((bhr << 1) | 1) & 0xFF);
   return p;
 }
 
@@ -218,11 +165,6 @@ PredictInfo BPU::predict(int32_t pc) const {
                  snap.BTBActualPC(BTB_index) == static_cast<uint32_t>(pc);
   bool taken = btbHit && directionTaken;
   if (btbHit && snap.BTBUncond(BTB_index)) taken = true;
-  const uint32_t bhr = snap.BHT(p2 & (BHT_CAP - 1));
-  const uint32_t tcHash = (p2 ^ bhr) & (TARGETCACHE_CAP - 1);
-  const bool tcUsable = btbHit && snap.BTBIndirect(BTB_index) &&
-                        !snap.BTBCall(BTB_index) && !snap.BTBRet(BTB_index) &&
-                        snap.TargetValid(tcHash);
   // RET with empty RAS: don't use BTB target 0, treat as not taken (wild fetch
   // fix)
   bool isRet = snap.BTBRet(BTB_index);
@@ -231,14 +173,13 @@ PredictInfo BPU::predict(int32_t pc) const {
     btbHit = false;
     taken = false;
   }
-  int32_t predictPC = pc + 4;
+  // uint32 bit-vector add: signed int32_t add past the range is host UB.
+  int32_t predictPC = static_cast<int32_t>(static_cast<uint32_t>(pc) + 4u);
   if (taken && btbHit) {
     if (isRet && static_cast<uint32_t>(tgt.RAS_top) > 0)
       predictPC = static_cast<int32_t>(static_cast<uint32_t>(
           tgt.RAS[(static_cast<uint32_t>(tgt.RAS_top) - 1) & (RAS_CAP - 1)]
               .retPC));
-    else if (tcUsable)
-      predictPC = static_cast<int32_t>(snap.TargetCache(tcHash));
     else
       predictPC = static_cast<int32_t>(snap.BTBTarget(BTB_index));
   }
@@ -365,7 +306,6 @@ void BPU::work() {
       trCdb.isJump = true;
       trCdb.pc = static_cast<uint32_t>(rob.robPC[robIdx]);
       trCdb.target = pc;
-      trCdb.isCall = static_cast<bool>(rob.robIsCall[robIdx]);
       trCdb.isRet = static_cast<bool>(rob.robIsRet[robIdx]);
     }
   }
@@ -374,8 +314,8 @@ void BPU::work() {
   Plan p_bru, p_cdb;
   if (trBru.valid)
     p_bru =
-        trBru.isJump ? updateJumpPlan(snap, trBru) : updatePlan(snap, trBru);
-  if (trCdb.valid) p_cdb = updateJumpPlan(snap, trCdb);
+        trBru.isJump ? updateJumpPlan(trBru) : updatePlan(snap, trBru);
+  if (trCdb.valid) p_cdb = updateJumpPlan(trCdb);
 
   // ---- fetch allocation (BRU-port speculative: bpCkpt/GHR/nextCkptId) ----
   uint16_t ghrLocal = snap.ghr();
@@ -454,14 +394,10 @@ void BPU::work() {
       p_fi.put(T_BTB_APC, BTB_index, static_cast<uint32_t>(fetchInfo.FetchPC));
       p_fi.put(T_BTB_V, BTB_index, 1);
       p_fi.put(T_BTB_UN, BTB_index, 1);
-      p_fi.put(T_BTB_CALL, BTB_index,
-               static_cast<bool>(fetchInfo.isFetchCall) ? 1 : 0);
       p_fi.put(T_BTB_RET, BTB_index, 0);
       if (static_cast<bool>(fetchInfo.FetchJALTargetValid))
         p_fi.put(T_BTB_TGT, BTB_index,
                  static_cast<uint32_t>(fetchInfo.FetchJALTarget));
-      else
-        p_fi.put(T_BTB_IND, BTB_index, 1);
     }
     if (static_cast<bool>(fetchInfo.isFetchRet)) {
       auto BTB_index =
@@ -469,7 +405,6 @@ void BPU::work() {
       p_fi.put(T_BTB_APC, BTB_index, static_cast<uint32_t>(fetchInfo.FetchPC));
       p_fi.put(T_BTB_V, BTB_index, 1);
       p_fi.put(T_BTB_UN, BTB_index, 1);
-      p_fi.put(T_BTB_CALL, BTB_index, 0);
       p_fi.put(T_BTB_RET, BTB_index, 1);
     }
   }
@@ -506,11 +441,6 @@ void BPU::work() {
 
   // ---- commit: resource-typed arbitration, explicit next-state mux ----
   {
-    // BHT dual-port collision: bru then cdb -> ((bruVal << 1) | 1). Rewrite
-    // the cdb tab entry (mergeIn/apply read tab[], not the bht_val mirror).
-    if (p_bru.bht_we && p_cdb.bht_we && p_bru.bht_idx == p_cdb.bht_idx)
-      p_cdb.tab[p_cdb.bht_tabIdx].val = ((p_bru.bht_val << 1) | 1u) & 0xFFu;
-
     // Merge fi > cdb > bru (first-in wins) so every physical Register is
     // assigned at most once per cycle.
     Plan merged;
@@ -557,23 +487,8 @@ void BPU::work() {
           case T_BTB_UN:
             tgt.BTB[e.idx].unconditional <= e.val;
             break;
-          case T_BTB_CALL:
-            tgt.BTB[e.idx].isCall <= e.val;
-            break;
           case T_BTB_RET:
             tgt.BTB[e.idx].isRet <= e.val;
-            break;
-          case T_BTB_IND:
-            tgt.BTB[e.idx].isIndirect <= e.val;
-            break;
-          case T_BHT:
-            tgt.BHT[e.idx] <= e.val;
-            break;
-          case T_TC:
-            tgt.TargetCache[e.idx] <= e.val;
-            break;
-          case T_TCV:
-            tgt.TargetValid[e.idx] <= e.val;
             break;
           default:
             break;

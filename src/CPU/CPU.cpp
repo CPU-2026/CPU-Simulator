@@ -32,7 +32,8 @@ FetchTypeInfo scanJump(bool valid, uint32_t raw, uint32_t pc) {
     for (int i = 21; i <= 30; ++i)
       uoff |= ((raw >> i) & 1U) << (i - 20);
     const auto off = static_cast<int32_t>((uoff ^ 0x100000U) - 0x100000U);
-    fi.jalTarget = static_cast<uint32_t>(static_cast<int32_t>(pc) + off);
+    // uint32 bit-vector add: signed int32_t add past the range is host UB.
+    fi.jalTarget = pc + static_cast<uint32_t>(off);
     fi.valid = true;
   } else if (opcode == 0x67 && funct3 == 0) { // jalr
     fi.isCall = rdLink;                       // indirect call (push)
@@ -193,7 +194,7 @@ void CPU::wire() {
     return ALUModule.isEmpty() ? 1u : 0u;
   };
   AluCDBArbiterModule.aluValue = [this]() {
-    return static_cast<uint32_t>(ALUModule.headValue());
+    return ALUModule.headValue();
   };
   AluCDBArbiterModule.aluRobTag = [this]() {
     return static_cast<uint32_t>(ALUModule.headRobTag());
@@ -234,7 +235,7 @@ void CPU::wire() {
     return MULModule.isEmpty() ? 1u : 0u;
   };
   MulCDBModule.mulValue = [this]() {
-    return static_cast<uint32_t>(MULModule.headValue());
+    return MULModule.headValue();
   };
   MulCDBModule.mulRobTag = [this]() {
     return static_cast<uint32_t>(MULModule.headRobTag());
@@ -253,7 +254,7 @@ void CPU::wire() {
   // lives in DivCDB::divLive.
   DivCDBModule.divEmpty = [this]() { return DIVModule.isReady() ? 0u : 1u; };
   DivCDBModule.divValue = [this]() {
-    return DIVModule.isReady() ? static_cast<uint32_t>(DIVModule.getValue())
+    return DIVModule.isReady() ? DIVModule.getValue()
                                : 0u;
   };
   DivCDBModule.divRobTag = [this]() {
@@ -1282,7 +1283,7 @@ void CPU::wire() {
   LQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };
   LQModule.agu.aguHeadRobTag = [this]() { return AGUModule.headRobTag(); };
   LQModule.agu.aguHeadValue = [this]() {
-    return static_cast<uint32_t>(AGUModule.headValue());
+    return AGUModule.headValue();
   };
   LQModule.agu.sqReplyValid = [this]() {
     return static_cast<uint32_t>(SQModule.reply.valid);
@@ -1440,7 +1441,7 @@ void CPU::wire() {
   SQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };
   SQModule.agu.aguHeadRobTag = [this]() { return AGUModule.headRobTag(); };
   SQModule.agu.aguHeadValue = [this]() {
-    return static_cast<uint32_t>(AGUModule.headValue());
+    return AGUModule.headValue();
   };
   for (int i = 0; i < STORERS_CAP; ++i) {
     SQModule.prf.svWriteValid[i] = [this, i]() {
@@ -1531,9 +1532,6 @@ void CPU::wire() {
   ROBModule.issue.entry.halt = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.halt);
   };
-  ROBModule.issue.entry.isCall = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.isCall);
-  };
   ROBModule.issue.entry.isRet = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.isRet);
   };
@@ -1574,10 +1572,10 @@ void CPU::wire() {
     return static_cast<uint32_t>(BRUModule.headRobTag());
   };
   flushArbiter.bru.bruHeadPCResult = [this]() {
-    return static_cast<uint32_t>(BRUModule.headPCResult());
+    return BRUModule.headPCResult();
   };
   flushArbiter.bru.bruHeadPCFrom = [this]() {
-    return static_cast<uint32_t>(BRUModule.headPCFrom());
+    return BRUModule.headPCFrom();
   };
   // JALR mispredict detection consumes only the ALU bus (control results;
   // loads never produce control), so the LQ bus is not wired here -- an
@@ -1618,7 +1616,7 @@ void CPU::wire() {
     return AGUModule.isEmpty() ? 1u : 0u;
   };
   flushArbiter.agu.aguHeadValue = [this]() {
-    return static_cast<uint32_t>(AGUModule.headValue());
+    return AGUModule.headValue();
   };
   flushArbiter.agu.aguHeadMemIndex = [this]() {
     return static_cast<uint32_t>(AGUModule.headMemIndex());
@@ -1677,10 +1675,10 @@ void CPU::wire() {
     return static_cast<uint32_t>(BRUModule.headRobTag());
   };
   BPUModule.bru.bruHeadPCResult = [this]() {
-    return static_cast<uint32_t>(BRUModule.headPCResult());
+    return BRUModule.headPCResult();
   };
   BPUModule.bru.bruHeadPCFrom = [this]() {
-    return static_cast<uint32_t>(BRUModule.headPCFrom());
+    return BRUModule.headPCFrom();
   };
   BPUModule.rob.isROBEmpty = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.isEmpty);
@@ -1697,9 +1695,6 @@ void CPU::wire() {
     };
     BPUModule.rob.robPC[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.pc[i]);
-    };
-    BPUModule.rob.robIsCall[i] = [this, i]() {
-      return static_cast<uint32_t>(ROBModule.entry.isCall[i]);
     };
     BPUModule.rob.robIsRet[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.isRet[i]);
@@ -1841,7 +1836,7 @@ void CPU::wire() {
       return 0u;
     return SQModule.planAddressForward(
                        memSlot(AGUModule.headMemIndex()),
-                       static_cast<uint32_t>(AGUModule.headValue()))
+                       AGUModule.headValue())
                    .valid
                ? 1u
                : 0u;
@@ -1849,26 +1844,26 @@ void CPU::wire() {
   SQModule.addr.storeTag = [this]() {
     return SQModule
         .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            static_cast<uint32_t>(AGUModule.headValue()))
+                            AGUModule.headValue())
         .storeTag;
   };
   SQModule.addr.addr = [this]() {
     return SQModule
         .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            static_cast<uint32_t>(AGUModule.headValue()))
+                            AGUModule.headValue())
         .addr;
   };
   SQModule.addr.value = [this]() {
     return static_cast<uint32_t>(
         SQModule
             .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                                static_cast<uint32_t>(AGUModule.headValue()))
+                                AGUModule.headValue())
             .value);
   };
   SQModule.addr.foundKnownSame = [this]() {
     return SQModule.planAddressForward(
                        memSlot(AGUModule.headMemIndex()),
-                       static_cast<uint32_t>(AGUModule.headValue()))
+                       AGUModule.headValue())
                    .foundKnownSame
                ? 1u
                : 0u;
@@ -1876,13 +1871,13 @@ void CPU::wire() {
   SQModule.addr.knownTag = [this]() {
     return SQModule
         .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            static_cast<uint32_t>(AGUModule.headValue()))
+                            AGUModule.headValue())
         .knownSameAddressOldestTag;
   };
   SQModule.addr.foundUnknown = [this]() {
     return SQModule.planAddressForward(
                        memSlot(AGUModule.headMemIndex()),
-                       static_cast<uint32_t>(AGUModule.headValue()))
+                       AGUModule.headValue())
                    .foundUnknown
                ? 1u
                : 0u;
@@ -1890,19 +1885,19 @@ void CPU::wire() {
   SQModule.addr.unknownTag = [this]() {
     return SQModule
         .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            static_cast<uint32_t>(AGUModule.headValue()))
+                            AGUModule.headValue())
         .unknownOldestTag;
   };
   SQModule.reply.valid = [this]() {
     if (AGUModule.isEmpty() || isStoreMem(AGUModule.headMemIndex()))
       return 0u;
     auto r = SQModule.replyToLoadRequest(
-        static_cast<uint32_t>(AGUModule.headValue()), AGUModule.headRobTag());
+        AGUModule.headValue(), AGUModule.headRobTag());
     return r.valid ? 1u : 0u;
   };
   SQModule.reply.value = [this]() {
     auto r = SQModule.replyToLoadRequest(
-        static_cast<uint32_t>(AGUModule.headValue()), AGUModule.headRobTag());
+        AGUModule.headValue(), AGUModule.headRobTag());
     return r.valid ? static_cast<uint32_t>(r.value) : 0u;
   };
 }
