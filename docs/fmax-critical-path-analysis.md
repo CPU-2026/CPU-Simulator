@@ -1,6 +1,6 @@
 # fmax 关键路径分析（当前模板基线）
 
-> 分析对象：`RISC-V-Simulator-Template` 当前源码（2026-09-19，容量缩减后）
+> 分析对象：`RISC-V-Simulator-Template` 当前源码（2026-09-20，Tournament 定案后）
 > 分析口径：将 `Register` 视为周期边界，将 `Wire`、桥接访问器、无状态 Module 和 `work()` 中写入
 > `Register` 前的计算视为组合逻辑。
 
@@ -47,7 +47,7 @@ FU/LQ result registers
   -> four independent CDB squash guards
   -> ROB ready aggregation + PRF write ports (+ control consumers)
 
-Fetch PC + folded-history registers + predictor tables
+Fetch PC + 16-bit GHR + fixed Tournament predictor tables
   -> BPU prediction / target selection
   -> FetchUnit, ICache and IMEM request decisions
 ```
@@ -137,9 +137,9 @@ DIV 的 SRT 循环每拍只执行一轮并由 `loopTimes`/stage valid 寄存器�
 | 项 | 当前源码状态 | 时序含义 |
 |---|---|---|
 | ROB ready 去重 | **2026-09-18 已完成。**旧 `seen[]/nSeen` 已删除。BRU、SQ 扫描窗口以及 ALU/LQ/MUL/DIV 四条 CDB 的请求经完整 RobTag 校验后归约到逐槽 `readyWrite[]/readyData[]` 写意图，最后固定遍历 ROB，每槽至多写一次 `isCommitReady`。 | 删除动态长度线性去重链和经验数组上界；保留 Register 单写纪律。 |
-| BPU folded history | 稳态预测直接读取 `fhIdx/fhTag8/fhTag7`；GHR shift 时增量更新，squash 时用编译期定界的 `refoldViewT` 重建。 | 预测热路径不再现场遍历 48 位 GHR。当前 tagged TAGE 表为 **4 x 128**（7 位索引）；T0 保留独立的 1024 项 local base table。 |
+| BPU 固定表方向预测 | Tournament 直接读取 256 项 localPHT，以及由 16-bit GHR 与 PC 哈希索引的 256 项 globalPHT/selector；squash 直接恢复 checkpoint GHR。 | 方向路径是固定索引和三张 2-bit 表的读取/选择，不含可变历史折叠或恢复重建；其真实延迟仍需 STA 测量。 |
 | dead unresolved-store Wire | `sqHasOlderUnresolvedAddressStore` 已从模板源码消失，当前全树无定义或消费者。 | 不再存在误接后展开大规模冗余 CAM 的风险。 |
-| 固定边界循环 | DCache 字节装配/写入均为固定 4 lane 加条件使能；FlushArbiter 插入定位和搬移均以 `FLUSHARBITER_CAP` 为常量边界；fold rebuild 使用模板常量边界。 | 循环可以展开为有限组合网络，不再由运行期长度决定 trip count。 |
+| 固定边界循环 | DCache 字节装配/写入均为固定 4 lane 加条件使能；FlushArbiter 插入定位和搬移均以 `FLUSHARBITER_CAP` 为常量边界；Tournament 表均以固定容量直接索引。 | 这些结构不再由运行期长度决定 trip count；BPU `Plan::nTab` 的剩余运行期边界另列为当前门禁。 |
 
 完整的循环综合性分类、host-only 边界和仍待处理的 BPU `Plan::nTab` 可变边界见
 [不可综合循环审计](../../docs/non-synthesizable-loops.md)。该问题是 RTL 生成前的综合性门禁，不应与“已由

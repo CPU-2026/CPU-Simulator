@@ -4,20 +4,6 @@
 #include "tools.h"
 #include <array>
 #include <cstdint>
-#include <cstring>
-constexpr int TAGE_NTABLES = 4;
-// Power-of-two guard: the mispredict allocator indexes the table set with
-// `& (TAGE_NTABLES - 1)` (hardware semantics -- no divider in the datapath).
-// Changing the table count to a non-power-of-two must be a compile error here,
-// not a silently synthesized modulo.
-static_assert((TAGE_NTABLES & (TAGE_NTABLES - 1)) == 0,
-              "TAGE_NTABLES must be a power of two (allocation uses & (N-1))");
-constexpr int TAGE_HIST[TAGE_NTABLES] = {6, 12, 24, 48};
-constexpr int TAGE_IDX_BIT = 7;  // 128 entries per table
-constexpr int TAGE_TAG_BIT = 8;
-constexpr uint8_t BANKTICK_MAX = 63;
-constexpr uint8_t LFSR_TAPS = 0xB8; // 8-bit Galois taps
-constexpr uint8_t LFSR_SEED = 0xAC;
 // The common-header CKPT_LIVE_MAX guard covers every checkpoint retained in
 // ROB, ICache, FQ, or IQ before an ID can be recycled; CKPT_ID_WIDTH is the
 // exact carrier for the logical pool IDs 0..CKPT_CAP-1.
@@ -88,9 +74,8 @@ struct BPUInput {
 // makes any re-evaluation bit-identical anyway). fetchOut.* are the
 // consumer-facing fields, 0-filled whenever the fetch is gated --
 // bit-identical to the retired default-initialized struct.
-// packed bit map (LSB-first): [0] shift, [1] shiftValue, [7:2] ckptId,
-// [8] provValid, [10:9] provIdx, [13:11] provCtr, [15:14] provU,
-// [16] altPred, [17] tagePred, [19:18] baseCnt.
+// packed bit map (LSB-first): [0] shift, [1] shiftValue,
+// [2+CKPT_ID_WIDTH-1:2] ckptId.
 struct BPUOutputMid {
   Wire<32> predPC; // guarded (taken ? predictPC : pc+4)
   Wire<32> packed;
@@ -102,13 +87,6 @@ struct BPUOutputFetch {
   Wire<1> shift;
   Wire<1> shiftValue;
   Wire<CKPT_ID_WIDTH> ckptId;
-  Wire<1> provValid; // a Tn table hit supplied the prediction
-  Wire<2> provIdx;   // which table (T1..T4) 0->T1, 1->T2, 2->T3, 3->T4
-  Wire<8> provCtr;   // 3b provider counter, zero-extended
-  Wire<2> provU;     // provider usefulness at predict time
-  Wire<1> altPred;   // ALT (T0) direction
-  Wire<1> tagePred;  // final tagged-predictor direction
-  Wire<8> baseCnt;   // 2b T0 counter, zero-extended
 };
 struct BPUOutput {
   BPUOutputMid mid;
@@ -129,30 +107,6 @@ struct RASEntry {
   Register<32> retPC;
   Register<32> times;
 };
-// One row of a tagged prediction table (Tn). The stored tag is a snapshot
-// of (folded history ^ pc) captured at allocation time; a probe recomputes
-// it from the live FoldHist views and compares. u is a 2-bit usefulness
-// counter (Seznec-canonical; deliberately wider than Kunminghu's 1 bit) so
-// the periodic bankTick reset halves instead of clears, letting strong
-// entries survive two amnesty rounds. Allocation only targets rows with
-// u == 0.
-struct TageEntry {
-  Register<1> valid;
-  Register<8> tag; // 8b context snapshot
-  Register<3> ctr; // 3b saturating direction counter
-  Register<2> u;   // 2b usefulness
-};
-// Register-storage mirror of the plain TAGESCMeta (comb-domain) — the
-// per-ckptId provider metadata captured at fetch time, restored on squash.
-struct TAGE_MetaReg {
-  Register<1> provValid;
-  Register<2> provIdx;
-  Register<3> provCtr;
-  Register<2> provU;
-  Register<1> altPred;
-  Register<1> tagePred;
-  Register<2> baseCnt;
-};
 // Register-storage mirror of the comb-domain BTB line.
 struct BTBEntryReg {
   Register<32> actualPC;
@@ -163,39 +117,22 @@ struct BTBEntryReg {
   Register<1> isRet;
   Register<1> isIndirect;
 };
-// Register-storage mirror of the plain BPUSnapshot (comb-domain). GHR is 64b
-// and Register caps at 32b, so split into two 32b halves (hi/lo).
+// Register-storage mirror of the plain BPUSnapshot (comb-domain).
 struct BPUSnapshotReg {
-  Register<32> GHR_1;
-  Register<32> GHR_2;
+  Register<16> GHR;
   Register<8> alignHead;
   Register<8> alignTail;
   Register<8> RAS_top;
 };
 
-// Direction prediction ("taken or not"): the tagged tables T1..Tn keyed off
-// the speculative global GHR, plus a local-history two-level base: T0 stays
-// a 2b-counter table but is indexed by PC ^ (12b per-PC local history), so
-// the always-available fallback tracks single-PC patterns that global
-// history cannot see (interleaved streams dilute them 4-6x; an 8b/256-entry
-// variant measured +1.17M cycles on pi and was rejected). Kept
-// self-contained so it can be swapped wholesale for TAGE-SC later without
-// touching target prediction.
+// Tournament direction predictor: direct-PC local counters, gshare global
+// counters, and a gshare-indexed chooser. Counter value 1 is weakly not-taken
+// and 2 is weakly taken.
 struct DirectionPred {
-  std::array<Register<2>, T0_CAP> t0;
-  std::array<Register<12>, LHT_CAP>
-      LHT; // per-PC local history (12b), non-speculative
-  std::array<std::array<TageEntry, 1 << TAGE_IDX_BIT>, TAGE_NTABLES> tn;
-  std::array<Register<TAGE_IDX_BIT>, TAGE_NTABLES> fhIdx;
-  std::array<Register<8>, TAGE_NTABLES> fhTag8; // W = TAGE_TAG_BIT
-  std::array<Register<7>, TAGE_NTABLES>
-      fhTag7; // W = TAGE_TAG_BIT - 1   （tag = 8位折 ^ 7位折）
-  std::array<Register<4>, 128> useAltOnNa; // boot-reset to 0b1000
-  std::array<TAGE_MetaReg, CKPT_CAP> tmeta;
-  Register<32> GHR_1; // high 32b of the 64b GHR
-  Register<32> GHR_2; // low 32b of the 64b GHR
-  Register<6> bankTickCtr;
-  Register<8> lfsr;
+  std::array<Register<2>, BHT_CAP> localPHT;
+  std::array<Register<2>, BHT_CAP> globalPHT;
+  std::array<Register<2>, SELECTOR_CAP> selector;
+  Register<16> GHR;
 };
 
 // Target prediction ("where to jump"): BTB (targets + jump type) and the
@@ -223,18 +160,14 @@ struct BPUInner {
   TargetPred tgt;
   std::array<BPUSnapshotReg, CKPT_CAP> bpCkpt;
   Register<CKPT_ID_WIDTH> nextCkptId;
-  Register<1> bootDone; // cycle-0 init: t0=1, useAltOnNa=8
+  Register<1> bootDone; // cycle-0 init: all direction counters = 1
 };
 struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   BPU() { wire_output(); }
   uint64_t branchTotal = 0;
   uint64_t branchCorrect = 0;
 
-  // 64b GHR composed from the two 32b Register halves (_M_old view).
-  uint64_t getGHR() const {
-    return (static_cast<uint64_t>(static_cast<uint32_t>(dir.GHR_1)) << 32) |
-           static_cast<uint32_t>(dir.GHR_2);
-  }
+  uint16_t getGHR() const { return static_cast<uint32_t>(dir.GHR); }
 
   uint64_t getBranchTotal() const { return branchTotal; }
   uint64_t getBranchCorrect() const { return branchCorrect; }
