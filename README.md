@@ -35,7 +35,7 @@ VERBOSE=clock,icache ./code < data/testcases/gcd.data
 ## 核心结构
 
 ```text
- TAGE / BTB / RAS
+ Tournament / BTB / RAS
          |
  Fetch -> ICache -> FQ(4) -> Decode / IQ(4)
    |                                  |
@@ -66,8 +66,9 @@ VERBOSE=clock,icache ./code < data/testcases/gcd.data
 | DCache | 64 KiB，4 路，16 B line，write-back |
 | 主存延迟 | 20 周期 |
 
-分支预测器由 TAGE、BTB、Target Cache 和 RAS 组成。分支误预测、JALR 目标错误和
-store-load 顺序违例统一交给 `FlushArbiter` 恢复。
+分支预测器的方向侧由 local/global/selector 各 256×2-bit 的 Tournament 表和 16-bit GHR
+组成；目标侧保留 BTB、Target Cache、RAS/SARAS。分支误预测、JALR 目标错误和 store-load
+顺序违例统一交给 `FlushArbiter` 恢复。
 
 MUL 使用 radix-4 Booth 部分积和 CSA 压缩树；DIV 使用 SRT radix-4 递推。
 数据通路不使用宿主 `*`、`/` 或 `%` 计算乘除法结果。

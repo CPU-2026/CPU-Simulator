@@ -24,6 +24,7 @@
 | CPU 运行时 | 模块按值归 `CPU` 所有，以非拥有指针注册到 `dark::CPU`，每拍调用 `run_once()` |
 | 旧机制 | `comb()`、`tick()`、模块快照成员和周期性 `memcpy` 已退出模板树 |
 | 执行/写回 | ALU、LQ、MUL、DIV 四路独立结果总线；MUL 与 DIV 有专用 RS 和派发通道 |
+| 分支预测 | Tournament：local/global/selector 各 256×2b，16-bit GHR；目标侧 BTB64/BHT256/TargetCache32/RAS8/SARAS16/condSeen512 |
 | 恢复 | ROB tag、checkpoint、FlushArbiter 和各模块本地恢复状态共同完成整窗 squash |
 | 验证 | 双树 `x10` 与等价改动的 `clock` 对拍，加 Release、`_DEBUG` 单写断言和基准表核验 |
 
@@ -73,7 +74,7 @@
 
 1. **模块必须全有或全无地转换。** `Register` 不可按普通对象 `memcpy`；包含它的模块若仍进入快照复制就是未定义行为，不能只改半个模块。
 2. **状态所有权、快照提交和验证适配必须同步修改。** 当时每迁移一个模块，都要同时把 CPU 中的双实例收成单实例、删除对应快照复制、加入周期末 `sync()`，并让验证驱动比较已提交状态而非对象字节。
-3. **非零初值必须显式设计。** `Register` 默认只产生零态；RAT 恒等映射、BPU 计数器和 LFSR seed 等不能依赖构造器偷偷写 `_M_old`，必须有复位/boot 周期及必要的 cycle-0 读视图。
+3. **非零初值必须显式设计。** `Register` 默认只产生零态；RAT 恒等映射、BPU 计数器，以及当时 TAGE 实现的 LFSR seed 等不能依赖构造器偷偷写 `_M_old`，必须有复位/boot 周期及必要的 cycle-0 读视图。
 4. **位宽与显式转换是接口的一部分。** `Register`/`Wire` 的布尔和整数转换是 explicit；环形指针、tag 距离、掩码与年龄比较必须先转成明确宽度，不能依赖宿主整型提升。
 5. **整对象清零必须删除。** 对含 `Register`、`Wire` 或 lambda 的对象执行 `memset(this, ...)` 是未定义行为；状态要逐成员初始化，固定数组使用自身零初始化。
 6. **每个 Register 每拍只能写一次。** 即使两次写入同值，`_DEBUG` 也视为两个物理驱动；push/flush、恢复/发射、写回/直写等冲突必须先归约成优先级或每槽 mux，再从唯一写点提交。
@@ -94,7 +95,7 @@
 现行闭环是：
 
 1. 主树与模板树对同一镜像比较 `x10`；行为等价改动还必须逐拍比较 `clock`，差一拍就是回归。
-2. `x10 & 0xFF` 与性能基线只认 [`../../docs/benchmarks.md`](../../docs/benchmarks.md)；文档内不复制易过期的总拍数。
+2. `x10 & 0xFF` 与现行性能基线只认 [`../../docs/benchmarks.md`](../../docs/benchmarks.md)；本文仅在带日期的架构定案中保留对应验收快照。
 3. Release 验证功能与时序，`_DEBUG` 验证 Register 单写、索引和结构不变量。
 4. 纯表示变换不得改变 clock；有意的微架构改动必须单独说明原因、验证结果和基线更新，不能用“模板天然漂移”解释差异。
 5. 统一 RV32IM 镜像同时覆盖基础整数路径与真实 `mul/div/rem` 路径；不含 M 指令的 `naive` 作为阴性对照，长用例只作为里程碑，不把临时耗时写入本文。
@@ -102,7 +103,7 @@
 `run_once_shuffle()` 仍是框架能力，也曾证明 Wire/Register 结构没有隐藏的模块执行顺序依赖；
 但在测试目录清理后，它不再属于日常验证政策。
 
-## BPU 双树 clock 对齐复盘
+## 历史：BPU 双树 clock 对齐复盘
 
 2026-08-31 的逐拍对齐最终确认了六项差异，其中五项是真 bug，一项是批准的冗余门控删除。
 修复后双树恢复 `x10 + clock` 逐位一致，“clock 漂移是双端口训练的预期结果”这一旧判断作废。
@@ -171,14 +172,33 @@ RAT 同拍可能同时遇到 checkpoint 恢复和新指令 rename。每个 `RAT_
 
 ## 状态与容量收敛
 
-### TAGE 1024 -> 512
+### 历史：TAGE 1024 -> 512
 
 四张 TAGE tagged table 的索引宽度由 10 降到 9，每表 1024 项缩为 512 项；T0 及其他结构不随之缩小。
 采纳的 W=9 方案使 tagged-table SRAM 约减半（约 28.7 Kb），全量总 clock 与 pi 均略有改善，
 已观测单例最差变化约为 `+0.35%`。W=8 虽继续省面积，但单例退化更明显，未采用。
 
 折叠历史的索引掩码、移位、旋转和 squash 重算必须与 9-bit 宽度一起修改；尤其手写 rotate/fold
-需要显式 mask。当前性能数值以根目录 benchmark 文档为准，不在这里固化总拍数。
+需要显式 mask。这是已退役 TAGE 架构的容量实验记录，不描述当前 Tournament 实现。
+
+### 2026-09-20：Tournament 面积定案
+
+方向侧最终采用三张固定 256×2-bit 表：localPHT 由 `(PC>>2)&255` 索引，globalPHT 与
+selector 由 `((PC>>2)^GHR)&255` 索引；16-bit GHR 保持投机更新，selector `>=2` 选择
+global。三表计数器初值均为 1，条件分支解析时 local/global 同时更新，只有预测分歧时
+chooser 才向正确一侧移动。最终条件 taken 采用命中门控方案 A：
+`btbHit && directionTaken`，BTB 命中的无条件项覆盖为 true。
+
+目标侧保持 BTB64、BHT256、TargetCache32、RAS8、SARAS16、condSeen512 不变；checkpoint
+只保存 16-bit GHR、AlignQueue 头尾和 RAS_top，不再有 TAGE 元数据、折叠历史、分配或
+老化状态。模板 BPU 的完整 Register 状态由此前活动 TAGE 的 **24,357 bit** 降至
+**12,558 bit**，减少 **11,799 bit（48.44%）**。
+
+A/B 使用同一架构与语料，只改变条件方向是否受 BTB hit 门控：A 为 **12,237,892 cycles、
+93.8367%**，B 为 **12,250,503 cycles、93.6618%**；独立 IPC 语料总 cycles 分别为
+**495,871 / 495,830**。按 18 例主指标选择 A。最终主树与模板树 Release 在 18 例上
+`x10` 和 clock 全部逐项一致，总 cycles **12,237,892**，加权 IPC **0.553703**，分支
+正确率 **93.8367%（1,307,716 / 1,393,609）**；独立 IPC 语料 **6/6** 逐项一致。
 
 ### FlushArbiter needSquash
 
@@ -261,13 +281,16 @@ gcd/magic/qsort/tak/multiarray 全对且零断言；IPC 语料双树（主树 `.
 
 ## 当前唯一活跃关注项：BPU Plan::nTab
 
-模板 BPU 的 `Plan` 用 `tab[64] + nTab` 打包本拍稀疏表更新，合并与提交处仍有若干
-`q < nTab` / `m < merged.nTab` 的运行期边界循环。容量 64 虽然固定，但源码遍历的是
-“实际用了多少项”，综合形状仍是数据相关回边；这是当前数据通路循环审计剩余的 C-7 项。
+模板 BPU 的 `Plan` 用 `tab[32] + nTab` 打包本拍稀疏表更新。Tournament 改写已经删除
+TAGE 表更新来源并收紧容器，但 `mergeIn` 的来源遍历、嵌套查重和 `apply` 提交仍以
+`src.nTab` / `merged.nTab` 为运行期边界；源码表达的仍是可变长度软件列表，而不是明确的
+固定端口网络。这是当前数据通路循环审计剩余的 C-7 项。
 
-目标改写是固定 64 路遍历或固定来源端口，加逐槽 valid/one-hot enable 和明确的覆盖优先级，
-复用 ROB ready 位图的“固定归约、唯一写回”原则。改动必须同时守住 BHT 同槽融合、BTB/CDB
-覆盖顺序、bank tick 衰减与更新覆盖、LFSR 步进和双训练口共享旧快照等 BPU 端口语义。
+目标改写是按资源拆成固定写意图与 valid/one-hot enable，或至少固定 32 路遍历并以 valid
+门控，复用 ROB ready 位图的“固定归约、唯一写回”原则。改动必须同时守住：合并优先级
+`fi > cdb > bru`、BHT 同槽碰撞修正、BTB 更新的既定覆盖顺序、每个物理 Register 单写，
+以及两个训练口共享周期初旧快照。若机械展开 32×32 查重网络代价过大，应改为按表资源直接
+仲裁，而不是保留运行期循环。
 
-在该项完成前，不应把 `nTab <= 64` 误当成“循环已经可静态展开”；详细位置、分类和验收标准见
+在该项完成前，不应把 `nTab <= 32` 误当成“循环已经可静态展开”；详细位置、分类和验收标准见
 [`../../docs/non-synthesizable-loops.md`](../../docs/non-synthesizable-loops.md)。

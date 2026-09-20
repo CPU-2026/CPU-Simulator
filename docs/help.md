@@ -165,7 +165,7 @@ BP_BIN=./build-release/code ./test_IPC.sh
 | --- | --- |
 | [README](../README.md) | 总体架构、程序镜像、流水线和目录结构 |
 | [backend.md](backend.md) | 发射、派发、写回、提交、MUL 与 SRT DIV；后端算法 SSOT |
-| [frontend.md](frontend.md) | 取指、预译码、译码、TAGE/BTB/RAS 与恢复 |
+| [frontend.md](frontend.md) | 取指、预译码、译码、Tournament/BTB/RAS 与恢复 |
 | [cache.md](cache.md) | ICache、DCache、IMEM/DMEM 和延迟模型 |
 | [memory.md](memory.md) | LQ/SQ、转发、违例检测与内存请求准入 |
 | [progress.md](progress.md) | 从旧快照模型迁移到 `work()+sync()` 的回顾、验证政策和关键经验 |
