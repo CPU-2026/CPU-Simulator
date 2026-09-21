@@ -24,7 +24,7 @@
 | CPU 运行时 | 模块按值归 `CPU` 所有，以非拥有指针注册到 `dark::CPU`，每拍调用 `run_once()` |
 | 旧机制 | `comb()`、`tick()`、模块快照成员和周期性 `memcpy` 已退出模板树 |
 | 执行/写回 | ALU、LQ、MUL、DIV 四路独立结果总线；MUL 与 DIV 有专用 RS 和派发通道 |
-| 分支预测 | Tournament：local/global/selector 各 256×2b，16-bit GHR；目标侧 BTB64/RAS8/SARAS16/condSeen512（BHT/Target Cache 已删除） |
+| 分支预测 | Tournament：local/global/selector 各 256×2b，8-bit GHR；目标侧 BTB64/RAS8/SARAS16/condSeen512（BHT/Target Cache 已删除） |
 | 恢复 | ROB tag、checkpoint、FlushArbiter 和各模块本地恢复状态共同完成整窗 squash |
 | 验证 | 双树 `x10` 与等价改动的 `clock` 对拍，加 Release、`_DEBUG` 单写断言和基准表核验 |
 
@@ -205,8 +205,9 @@ A/B 使用同一架构与语料，只改变条件方向是否受 BTB hit 门控�
 方向侧改用 Tournament 后，BHT256 与 TargetCache32（及 `isCall/isIndirect` BTB 元数据）只彼此
 服务。两套活动语料（18 例 + IPC 6 例）中 JALR 全部是返回或调用，唯一真间接站点是 `towers`
 的 `auipc + jalr x0, -924(x6)`，目标固定，TC 与 BTB last-target 相同；收益不可观测，遂按
-面积/效率权衡删除。模板 Register 状态再省 **3,104 bit**（BHT 2,048 + TC 1,024 + valid 32），
-完整 BPU 由 **12,558 bit** 降至 **9,454 bit**（相对 TAGE 基线 24,357 bit 为 −61.19%）。
+面积/效率权衡删除。模板 Register 状态再省 **3,232 bit**（BHT 2,048 + TC 1,024 + valid 32 +
+BTB `isCall/isIndirect` 128），完整 BPU 由 **12,558 bit** 降至 **9,326 bit**（相对 TAGE
+基线 24,357 bit 为 −61.71%）。
 `Plan` 的 `T_BHT/T_TC/T_TCV/T_BTB_CALL/T_BTB_IND` 与 ROB `isCall` 链路一并删除；
 主树与模板树 Release 18/18 x10+clock 逐位一致，IPC 6/6 不变。
 
@@ -289,18 +290,35 @@ gcd/magic/qsort/tak/multiarray 全对且零断言；IPC 语料双树（主树 `.
 真正数据相关的 DIV 迭代没有强行展开，而是用有限位宽计数器和 FSM 每拍复用一次 SRT 数据通路。
 这也是可综合的：不可接受的是宿主 `while` 在一拍内跑到收敛，不是多周期硬件本身。
 
-## 当前唯一活跃关注项：BPU Plan::nTab
+## 2026-09-20：BPU 写口收口（Plan::nTab 删除 + RAS times 位宽）
 
-模板 BPU 的 `Plan` 用 `tab[32] + nTab` 打包本拍稀疏表更新。Tournament 改写已经删除
-TAGE 表更新来源并收紧容器，但 `mergeIn` 的来源遍历、嵌套查重和 `apply` 提交仍以
-`src.nTab` / `merged.nTab` 为运行期边界；源码表达的仍是可变长度软件列表，而不是明确的
-固定端口网络。这是当前数据通路循环审计剩余的 C-7 项。
+模板 BPU 的 `Plan`（`tab[32] + nTab` + `mergeIn` 查重/写入 + `apply` switch）整体删除，
+改为每个训练口一个固定形状的 `BTBWriteIntent`（`lineWrite`/`targetWrite` + `index` + 载荷）。
+方向表（localPHT/globalPHT/selector/condSeen）只有 BRU 条件路径一个写口，改为直接写；BTB 的
+`actualPC/valid/unconditional/isRet` 与 `target` 分两组按 `fetch > cdb > bru` 仲裁，同行冲突用
+`sameBTBLine` 抑制，每个物理 Register 每拍至多一次赋值，双训练口仍共享周期初旧快照。数据通路
+循环审计统计 138 个循环、运行期边界 **0**（原 3 处随 Plan 删除）。
 
-目标改写是按资源拆成固定写意图与 valid/one-hot enable，或至少固定 32 路遍历并以 valid
-门控，复用 ROB ready 位图的“固定归约、唯一写回”原则。改动必须同时守住：合并优先级
-`fi > cdb > bru`、BTB 更新的既定覆盖顺序、每个物理 Register 单写，
-以及两个训练口共享周期初旧快照。若机械展开 32×32 查重网络代价过大，应改为按表资源直接
-仲裁，而不是保留运行期循环。
+三写口 6 种仲裁顺序做了编译期可切换的全量 A/B（18 例 × 6 组，`BPU_BTB_PRIO` 临时脚手架，
+已删除）：逐例 `x10`、clock、retired 完全一致，总 clock 均为 **12,237,892**。语料中不存在
+"异值同行冲突"，仲裁顺序不可观测，因此保留与主树写序一致的 `fetch > cdb > bru`。
 
-在该项完成前，不应把 `nTab <= 32` 误当成“循环已经可静态展开”；详细位置、分类和验收标准见
-[`../../docs/non-synthesizable-loops.md`](../../docs/non-synthesizable-loops.md)。
+同时把 SARAS 的 `times` 载体从 `Register<32>` 收紧为 **`RAS_TIMES_WIDTH = 9`**（`RASEntry` 与
+`AlignEntry` 共 24 处，省 552 bit；完整 BPU 状态 9,326 → **8,774 bit**，相对 TAGE 基线
+24,357 bit 为 −63.98%）。9 bit 是保持 golden 的最小位宽：queens 的投机 dedup 链峰值 **323**
+（次高 tak 16），8 bit 在 queens 上回绕并导致 CYCLE FAIL；该计数没有容量可推导的静态上界
+（dedup 链可超出 `ALIGNQ_CAP` 回卷窗口），溢出只退化预测，不影响体系结构状态。
+
+门禁：Release 18/18 x10+cycles 逐位一致（总 clock 12,237,892、IPC 0.553703、分支
+93.8367%），`_DEBUG` 全量 18/18 零双写断言。
+
+## 2026-09-21：BPU GHR / checkpoint 载体收紧
+
+Tournament 的 globalPHT 与 selector 都以 `((PC>>2)^GHR)&255` 取索引，GHR 高 8 位从未被
+消费。两树引入 `GHR_WIDTH=8` 与容量断言，live GHR 和 32 份 checkpoint 中的 GHR 同步由
+16 bit 收紧为 8 bit，省 **8 + 32×8 = 264 bit**。
+
+`alignHead` 仅在 checkpoint snapshot/restore 间来回复制，不推进、不参与 AlignQueue 索引且无
+外部消费者，故从 `TargetPred`、`BPUSnapshot` 和其 32 份 Register 镜像删除，另省
+**8 + 32×8 = 264 bit**。完整模板 BPU Register 状态由 **8,774 → 8,246 bit**，相对
+TAGE 基线 24,357 bit 为 **−66.15%**。该变换只删除未观察状态，预期 x10 与 clock 均逐位不变。

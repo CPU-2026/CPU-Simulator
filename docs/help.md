@@ -141,7 +141,7 @@ VERBOSE=clock,branch,icache ./code < data/testcases/gcd.data
 | 脚本 | 输入 | 根级 SSOT 或输出 | 行为 |
 | --- | --- | --- | --- |
 | `./test.sh [pattern]` | `data/testcases/*.data` | `../docs/benchmarks.md` | 严格检查 RV32IM 镜像的退出码、x10 与 cycles，报告 retired、IPC、分支率；完整运行含 `pi` |
-| `./test_IPC.sh` | `data/testcases_ipc/*/*.data` | 写入 `../docs/ipc_benchmarks.md` | 运行 IPC 语料并重新生成根级报告，不是只读测试 |
+| `./test_IPC.sh` | `data/testcases_ipc/*/*.data` | 写入 `../docs/ipc_benchmarks.md` | 要求每例自校验 `x10 == 0`，全通过后重新生成根级报告 |
 
 常用命令：
 
@@ -155,7 +155,8 @@ BP_BIN=./build-release/code ./test_IPC.sh
 ```
 
 `BP_BIN` 可覆盖待测二进制。`test.sh` 将 x10 和 cycles 都作为硬门槛，同时拒绝缺失语料、
-缺失 golden 与零用例。运行 `test_IPC.sh` 前应确认确实要改写根级 IPC 报告。
+缺失 golden 与零用例。`test_IPC.sh` 在任一自校验失败时保持原报告不变；运行前应确认
+确实要改写根级 IPC 报告。
 
 ## 5. 文档地图
 

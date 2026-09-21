@@ -66,8 +66,8 @@ VERBOSE=clock,icache ./code < data/testcases/gcd.data
 | DCache | 64 KiB，4 路，16 B line，write-back |
 | 主存延迟 | 20 周期 |
 
-分支预测器的方向侧由 local/global/selector 各 256×2-bit 的 Tournament 表和 16-bit GHR
-组成；目标侧保留 BTB、Target Cache、RAS/SARAS。分支误预测、JALR 目标错误和 store-load
+分支预测器的方向侧由 local/global/selector 各 256×2-bit 的 Tournament 表和 8-bit GHR
+组成；目标侧保留 BTB、RAS/SARAS（Target Cache 已删除）。分支误预测、JALR 目标错误和 store-load
 顺序违例统一交给 `FlushArbiter` 恢复。
 
 MUL 使用 radix-4 Booth 部分积和 CSA 压缩树；DIV 使用 SRT radix-4 递推。
@@ -146,7 +146,8 @@ IPC 工作负载与报告更新：
 
 `test.sh` 同时严格检查 x10 和 `../docs/benchmarks.md` 中的 cycles；缺失镜像、缺失
 golden 或零用例都会失败。历史扩展收益数据只保留在根级 benchmark 文档中，不再提供
-对应的可运行资产。
+对应的可运行资产。`test_IPC.sh` 要求每个 IPC 镜像的自校验结果 `x10 == 0`，任一失败
+都不会覆盖根级 `../docs/ipc_benchmarks.md`。
 
 `reorder_test` 已随旧测试脚手架退役。框架仍提供 `run_once_shuffle()`，但它不再是仓库的日常回归入口。
 

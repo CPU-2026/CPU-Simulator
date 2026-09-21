@@ -4,189 +4,47 @@
 
 #include "../include/ROB.hpp"
 
-namespace {
-struct Snap {
-  const BPUInner *st;
-  // Reset-value presentation: boot commits at end of cycle 0, but cycle-0
-  // prediction already reads these tables -- present boot constants until then.
-  uint32_t local(uint32_t i) const {
-    return static_cast<bool>(st->bootDone)
-               ? static_cast<uint32_t>(st->dir.localPHT[i])
-               : 1u;
-  }
-  uint32_t global(uint32_t i) const {
-    return static_cast<bool>(st->bootDone)
-               ? static_cast<uint32_t>(st->dir.globalPHT[i])
-               : 1u;
-  }
-  uint32_t selector(uint32_t i) const {
-    return static_cast<bool>(st->bootDone)
-               ? static_cast<uint32_t>(st->dir.selector[i])
-               : 1u;
-  }
-  bool condSeen(uint32_t i) const {
-    return static_cast<bool>(st->tgt.condSeen[i]);
-  }
-  bool BTBValid(uint32_t i) const {
-    return static_cast<bool>(st->tgt.BTB[i].valid);
-  }
-  uint32_t BTBActualPC(uint32_t i) const {
-    return static_cast<uint32_t>(st->tgt.BTB[i].actualPC);
-  }
-  uint32_t BTBTarget(uint32_t i) const {
-    return static_cast<uint32_t>(st->tgt.BTB[i].target);
-  }
-  bool BTBUncond(uint32_t i) const {
-    return static_cast<bool>(st->tgt.BTB[i].unconditional);
-  }
-  bool BTBRet(uint32_t i) const {
-    return static_cast<bool>(st->tgt.BTB[i].isRet);
-  }
-  uint16_t ghr() const { return static_cast<uint32_t>(st->dir.GHR); }
-};
-
-// ---- training requests (decoded once at the top of work()) ----
-struct TrainReq {
-  bool valid = false;
-  bool isJump = false;  // updateJump vs update
-  bool taken = false;
-  bool isRet = false;
-  uint32_t pc = 0;
-  uint32_t target = 0;
-  uint16_t ghr = 0;
-};
-
-// ---- per-cycle write intents (fixed capacity, no per-cycle heap use) ----
-enum TabKind : uint8_t {
-  T_LOCAL,
-  T_GLOBAL,
-  T_SELECTOR,
-  T_COND,
-  T_BTB_APC,
-  T_BTB_TGT,
-  T_BTB_V,
-  T_BTB_UN,
-  T_BTB_RET,
-};
-struct TabEntry {
-  uint8_t kind;
-  uint16_t idx;
-  uint32_t val;
-};
-struct Plan {
-  TabEntry tab[32];
-  uint32_t nTab = 0;
-  void put(uint8_t kind, uint32_t idx, uint32_t val) {
-    dark::debug::assert(nTab < 32, "plan overflow: raise Plan::tab");
-    if (nTab >= 32) return;
-    tab[nTab++] = {kind, static_cast<uint16_t>(idx), val};
-  }
-};
-// Per-port worst cases: fetch-info <=5, conditional BRU <=9, jump CDB <=6.
-static_assert(5 + 9 + 6 <= 32, "merged plan worst case must fit Plan::tab");
-
-// ---- update: pure function, reads snap, fills a plan, zero `<=`.
-//      BRU port may set ghr/ras; CDB port is commit (tables only). ----
-Plan updatePlan(const Snap &snap, const TrainReq &req) {
-  Plan p;
-  const uint32_t p2 = req.pc >> 2;
-  const uint32_t localIndex = p2 & (BHT_CAP - 1);
-  const uint32_t globalIndex = (p2 ^ req.ghr) & (BHT_CAP - 1);
-  const uint32_t selectorIndex = (p2 ^ req.ghr) & (SELECTOR_CAP - 1);
-  uint32_t local = snap.local(localIndex);
-  uint32_t global = snap.global(globalIndex);
-  const bool localPred = local >= 2;
-  const bool globalPred = global >= 2;
-  if (req.taken) {
-    if (local < 3) ++local;
-    if (global < 3) ++global;
-  } else {
-    if (local > 0) --local;
-    if (global > 0) --global;
-  }
-  p.put(T_LOCAL, localIndex, local);
-  p.put(T_GLOBAL, globalIndex, global);
-
-  if (globalPred == req.taken && localPred != req.taken) {
-    uint32_t choice = snap.selector(selectorIndex);
-    if (choice < 3) ++choice;
-    p.put(T_SELECTOR, selectorIndex, choice);
-  } else if (localPred == req.taken && globalPred != req.taken) {
-    uint32_t choice = snap.selector(selectorIndex);
-    if (choice > 0) --choice;
-    p.put(T_SELECTOR, selectorIndex, choice);
-  }
-
-  p.put(T_COND, p2 & (CONDSEEN_CAP - 1), 1);
-
-  auto BTB_index = p2 & (BTB_CAP - 1);
-  if (req.taken) {
-    p.put(T_BTB_APC, BTB_index, req.pc);
-    p.put(T_BTB_TGT, BTB_index, req.target);
-    p.put(T_BTB_V, BTB_index, 1);
-    p.put(T_BTB_UN, BTB_index, 0);
-    p.put(T_BTB_RET, BTB_index, 0);
-  }
-  return p;
-}
-
-Plan updateJumpPlan(const TrainReq &req) {
-  Plan p;
-  const uint32_t p2 = req.pc >> 2;
-  auto BTB_index = p2 & (BTB_CAP - 1);
-  p.put(T_BTB_APC, BTB_index, req.pc);
-  p.put(T_BTB_TGT, BTB_index, req.target);
-  p.put(T_BTB_V, BTB_index, 1);
-  p.put(T_BTB_UN, BTB_index, 1);
-  p.put(T_BTB_RET, BTB_index, req.isRet ? 1 : 0);
-  return p;
-}
-
-bool robTagMatches(const BPUInputROB &rob, RobTag tag) {
-  if (static_cast<bool>(rob.isROBEmpty))
-    return false;
-  const uint32_t slot = robSlot(tag);
-  return slot < ROB_CAP && static_cast<uint32_t>(rob.robTag[slot]) == tag;
-}
-}  // namespace
-
-PredictInfo BPU::predict(int32_t pc) const {
-  Snap snap(this);
+PredictInfo BPU::predict(uint32_t pc) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
-  const uint16_t ghr = snap.ghr();
+  const uint8_t ghr = static_cast<uint32_t>(dir.GHR);
   const uint32_t localIndex = p2 & (BHT_CAP - 1);
   const uint32_t globalIndex = (p2 ^ ghr) & (BHT_CAP - 1);
   const uint32_t selectorIndex = (p2 ^ ghr) & (SELECTOR_CAP - 1);
-  const bool useGlobal = snap.selector(selectorIndex) >= 2;
+  const bool useGlobal =
+      static_cast<uint32_t>(dir.selector[selectorIndex]) >= 2;
   const bool directionTaken =
-      useGlobal ? snap.global(globalIndex) >= 2 : snap.local(localIndex) >= 2;
+      useGlobal ? static_cast<uint32_t>(dir.globalPHT[globalIndex]) >= 2
+                : static_cast<uint32_t>(dir.localPHT[localIndex]) >= 2;
   const auto BTB_index = p2 & (BTB_CAP - 1);
-  bool btbHit = snap.BTBValid(BTB_index) &&
-                 snap.BTBActualPC(BTB_index) == static_cast<uint32_t>(pc);
+  bool btbHit = static_cast<bool>(tgt.BTB[BTB_index].valid) &&
+                static_cast<uint32_t>(tgt.BTB[BTB_index].actualPC) ==
+                    static_cast<uint32_t>(pc);
   bool taken = btbHit && directionTaken;
-  if (btbHit && snap.BTBUncond(BTB_index)) taken = true;
+  if (btbHit && static_cast<bool>(tgt.BTB[BTB_index].unconditional))
+    taken = true;
   // RET with empty RAS: don't use BTB target 0, treat as not taken (wild fetch
   // fix)
-  bool isRet = snap.BTBRet(BTB_index);
+  bool isRet = static_cast<bool>(tgt.BTB[BTB_index].isRet);
   bool rasEmpty = static_cast<uint32_t>(tgt.RAS_top) == 0;
   if (isRet && rasEmpty) {
     btbHit = false;
     taken = false;
   }
-  // uint32 bit-vector add: signed int32_t add past the range is host UB.
-  int32_t predictPC = static_cast<int32_t>(static_cast<uint32_t>(pc) + 4u);
+  // uint32 bit-vector add: signed uint32_t add past the range is host UB.
+  uint32_t predictPC = pc + 4u;
   if (taken && btbHit) {
     if (isRet && static_cast<uint32_t>(tgt.RAS_top) > 0)
-      predictPC = static_cast<int32_t>(static_cast<uint32_t>(
+      predictPC = static_cast<uint32_t>(
           tgt.RAS[(static_cast<uint32_t>(tgt.RAS_top) - 1) & (RAS_CAP - 1)]
-              .retPC));
+              .retPC);
     else
-      predictPC = static_cast<int32_t>(snap.BTBTarget(BTB_index));
+      predictPC = static_cast<uint32_t>(tgt.BTB[BTB_index].target);
   }
   PredictInfo out{taken, predictPC};
   out.btbHit = btbHit;
-  out.unconditional = btbHit && snap.BTBUncond(BTB_index);
-  out.condSeen = snap.condSeen(p2 & (CONDSEEN_CAP - 1));
+  out.unconditional =
+      btbHit && static_cast<bool>(tgt.BTB[BTB_index].unconditional);
+  out.condSeen = static_cast<bool>(tgt.condSeen[p2 & (CONDSEEN_CAP - 1)]);
   return out;
 }
 
@@ -200,58 +58,107 @@ bool BPU::fetchAllowed() const {
 }
 
 // ---- fetch-stage prediction bundle (retired FetchDecision::build).
-//      Each mid net calls predict() once; re-runs stay bit-identical. ----
+//      Each out net calls predict() once; re-runs stay bit-identical. ----
 void BPU::wire_output() {
-  mid.predPC = [this]() -> uint32_t {
-    if (!fetchAllowed()) return 0u;
+  outPredPC = [this]() -> uint32_t {
+    if (!fetchAllowed())
+      return 0u;
     const PredictInfo p =
-        predict(static_cast<int32_t>(static_cast<uint32_t>(fetchCtx.pc)));
+        predict(static_cast<uint32_t>(static_cast<uint32_t>(fetchCtx.pc)));
     return p.taken ? static_cast<uint32_t>(p.predictPC)
                    : static_cast<uint32_t>(fetchCtx.pc) + 4u;
   };
-  mid.packed = [this]() -> uint32_t {
-    if (!fetchAllowed()) return 0u;
+  outPacked = [this]() -> uint32_t {
+    if (!fetchAllowed())
+      return 0u;
     const PredictInfo p =
-        predict(static_cast<int32_t>(static_cast<uint32_t>(fetchCtx.pc)));
+        predict(static_cast<uint32_t>(static_cast<uint32_t>(fetchCtx.pc)));
     // shift/shiftValue branch structure verbatim from build():
     // btbHit wins over condSeen; unconditional forces shiftValue.
     const bool shift = p.btbHit || p.condSeen;
     const bool shiftValue = p.btbHit ? (p.unconditional ? true : p.taken)
                                      : (p.condSeen ? p.taken : false);
     // ckptId starts at packed bit 2 (shift/shiftValue own bits 0/1).
-    uint32_t v =
-        (static_cast<uint32_t>(getNextCkptId()) & (CKPT_CAP - 1)) << 2;
-    if (shift) v |= 1u << 0;
-    if (shiftValue) v |= 1u << 1;
+    uint32_t v = (static_cast<uint32_t>(getNextCkptId()) & (CKPT_CAP - 1)) << 2;
+    if (shift)
+      v |= 1u << 0;
+    if (shiftValue)
+      v |= 1u << 1;
     return v;
   };
-  fetchOut.valid = [this]() -> uint32_t { return fetchAllowed() ? 1u : 0u; };
-  fetchOut.pc = [this]() -> uint32_t {
+  outValid = [this]() -> uint32_t { return fetchAllowed() ? 1u : 0u; };
+  outPC = [this]() -> uint32_t {
     return fetchAllowed() ? static_cast<uint32_t>(fetchCtx.pc) : 0u;
   };
-  fetchOut.predictedPC = [this]() -> uint32_t {
-    return static_cast<uint32_t>(mid.predPC);
+  outPredictedPC = [this]() -> uint32_t {
+    return static_cast<uint32_t>(outPredPC);
   };
-  fetchOut.shift = [this]() -> uint32_t {
-    return (static_cast<uint32_t>(mid.packed) >> 0) & 0x1u;
+  outShift = [this]() -> uint32_t {
+    return (static_cast<uint32_t>(outPacked) >> 0) & 0x1u;
   };
-  fetchOut.shiftValue = [this]() -> uint32_t {
-    return (static_cast<uint32_t>(mid.packed) >> 1) & 0x1u;
+  outShiftValue = [this]() -> uint32_t {
+    return (static_cast<uint32_t>(outPacked) >> 1) & 0x1u;
   };
-  fetchOut.ckptId = [this]() -> uint32_t {
-    return (static_cast<uint32_t>(mid.packed) >> 2) & (CKPT_CAP - 1);
+  outCkptId = [this]() -> uint32_t {
+    return (static_cast<uint32_t>(outPacked) >> 2) & (CKPT_CAP - 1);
   };
 }
 
 BPUSnapshot BPU::snapshotCheckPoint() const {
   BPUSnapshot ckptSnap;
   ckptSnap.GHR_snapshot = getGHR();
-  ckptSnap.alignHead = static_cast<uint32_t>(tgt.alignHead);
   ckptSnap.alignTail = static_cast<uint32_t>(tgt.alignTail);
   ckptSnap.RAS_top = static_cast<uint32_t>(tgt.RAS_top);
   return ckptSnap;
 }
+// ---- training requests (decoded once at the top of work()) ----
+struct TrainReq {
+  bool valid = false;
+  bool isJump = false; // updateJump vs update
+  bool taken = false;
+  bool isRet = false;
+  uint32_t pc = 0;
+  uint32_t target = 0;
+  uint8_t ghr = 0;
+};
 
+// ---- per-cycle BTB write intents: one fixed-shape port per training source
+//      (fetch / cdb / bru), valid-gated; replaces the runtime-length plan ----
+struct BTBWriteIntent {
+  bool lineWrite = false;   // actualPC + valid + unconditional + isRet
+  bool targetWrite = false; // target write enable (fetch w/o static JAL target)
+  uint32_t index = 0;       // (pc >> 2) & (BTB_CAP - 1)
+  uint32_t actualPC = 0;
+  uint32_t target = 0;
+  bool unconditional = false;
+  bool isRet = false;
+};
+
+// Resolved JAL/JALR transfer (CDB port, or the BRU jump path).
+BTBWriteIntent jumpWriteIntent(const TrainReq &req) {
+  BTBWriteIntent intent;
+  intent.lineWrite = true;
+  intent.targetWrite = true;
+  intent.index = (req.pc >> 2) & (BTB_CAP - 1);
+  intent.actualPC = req.pc;
+  intent.target = req.target;
+  intent.unconditional = true;
+  intent.isRet = req.isRet;
+  return intent;
+}
+
+// True when both ports hit the same BTB line this cycle; the lower-priority
+// port yields (fetch > cdb > bru) at the write point.
+bool sameBTBLine(const BTBWriteIntent &first, const BTBWriteIntent &second) {
+  return first.lineWrite && second.lineWrite && first.index == second.index;
+}
+
+bool robTagMatches(const BPUInputROB &rob, RobTag tag) {
+  if (static_cast<bool>(rob.isROBEmpty))
+    return false;
+  const uint32_t slot = robSlot(tag);
+  return slot < ROB_CAP && static_cast<uint32_t>(rob.robTag[slot]) == tag;
+}
 void BPU::work() {
   // Cycle-0 boot: direction counters need non-zero init. Runs in parallel with
   // normal logic -- cycle 0 has ROB/BRU empty, so no training can race it.
@@ -261,11 +168,11 @@ void BPU::work() {
       dir.localPHT[i] <= 1;
       dir.globalPHT[i] <= 1;
     }
-    for (int i = 0; i < SELECTOR_CAP; ++i) dir.selector[i] <= 1;
+    for (int i = 0; i < SELECTOR_CAP; ++i)
+      dir.selector[i] <= 1;
     bootDone <= true;
   }
 
-  Snap snap(this);
   bool needSquash = static_cast<bool>(squash.needSquash);
   RobTag squashTag = static_cast<uint32_t>(squash.SquashTag);
   uint32_t squashCkpt = static_cast<uint32_t>(squash.SquashCkpt);
@@ -279,7 +186,8 @@ void BPU::work() {
     ++branchTotal;
     bool correct =
         pcResult == static_cast<uint32_t>(rob.robPredictPC[robSlot(brRobTag)]);
-    if (correct) ++branchCorrect;
+    if (correct)
+      ++branchCorrect;
     if (!needSquash || ROB::isOlder(brRobTag, squashTag)) {
       trBru.valid = true;
       trBru.isJump = false;
@@ -289,7 +197,8 @@ void BPU::work() {
       auto cid = static_cast<uint32_t>(rob.robCkptId[robSlot(brRobTag)]);
       // Checkpoints are written only by fetch allocation and read by squash;
       // same-cycle allocation and rollback use distinct IDs.
-      trBru.ghr = static_cast<uint32_t>(bpCkpt[cid].GHR);
+      trBru.ghr =
+          static_cast<uint8_t>(static_cast<uint32_t>(bpCkpt[cid].GHR));
     }
   }
   const RobTag cdbRobTag = static_cast<uint32_t>(cdb.cdbRobTag);
@@ -301,7 +210,8 @@ void BPU::work() {
         ROB::isOlder(static_cast<uint32_t>(cdb.cdbRobTag), squashTag)) {
       ++branchTotal;
       bool correct = pc == static_cast<uint32_t>(rob.robPredictPC[robIdx]);
-      if (correct) ++branchCorrect;
+      if (correct)
+        ++branchCorrect;
       trCdb.valid = true;
       trCdb.isJump = true;
       trCdb.pc = static_cast<uint32_t>(rob.robPC[robIdx]);
@@ -310,28 +220,78 @@ void BPU::work() {
     }
   }
 
-  // ---- two plans from the same snap, no bypass between ports ----
-  Plan p_bru, p_cdb;
-  if (trBru.valid)
-    p_bru =
-        trBru.isJump ? updateJumpPlan(trBru) : updatePlan(snap, trBru);
-  if (trCdb.valid) p_cdb = updateJumpPlan(trCdb);
+  // ---- write intents from the same cycle-start register state (Register
+  //      reads return _M_old, so ports cannot bypass each other) ----
+  BTBWriteIntent bruWriteIntent, cdbWriteIntent;
+  if (trBru.valid) {
+    if (trBru.isJump) {
+      bruWriteIntent = jumpWriteIntent(trBru);
+    } else {
+      const uint32_t p2 = trBru.pc >> 2;
+      const uint32_t localIndex = p2 & (BHT_CAP - 1);
+      const uint32_t globalIndex = (p2 ^ trBru.ghr) & (BHT_CAP - 1);
+      const uint32_t selectorIndex = (p2 ^ trBru.ghr) & (SELECTOR_CAP - 1);
+      uint32_t local = static_cast<uint32_t>(dir.localPHT[localIndex]);
+      uint32_t global = static_cast<uint32_t>(dir.globalPHT[globalIndex]);
+      const bool localPred = local >= 2;
+      const bool globalPred = global >= 2;
+      if (trBru.taken) {
+        if (local < 3)
+          ++local;
+        if (global < 3)
+          ++global;
+      } else {
+        if (local > 0)
+          --local;
+        if (global > 0)
+          --global;
+      }
+      dir.localPHT[localIndex] <= local;
+      dir.globalPHT[globalIndex] <= global;
+
+      if (globalPred == trBru.taken && localPred != trBru.taken) {
+        uint32_t choice = static_cast<uint32_t>(dir.selector[selectorIndex]);
+        if (choice < 3)
+          ++choice;
+        dir.selector[selectorIndex] <= choice;
+      } else if (localPred == trBru.taken && globalPred != trBru.taken) {
+        uint32_t choice = static_cast<uint32_t>(dir.selector[selectorIndex]);
+        if (choice > 0)
+          --choice;
+        dir.selector[selectorIndex] <= choice;
+      }
+
+      tgt.condSeen[p2 & (CONDSEEN_CAP - 1)] <= 1;
+
+      if (trBru.taken) {
+        const uint32_t btbIndex = p2 & (BTB_CAP - 1);
+        bruWriteIntent.lineWrite = true;
+        bruWriteIntent.targetWrite = true;
+        bruWriteIntent.index = btbIndex;
+        bruWriteIntent.actualPC = trBru.pc;
+        bruWriteIntent.target = trBru.target;
+        bruWriteIntent.unconditional = false;
+        bruWriteIntent.isRet = false;
+      }
+    }
+  }
+  if (trCdb.valid)
+    cdbWriteIntent = jumpWriteIntent(trCdb);
 
   // ---- fetch allocation (BRU-port speculative: bpCkpt/GHR/nextCkptId) ----
-  uint16_t ghrLocal = snap.ghr();
+  uint8_t ghrLocal = static_cast<uint32_t>(dir.GHR);
   uint32_t nextCkpt = static_cast<uint32_t>(nextCkptId);
-  if (static_cast<bool>(fetchOut.valid)) {
-    auto ckid = static_cast<uint32_t>(fetchOut.ckptId);
+  if (static_cast<bool>(outValid)) {
+    auto ckid = static_cast<uint32_t>(outCkptId);
     BPUSnapshot ckptSnap = snapshotCheckPoint();
     bpCkpt[ckid].GHR <= ckptSnap.GHR_snapshot;
-    bpCkpt[ckid].alignHead <= static_cast<uint32_t>(ckptSnap.alignHead);
     bpCkpt[ckid].alignTail <= static_cast<uint32_t>(ckptSnap.alignTail);
     bpCkpt[ckid].RAS_top <= static_cast<uint32_t>(ckptSnap.RAS_top);
-    if (static_cast<bool>(fetchOut.shift))
-      ghrLocal = static_cast<uint16_t>(
-          ((static_cast<uint32_t>(ghrLocal) << 1) |
-           (static_cast<bool>(fetchOut.shiftValue) ? 1u : 0u)) &
-          HISTORY_MASK);
+    if (static_cast<bool>(outShift))
+      ghrLocal =
+          static_cast<uint8_t>(((static_cast<uint32_t>(ghrLocal) << 1) |
+                                (static_cast<bool>(outShiftValue) ? 1u : 0u)) &
+                               HISTORY_MASK);
     nextCkpt = (ckid + 1) & (CKPT_CAP - 1);
   }
 
@@ -339,7 +299,6 @@ void BPU::work() {
   // override) ----
   uint32_t rasTop = static_cast<uint32_t>(tgt.RAS_top);
   uint32_t alignTail = static_cast<uint32_t>(tgt.alignTail);
-  uint32_t alignHead = static_cast<uint32_t>(tgt.alignHead);
   // Pre-fi-block base (main-tree semantics): the squash rewind range comes
   // from the comb snapshot, so this tick's journal entries survive.
   uint32_t alignTailPreFi = alignTail;
@@ -355,7 +314,7 @@ void BPU::work() {
     alTimes[i] = static_cast<uint32_t>(tgt.alignQueue[i].times);
   }
 
-  Plan p_fi;
+  BTBWriteIntent fetchWriteIntent;
   if (static_cast<bool>(fetchInfo.FetchValid)) {
     const uint32_t ra = static_cast<uint32_t>(fetchInfo.FetchPC) + 4;
     if (static_cast<bool>(fetchInfo.isFetchCall)) {
@@ -384,41 +343,29 @@ void BPU::work() {
       else
         --rasTop;
     }
-    // Early training (BRU-port fetch side; same-slot conflicts arbitrated in
-    // commit, fetch highest)
-    if (static_cast<bool>(fetchInfo.isFetchCall) ||
-        (!static_cast<bool>(fetchInfo.isFetchCall) &&
-         !static_cast<bool>(fetchInfo.isFetchRet))) {
-      auto BTB_index =
-          (static_cast<uint32_t>(fetchInfo.FetchPC) >> 2) & (BTB_CAP - 1);
-      p_fi.put(T_BTB_APC, BTB_index, static_cast<uint32_t>(fetchInfo.FetchPC));
-      p_fi.put(T_BTB_V, BTB_index, 1);
-      p_fi.put(T_BTB_UN, BTB_index, 1);
-      p_fi.put(T_BTB_RET, BTB_index, 0);
-      if (static_cast<bool>(fetchInfo.FetchJALTargetValid))
-        p_fi.put(T_BTB_TGT, BTB_index,
-                 static_cast<uint32_t>(fetchInfo.FetchJALTarget));
-    }
-    if (static_cast<bool>(fetchInfo.isFetchRet)) {
-      auto BTB_index =
-          (static_cast<uint32_t>(fetchInfo.FetchPC) >> 2) & (BTB_CAP - 1);
-      p_fi.put(T_BTB_APC, BTB_index, static_cast<uint32_t>(fetchInfo.FetchPC));
-      p_fi.put(T_BTB_V, BTB_index, 1);
-      p_fi.put(T_BTB_UN, BTB_index, 1);
-      p_fi.put(T_BTB_RET, BTB_index, 1);
-    }
+    // Early training (BRU-port fetch side; same-line conflicts arbitrated at
+    // the write ports below, fetch highest).
+    const uint32_t fetchPC = static_cast<uint32_t>(fetchInfo.FetchPC);
+    const bool isFetchRet = static_cast<bool>(fetchInfo.isFetchRet);
+    fetchWriteIntent.lineWrite = true;
+    fetchWriteIntent.index = (fetchPC >> 2) & (BTB_CAP - 1);
+    fetchWriteIntent.actualPC = fetchPC;
+    fetchWriteIntent.unconditional = true;
+    fetchWriteIntent.isRet = isFetchRet;
+    fetchWriteIntent.targetWrite =
+        !isFetchRet && static_cast<bool>(fetchInfo.FetchJALTargetValid);
+    fetchWriteIntent.target = static_cast<uint32_t>(fetchInfo.FetchJALTarget);
   }
 
   // Checkpoint allocation and squash rollback never coincide: the allocated
   // ckptId is always newer (ring distance >= 1), so bpCkpt reads never race.
-  dark::debug::assert(!(static_cast<bool>(fetchOut.valid) && needSquash),
+  dark::debug::assert(!(static_cast<bool>(outValid) && needSquash),
                       "fetch-alloc and squash-rollback in the same cycle");
   // ---- squash restore (highest priority over all speculative state) ----
   if (needSquash) {
     uint32_t ckid = squashCkpt & (CKPT_CAP - 1);
-    uint16_t ckptGHR = static_cast<uint32_t>(bpCkpt[ckid].GHR);
+    uint8_t ckptGHR = static_cast<uint32_t>(bpCkpt[ckid].GHR);
     uint32_t ckptAlignTail = static_cast<uint32_t>(bpCkpt[ckid].alignTail);
-    uint32_t ckptAlignHead = static_cast<uint32_t>(bpCkpt[ckid].alignHead);
     uint32_t ckptRasTop = static_cast<uint32_t>(bpCkpt[ckid].RAS_top);
     uint32_t curTail = alignTailPreFi;
     uint32_t base = ckptAlignTail;
@@ -426,7 +373,8 @@ void BPU::work() {
     // in uint8_t, so a uint32 subtraction would underflow and replay garbage.
     uint32_t dist = (curTail - base) & 0xFF;
     for (int k = 0; k < ALIGNQ_CAP; ++k) {
-      if (static_cast<uint32_t>(k) >= dist) continue;
+      if (static_cast<uint32_t>(k) >= dist)
+        continue;
       uint32_t pos = curTail - 1 - static_cast<uint32_t>(k);
       uint32_t idx = alIndex[pos & (ALIGNQ_CAP - 1)] & (RAS_CAP - 1);
       rasRetPC[idx] = alAddr[pos & (ALIGNQ_CAP - 1)];
@@ -434,75 +382,47 @@ void BPU::work() {
     }
     ghrLocal = ckptGHR;
     alignTail = ckptAlignTail;
-    alignHead = ckptAlignHead;
     rasTop = ckptRasTop;
     nextCkpt = (ckid + 1) & (CKPT_CAP - 1);
   }
 
-  // ---- commit: resource-typed arbitration, explicit next-state mux ----
-  {
-    // Merge fi > cdb > bru (first-in wins) so every physical Register is
-    // assigned at most once per cycle.
-    Plan merged;
-    auto mergeIn = [&](const Plan &src) {
-      for (uint32_t q = 0; q < src.nTab; ++q) {
-        const auto &e = src.tab[q];
-        bool dup = false;
-        for (uint32_t m = 0; m < merged.nTab; ++m)
-          if (merged.tab[m].kind == e.kind && merged.tab[m].idx == e.idx)
-            dup = true;
-        if (!dup) merged.put(e.kind, e.idx, e.val);
-      }
-    };
-    mergeIn(p_fi);
-    mergeIn(p_cdb);
-    mergeIn(p_bru);
+  // ---- BTB write-port arbitration: fetch > cdb > bru. The line fields and
+  //      target are arbitrated separately: a fetch write without a static JAL
+  //      target must not shadow a same-line target trained by cdb/bru. ----
+  auto writeBTBLine = [&](const BTBWriteIntent &intent) {
+    tgt.BTB[intent.index].actualPC <= intent.actualPC;
+    tgt.BTB[intent.index].valid <= 1;
+    tgt.BTB[intent.index].unconditional <= (intent.unconditional ? 1u : 0u);
+    tgt.BTB[intent.index].isRet <= (intent.isRet ? 1u : 0u);
+  };
+  const bool fetchCdbSameLine = sameBTBLine(fetchWriteIntent, cdbWriteIntent);
+  const bool fetchBruSameLine = sameBTBLine(fetchWriteIntent, bruWriteIntent);
+  const bool cdbBruSameLine = sameBTBLine(cdbWriteIntent, bruWriteIntent);
+  const bool fetchTargetBlocksCdb = fetchWriteIntent.lineWrite &&
+                                    fetchWriteIntent.targetWrite &&
+                                    fetchCdbSameLine;
+  const bool fetchTargetBlocksBru = fetchWriteIntent.lineWrite &&
+                                    fetchWriteIntent.targetWrite &&
+                                    fetchBruSameLine;
 
-    // Tables: single write per plan entry (merged already deduplicated).
-    auto apply = [&](const Plan &src) {
-      for (uint32_t k = 0; k < src.nTab; ++k) {
-        const auto &e = src.tab[k];
-        switch (e.kind) {
-          case T_LOCAL:
-            dir.localPHT[e.idx] <= e.val;
-            break;
-          case T_GLOBAL:
-            dir.globalPHT[e.idx] <= e.val;
-            break;
-          case T_SELECTOR:
-            dir.selector[e.idx] <= e.val;
-            break;
-          case T_COND:
-            tgt.condSeen[e.idx] <= e.val;
-            break;
-          case T_BTB_APC:
-            tgt.BTB[e.idx].actualPC <= e.val;
-            break;
-          case T_BTB_TGT:
-            tgt.BTB[e.idx].target <= e.val;
-            break;
-          case T_BTB_V:
-            tgt.BTB[e.idx].valid <= e.val;
-            break;
-          case T_BTB_UN:
-            tgt.BTB[e.idx].unconditional <= e.val;
-            break;
-          case T_BTB_RET:
-            tgt.BTB[e.idx].isRet <= e.val;
-            break;
-          default:
-            break;
-        }
-      }
-    };
-    apply(merged);
-  }
+  if (fetchWriteIntent.lineWrite)
+    writeBTBLine(fetchWriteIntent);
+  if (cdbWriteIntent.lineWrite && !fetchCdbSameLine)
+    writeBTBLine(cdbWriteIntent);
+  if (bruWriteIntent.lineWrite && !fetchBruSameLine && !cdbBruSameLine)
+    writeBTBLine(bruWriteIntent);
+
+  if (fetchWriteIntent.lineWrite && fetchWriteIntent.targetWrite)
+    tgt.BTB[fetchWriteIntent.index].target <= fetchWriteIntent.target;
+  if (cdbWriteIntent.lineWrite && !fetchTargetBlocksCdb)
+    tgt.BTB[cdbWriteIntent.index].target <= cdbWriteIntent.target;
+  if (bruWriteIntent.lineWrite && !fetchTargetBlocksBru && !cdbBruSameLine)
+    tgt.BTB[bruWriteIntent.index].target <= bruWriteIntent.target;
 
   // Speculative-state writeback (squash > BRU; CDB never participates)
   dir.GHR <= ghrLocal;
   nextCkptId <= nextCkpt;
   tgt.RAS_top <= rasTop;
-  tgt.alignHead <= alignHead;
   tgt.alignTail <= alignTail;
 
   for (int i = 0; i < RAS_CAP; ++i) {
