@@ -249,13 +249,13 @@ void LQ::work() {
     head <= ((static_cast<uint32_t>(head) + 1) & LQ_MASK);
   }
 
-  // 6. load response — checks the state accumulated by this cycle's earlier
-  //    writes (main-tree order), not the cycle-start snapshot. robTag is only
-  //    written by pushLoad at the (inactive) old tail, so the old value is
-  //    always equal to the live value here.
+  // 6. load response — the cycle-start FETCHING state proves this entry was
+  //    already waiting for the response; stateAfter preserves store-forward
+  //    priority over a response arriving in the same cycle.
   if (static_cast<bool>(loadResp.loadRespValid)) {
     auto idx = memSlot(static_cast<uint32_t>(loadResp.loadRespMemIndex));
     if (static_cast<uint32_t>(LQqueue[idx].robTag) == static_cast<uint32_t>(loadResp.loadRespRobTag) &&
+        static_cast<uint32_t>(LQqueue[idx].valueState) == static_cast<uint32_t>(ValueState::FETCHING) &&
         stateAfter(static_cast<int>(idx)) == static_cast<uint32_t>(ValueState::FETCHING)) {
       writeValueIntent(static_cast<int>(idx), static_cast<uint32_t>(loadResp.loadRespValue));
     }

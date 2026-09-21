@@ -39,7 +39,7 @@ struct BPUInputROB {
 };
 // Fetch-context ports feeding the prediction bundle: the fetch stage hands
 // the predictor the current PC plus the fetch-stall/squash gates; the
-// predictor answers through BPUOutput.fetchOut. Hardware counterpart: the
+// predictor answers through the BPUOutput out* wires. Hardware counterpart: the
 // NPC/redirect combinational cloud inside the predictor unit (fetch context
 // in, prediction bundle out).
 struct BPUInputFetchCtx {
@@ -66,30 +66,15 @@ struct BPUInput {
   BPUInputFetchTypeInfo fetchInfo;
 };
 
-// ---- Output: fetch-stage prediction bundle (the retired comb-built
-// FetchDecision CPU member, now owned by its single producer). mid.* are
-// internal combinational nets of the always_comb cloud (two <=32b packed
-// nodes so predict() is evaluated at most twice per cycle; period-freeze
-// makes any re-evaluation bit-identical anyway). fetchOut.* are the
-// consumer-facing fields, 0-filled whenever the fetch is gated --
-// bit-identical to the retired default-initialized struct.
-// packed bit map (LSB-first): [0] shift, [1] shiftValue,
-// [2+CKPT_ID_WIDTH-1:2] ckptId.
-struct BPUOutputMid {
-  Wire<32> predPC; // guarded (taken ? predictPC : pc+4)
-  Wire<32> packed;
-};
-struct BPUOutputFetch {
-  Wire<1> valid;
-  Wire<32> pc;
-  Wire<32> predictedPC;
-  Wire<1> shift;
-  Wire<1> shiftValue;
-  Wire<CKPT_ID_WIDTH> ckptId;
-};
 struct BPUOutput {
-  BPUOutputMid mid;
-  BPUOutputFetch fetchOut;
+  Wire<32> outPredPC; // guarded (taken ? predictPC : pc+4)
+  Wire<32> outPacked;
+  Wire<1> outValid;
+  Wire<32> outPC;
+  Wire<32> outPredictedPC;
+  Wire<1> outShift;
+  Wire<1> outShiftValue;
+  Wire<CKPT_ID_WIDTH> outCkptId;
 };
 
 // SARAS correction queue entry: the address, its LIFO position, and the
@@ -99,12 +84,12 @@ struct BPUOutput {
 struct AlignEntry {
   Register<32> addr;
   Register<8> index;
-  Register<32> times;
+  Register<RAS_TIMES_WIDTH> times;
 };
 
 struct RASEntry {
   Register<32> retPC;
-  Register<32> times;
+  Register<RAS_TIMES_WIDTH> times;
 };
 // Register-storage mirror of the comb-domain BTB line.
 struct BTBEntryReg {
@@ -116,8 +101,7 @@ struct BTBEntryReg {
 };
 // Register-storage mirror of the plain BPUSnapshot (comb-domain).
 struct BPUSnapshotReg {
-  Register<16> GHR;
-  Register<8> alignHead;
+  Register<8> GHR;
   Register<8> alignTail;
   Register<8> RAS_top;
 };
@@ -129,19 +113,18 @@ struct DirectionPred {
   std::array<Register<2>, BHT_CAP> localPHT;
   std::array<Register<2>, BHT_CAP> globalPHT;
   std::array<Register<2>, SELECTOR_CAP> selector;
-  Register<16> GHR;
+  Register<8> GHR;
 };
 
 // Target prediction ("where to jump"): BTB (targets + jump type) and the
-// SARAS ring return-address stack with its correction queue. All three
-// ring counters are uint8_t and wrap at 256, well beyond the current
+// SARAS ring return-address stack with its correction queue. Its ring
+// counters are uint8_t and wrap at 256, well beyond the current
 // ROB_CAP=16 and local queue capacities (ALIGNQ_CAP=16/RAS_CAP=8).
 struct TargetPred {
   std::array<BTBEntryReg, BTB_CAP> BTB;
   std::array<RASEntry, RAS_CAP> RAS;
   Register<8> RAS_top; // ring write pointer (wraps at 256)
   std::array<AlignEntry, ALIGNQ_CAP> alignQueue;
-  Register<8> alignHead; // AlignQueue head (advanced at commit)
   Register<8> alignTail; // AlignQueue tail (appended on CALL-dedup / RET)
   // Branch-type filter: set when a PC resolves as a conditional (taken or
   // not). Lets the fetch stage shift the GHR for conditionals that are not
@@ -160,16 +143,13 @@ struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   BPU() { wire_output(); }
   uint64_t branchTotal = 0;
   uint64_t branchCorrect = 0;
-
-  uint16_t getGHR() const { return static_cast<uint32_t>(dir.GHR); }
-
+  uint8_t getGHR() const { return static_cast<uint32_t>(dir.GHR); }
   uint64_t getBranchTotal() const { return branchTotal; }
   uint64_t getBranchCorrect() const { return branchCorrect; }
-  PredictInfo predict(int32_t pc) const;
+  PredictInfo predict(uint32_t pc) const;
   BPUSnapshot snapshotCheckPoint() const;
   uint8_t getNextCkptId() const { return static_cast<uint32_t>(nextCkptId); }
   void work() override;
-
 private:
   // Fetch-direction guard, verbatim from the retired FetchDecision::build.
   bool fetchAllowed() const;

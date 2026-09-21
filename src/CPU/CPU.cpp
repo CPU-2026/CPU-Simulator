@@ -81,7 +81,7 @@ void CPU::wire() {
   // Wire FetchUnit's input wires once. needSquash/SquashPC come straight from
   // FlushArbiter (single producer, via its combinational member accessor);
   // haltSignal from ICache's combinational predicate; FetchValid/PredictPC
-  // sample the BPU-owned prediction bundle (BPUOutput.fetchOut). Note: the
+  // sample the BPU-owned prediction bundle (BPUOutput flat out* wires). Note: the
   // module inherits its Input, so wire the module instance
   // (FetchUnitModule.xxx), not a separate Input member.
   FetchUnitModule.needSquash = [this]() {
@@ -91,10 +91,10 @@ void CPU::wire() {
     return static_cast<uint32_t>(flushArbiter.SquashPC);
   };
   FetchUnitModule.FetchValid = [this]() {
-    return static_cast<uint32_t>(BPUModule.fetchOut.valid);
+    return static_cast<uint32_t>(BPUModule.outValid);
   };
   FetchUnitModule.PredictPC = [this]() {
-    return static_cast<uint32_t>(BPUModule.fetchOut.predictedPC);
+    return static_cast<uint32_t>(BPUModule.outPredictedPC);
   };
   FetchUnitModule.haltSignal = [this]() { return ICacheModule.isHaltSignal(); };
 
@@ -144,11 +144,11 @@ void CPU::wire() {
   // original comb() gated imemFetch: a fetch that hits in the ICache must
   // NOT claim an IMEM line, and the claimed address is 16B-line aligned
   IMEMModule.fetchValid = [this]() {
-    return static_cast<bool>(BPUModule.fetchOut.valid) &&
-           !ICacheModule.hit(static_cast<uint32_t>(BPUModule.fetchOut.pc));
+    return static_cast<bool>(BPUModule.outValid) &&
+           !ICacheModule.hit(static_cast<uint32_t>(BPUModule.outPC));
   };
   IMEMModule.fetchPC = [this]() {
-    return static_cast<uint32_t>(BPUModule.fetchOut.pc) & ~0xFu;
+    return static_cast<uint32_t>(BPUModule.outPC) & ~0xFu;
   };
   IMEMModule.lineConsumed = [this]() { return IMEMModule.retValid(); };
 
@@ -161,16 +161,16 @@ void CPU::wire() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
   ICacheModule.fetchValid = [this]() {
-    return static_cast<uint32_t>(BPUModule.fetchOut.valid);
+    return static_cast<uint32_t>(BPUModule.outValid);
   };
   ICacheModule.fetchPC = [this]() {
-    return static_cast<uint32_t>(BPUModule.fetchOut.pc);
+    return static_cast<uint32_t>(BPUModule.outPC);
   };
   ICacheModule.fetchPredictPC = [this]() {
-    return static_cast<uint32_t>(BPUModule.fetchOut.predictedPC);
+    return static_cast<uint32_t>(BPUModule.outPredictedPC);
   };
   ICacheModule.fetchCkptId = [this]() {
-    return static_cast<uint32_t>(BPUModule.fetchOut.ckptId);
+    return static_cast<uint32_t>(BPUModule.outCkptId);
   };
   ICacheModule.popConsume = [this]() {
     return ICacheModule.isReturnReady() &&
