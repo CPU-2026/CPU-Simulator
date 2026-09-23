@@ -24,6 +24,8 @@ enum Topic : unsigned {
   // must answer to the same VERBOSE token. Both "icache" and the historical
   // "dcache" spelling are accepted below (see parseVerbose).
   TOPIC_ICACHE = 1u << 11,
+  TOPIC_CFTRACE = 1u << 13,
+  TOPIC_PROFILE = 1u << 14,
   TOPIC_ALL = 0xFFFFFFFFu,
 };
 
@@ -63,6 +65,10 @@ static unsigned parseVerbose(const char *env) {
       mask |= TOPIC_ICACHE;
     else if (len == 6 && strncmp(p, "dcache", 6) == 0)
       mask |= TOPIC_ICACHE; // legacy spelling, same cache-profile dump
+    else if (len == 7 && strncmp(p, "cftrace", 7) == 0)
+      mask |= TOPIC_CFTRACE;
+    else if (len == 7 && strncmp(p, "profile", 7) == 0)
+      mask |= TOPIC_PROFILE;
     if (end == nullptr)
       break;
     p = end + 1;
@@ -83,4 +89,3 @@ inline void print(const char *fmt, ...) {
 }
 
 } // namespace debug
-

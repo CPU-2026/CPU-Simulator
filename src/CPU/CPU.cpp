@@ -2,6 +2,7 @@
 #include "../include/util.hpp"
 #include "common.h"
 #include <cassert>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -41,6 +42,13 @@ FetchTypeInfo scanJump(bool valid, uint32_t raw, uint32_t pc) {
     fi.valid = true;
   }
   return fi;
+}
+
+uint32_t instructionAt(const IMEM &imem, uint32_t pc) {
+  return static_cast<uint32_t>(imem.read_data(pc)) |
+         (static_cast<uint32_t>(imem.read_data(pc + 1)) << 8) |
+         (static_cast<uint32_t>(imem.read_data(pc + 2)) << 16) |
+         (static_cast<uint32_t>(imem.read_data(pc + 3)) << 24);
 }
 } // namespace
 
@@ -680,9 +688,6 @@ void CPU::wire() {
   PRFModule.squash.SquashTag = [this]() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
-  PRFModule.squash.CkptId = [this]() {
-    return static_cast<uint32_t>(flushArbiter.CkptId);
-  };
   // dual-CDB write ports: ALU group keeps isControl (PRF never writes control
   // results); the LQ group omits it (loads are never control ops). newPhy is
   // looked up from the ROB entry by tag, valid-gated (a broadcast only ever
@@ -794,13 +799,21 @@ void CPU::wire() {
         ROBModule.entry
             .oldPhy[robSlot(static_cast<uint32_t>(ROBModule.headView.head))]);
   };
+  // Squash-recovery scan inputs: pre-flush next tag (range end) + per-slot
+  // newPhy array (same-source pattern as RATModule.rob.next/newPhy).
+  PRFModule.rob.robNextTag = [this]() { return ROBModule.getNextTag(); };
+  for (int i = 0; i < ROB_CAP; ++i) {
+    PRFModule.rob.robNewPhy[i] = [this, i]() {
+      return static_cast<uint32_t>(ROBModule.entry.newPhy[i]);
+    };
+  }
 
   // Wire RAT's Input Wires
   RATModule.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
-  RATModule.SquashCkptId = [this]() {
-    return static_cast<uint32_t>(flushArbiter.CkptId);
+  RATModule.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
   RATModule.issueValid = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.valid);
@@ -814,9 +827,39 @@ void CPU::wire() {
   RATModule.issueAllocDest = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.allocDest);
   };
-  RATModule.issueCkptId = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.ckptId);
+  RATModule.rob.isEmpty = [this]() {
+    return static_cast<uint32_t>(ROBModule.headView.isEmpty);
   };
+  RATModule.rob.willCommit = [this]() {
+    return ROBModule.willCommit() ? 1u : 0u;
+  };
+  RATModule.rob.head = [this]() {
+    return static_cast<uint32_t>(ROBModule.headView.head);
+  };
+  RATModule.rob.next = [this]() { return ROBModule.getNextTag(); };
+  RATModule.rob.headDest = [this]() {
+    if (static_cast<bool>(ROBModule.headView.isEmpty))
+      return 0u;
+    return static_cast<uint32_t>(ROBModule.entry.dest[robSlot(
+        static_cast<uint32_t>(ROBModule.headView.head))]);
+  };
+  RATModule.rob.headNewPhy = [this]() {
+    if (static_cast<bool>(ROBModule.headView.isEmpty))
+      return static_cast<uint32_t>(InvalidPhy);
+    return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(
+        static_cast<uint32_t>(ROBModule.headView.head))]);
+  };
+  for (int i = 0; i < ROB_CAP; ++i) {
+    RATModule.rob.tag[i] = [this, i]() {
+      return static_cast<uint32_t>(ROBModule.entry.tag[i]);
+    };
+    RATModule.rob.dest[i] = [this, i]() {
+      return static_cast<uint32_t>(ROBModule.entry.dest[i]);
+    };
+    RATModule.rob.newPhy[i] = [this, i]() {
+      return static_cast<uint32_t>(ROBModule.entry.newPhy[i]);
+    };
+  }
 
   // ---- Wire the IssueArbiter's Input Wires (stateless issue arbiter; the
   // former build() read these same producer bridges from comb, so every wire
@@ -1532,6 +1575,9 @@ void CPU::wire() {
   ROBModule.issue.entry.halt = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.halt);
   };
+  ROBModule.issue.entry.isCall = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.robEntry.isCall);
+  };
   ROBModule.issue.entry.isRet = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.isRet);
   };
@@ -1612,39 +1658,6 @@ void CPU::wire() {
       return static_cast<uint32_t>(ROBModule.entry.ckptId[i]);
     };
   }
-  flushArbiter.agu.isAGUEmpty = [this]() {
-    return AGUModule.isEmpty() ? 1u : 0u;
-  };
-  flushArbiter.agu.aguHeadValue = [this]() {
-    return AGUModule.headValue();
-  };
-  flushArbiter.agu.aguHeadMemIndex = [this]() {
-    return static_cast<uint32_t>(AGUModule.headMemIndex());
-  };
-  flushArbiter.agu.aguHeadRobTag = [this]() {
-    return static_cast<uint32_t>(AGUModule.headRobTag());
-  };
-  flushArbiter.lq.lqHead = [this]() {
-    return static_cast<uint32_t>(LQModule.getHead());
-  };
-  for (int i = 0; i < LQ_CAP; ++i) {
-    flushArbiter.lq.lqActive[i] = [this, i]() {
-      return LQModule.isActive(i) ? 1u : 0u;
-    };
-    flushArbiter.lq.lqAddressReady[i] = [this, i]() {
-      return LQModule.isAddressReady(i) ? 1u : 0u;
-    };
-    flushArbiter.lq.lqRobTags[i] = [this, i]() {
-      return static_cast<uint32_t>(LQModule.getRobTag(i));
-    };
-    flushArbiter.lq.lqAddress[i] = [this, i]() {
-      return static_cast<uint32_t>(LQModule.getAddress(i));
-    };
-    flushArbiter.lq.lqValueState[i] = [this, i]() {
-      return LQModule.getValueState(i);
-    };
-  }
-
   // ---- Wire BPU's Input Wires (BRU=EX/投机口, CDB=commit/表口) ----
   BPUModule.squash.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash) ? 1u : 0u;
@@ -1686,6 +1699,9 @@ void CPU::wire() {
   BPUModule.rob.robHeadTag = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.head);
   };
+  BPUModule.rob.robWillCommit = [this]() {
+    return ROBModule.willCommit() ? 1u : 0u;
+  };
   for (int i = 0; i < ROB_CAP; ++i) {
     BPUModule.rob.robTag[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.tag[i]);
@@ -1695,6 +1711,9 @@ void CPU::wire() {
     };
     BPUModule.rob.robPC[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.pc[i]);
+    };
+    BPUModule.rob.robIsCall[i] = [this, i]() {
+      return static_cast<uint32_t>(ROBModule.entry.isCall[i]);
     };
     BPUModule.rob.robIsRet[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.isRet[i]);
@@ -1911,6 +1930,8 @@ void CPU::run(bool shuffle) {
   uint64_t ipcRetired = 0;
   uint64_t ipcCycles = 0;
   bool ipcFrozen = false;
+  uint64_t mixAlu = 0, mixLoad = 0, mixStore = 0, mixBranch = 0;
+  uint64_t mixJal = 0, mixJalr = 0, mixMul = 0, mixDivRem = 0, mixOther = 0;
   while (!finish) {
     // Snapshot semantics (mirrors main tree): finish samples the state as of
     // the START of this cycle, not the post-sync state -- the sampling MUST
@@ -1925,6 +1946,61 @@ void CPU::run(bool shuffle) {
     const uint32_t headBefore =
         static_cast<uint32_t>(ROBModule.headView.head);
     const bool haltBefore = s_halt;
+    const uint32_t headPCBefore = ROBModule.isEmpty()
+                                      ? 0
+                                      : static_cast<uint32_t>(ROBModule.entry.pc[
+                                            headBefore & (ROB_CAP - 1)]);
+    const uint32_t headInsnBefore = instructionAt(IMEMModule, headPCBefore);
+    if (debug::enabled(debug::TOPIC_CFTRACE)) {
+      if (static_cast<bool>(BPUModule.outValid)) {
+        const uint32_t pc = static_cast<uint32_t>(BPUModule.outPC);
+        const auto prediction = BPUModule.predict(pc);
+        const auto snapshot = BPUModule.traceState();
+        debug::print(
+            "CF_FETCH t=%llu pc=%08x instr=%08x pred=%08x ptaken=%u btb=%u "
+            "ghr=%02x ckpt=%u\n",
+            dcpu.cycles, pc, instructionAt(IMEMModule, pc),
+            static_cast<uint32_t>(BPUModule.outPredictedPC), prediction.taken,
+            prediction.btbHit, snapshot.GHR_snapshot,
+            static_cast<uint32_t>(BPUModule.outCkptId));
+      }
+      const auto branchTag = BRUModule.headRobTag();
+      if (!BRUModule.isEmpty() && ROBModule.matchesTag(branchTag) &&
+          (!static_cast<bool>(flushArbiter.needSquash) ||
+           ROB::isOlder(branchTag, static_cast<uint32_t>(flushArbiter.SquashTag)))) {
+        const auto index = branchTag & (ROB_CAP - 1);
+        const auto pc = BRUModule.headPCFrom();
+        const auto actual = BRUModule.headPCResult();
+        const auto ckpt = static_cast<uint32_t>(ROBModule.entry.ckptId[index]);
+        const auto snapshot = BPUModule.traceCheckpoint(ckpt);
+        const auto predicted = static_cast<uint32_t>(ROBModule.entry.predictedPC[index]);
+        debug::print(
+            "CF_EXEC t=%llu kind=BR pc=%08x instr=%08x tag=%u ckpt=%u pred=%08x "
+            "actual=%08x taken=%u miss=%u recover=%u fghr=%02x\n",
+            dcpu.cycles, pc, instructionAt(IMEMModule, pc), branchTag, ckpt,
+            predicted, actual, actual != pc + 4u, actual != predicted,
+            actual != predicted, snapshot.GHR_snapshot);
+      }
+      const auto cdbTag = static_cast<uint32_t>(AluCDBArbiterModule.robTag);
+      if (AluCDBArbiterModule.valid && AluCDBArbiterModule.isControl &&
+          ROBModule.matchesTag(cdbTag) &&
+          (!static_cast<bool>(flushArbiter.needSquash) ||
+           ROB::isOlder(cdbTag, static_cast<uint32_t>(flushArbiter.SquashTag)))) {
+        const auto index = cdbTag & (ROB_CAP - 1);
+        const auto pc = static_cast<uint32_t>(ROBModule.entry.pc[index]);
+        const auto ckpt = static_cast<uint32_t>(ROBModule.entry.ckptId[index]);
+        const auto snapshot = BPUModule.traceCheckpoint(ckpt);
+        const auto predicted = static_cast<uint32_t>(ROBModule.entry.predictedPC[index]);
+        const auto actual = static_cast<uint32_t>(AluCDBArbiterModule.value);
+        const uint32_t raw = instructionAt(IMEMModule, pc);
+        debug::print(
+            "CF_EXEC t=%llu kind=%s pc=%08x instr=%08x tag=%u ckpt=%u pred=%08x "
+            "actual=%08x taken=1 miss=%u recover=%u fghr=%02x\n",
+            dcpu.cycles, ((raw & 0x7F) == 0x67) ? "JALR" : "JAL", pc, raw,
+            cdbTag, ckpt, predicted, actual, actual != predicted,
+            actual != predicted, snapshot.GHR_snapshot);
+      }
+    }
     if (shuffle)
       dcpu.run_once_shuffle();
     else
@@ -1937,6 +2013,38 @@ void CPU::run(bool shuffle) {
     assert(!haltCommitted || committed != 0);
     if (!ipcFrozen) {
       retired += committed - static_cast<uint32_t>(haltCommitted);
+      if (committed && !haltCommitted) {
+        const uint32_t opcode = headInsnBefore & 0x7F;
+        const uint32_t funct3 = (headInsnBefore >> 12) & 0x7;
+        const uint32_t funct7 = (headInsnBefore >> 25) & 0x7F;
+        if (opcode == 0x03)
+          ++mixLoad;
+        else if (opcode == 0x23)
+          ++mixStore;
+        else if (opcode == 0x63)
+          ++mixBranch;
+        else if (opcode == 0x6F)
+          ++mixJal;
+        else if (opcode == 0x67)
+          ++mixJalr;
+        else if (opcode == 0x33 && funct7 == 1 && funct3 < 4)
+          ++mixMul;
+        else if (opcode == 0x33 && funct7 == 1)
+          ++mixDivRem;
+        else if (opcode == 0x33 || opcode == 0x13 || opcode == 0x17 ||
+                 opcode == 0x37)
+          ++mixAlu;
+        else
+          ++mixOther;
+        if (debug::enabled(debug::TOPIC_CFTRACE) &&
+            (opcode == 0x63 || opcode == 0x6F || opcode == 0x67)) {
+          const auto index = headBefore & (ROB_CAP - 1);
+          debug::print("CF_COMMIT t=%llu pc=%08x instr=%08x tag=%u pred=%08x ckpt=%u\n",
+                       dcpu.cycles, headPCBefore, headInsnBefore, headBefore,
+                       static_cast<uint32_t>(ROBModule.entry.predictedPC[index]),
+                       static_cast<uint32_t>(ROBModule.entry.ckptId[index]));
+        }
+      }
       if (haltCommitted) {
         ipcRetired = retired;
         ipcCycles = dcpu.cycles;
@@ -1982,6 +2090,13 @@ void CPU::run(bool shuffle) {
                            : 0.0,
                  ipcRetired, ipcCycles);
   }
+  if (debug::enabled(debug::TOPIC_PROFILE)) {
+    debug::print(
+        "PROFILE retired=%llu alu=%llu load=%llu store=%llu branch=%llu jal=%llu "
+        "jalr=%llu mul=%llu divrem=%llu other=%llu\n",
+        ipcRetired, mixAlu, mixLoad, mixStore, mixBranch, mixJal, mixJalr,
+        mixMul, mixDivRem, mixOther);
+  }
   if (debug::enabled(debug::TOPIC_BRANCH))
     debug::print("branch: %llu/%llu correct (%.2f%%)\n",
                  BPUModule.getBranchCorrect(), BPUModule.getBranchTotal(),
@@ -1989,9 +2104,9 @@ void CPU::run(bool shuffle) {
                      ? 100.0 * BPUModule.getBranchCorrect() /
                            BPUModule.getBranchTotal()
                      : 0.0);
-  std::cout << std::dec
-            << (PRFModule.getValue(
-                    RATModule.readRAT_PRF(ROBModule.getHaltRd())) &
-                0xFF)
+  const uint32_t halt_x10 = static_cast<uint32_t>(PRFModule.getValue(
+      RATModule.readRAT_PRF(ROBModule.getHaltRd())));
+  const bool print_full_x10 = std::getenv("RESULT_FULL") != nullptr;
+  std::cout << std::dec << (print_full_x10 ? halt_x10 : (halt_x10 & 0xFF))
             << std::endl;
 }

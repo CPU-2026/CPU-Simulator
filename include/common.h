@@ -73,15 +73,12 @@ static_assert((1 << GHR_WIDTH) >= BHT_CAP &&
                   (1 << GHR_WIDTH) >= SELECTOR_CAP,
               "GHR must cover the direction-table index width");
 constexpr uint16_t HISTORY_MASK = (1u << GHR_WIDTH) - 1;
-constexpr int RAS_CAP = 8;
-constexpr int ALIGNQ_CAP = 16;
-// Smallest carrier that keeps the 18-case golden behavior: the SARAS call-dedup
-// counter reaches 323 on queens (next largest corpus value is tak's 16), so 8
-// bits wraps and 9 bits is the floor. There is no static capacity-derived bound
-// (speculative dedup chains outrun the ALIGNQ_CAP rewind window); a deeper
-// chain only degrades prediction, never architectural state.
-constexpr int RAS_TIMES_WIDTH = 9;
-static_assert(RAS_TIMES_WIDTH >= 1 && RAS_TIMES_WIDTH <= 32);
+// Arch + speculative RAS pair (mirrors the main tree): the tops are
+// non-wrapping depths in [0, RAS_CAP]. Recovery restores the committed
+// baseline and replays the surviving ROB prefix through the squash tag.
+constexpr int RAS_CAP = 32;
+static_assert(RAS_CAP > 0 && RAS_CAP <= 0xFF,
+              "RAS top is an 8-bit non-wrapping depth");
 constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
 // Smallest carrier for a physical-register tag: real tags are 1..PRF_CAP-1
 // (P0 is the InvalidPhy sentinel), so bit_width(PRF_CAP-1) bits suffice.
@@ -159,7 +156,7 @@ static_assert(ROB_CAP < (static_cast<uint32_t>(PRF_CAP) << 1),
 // allocated (freeList only ever holds 32..PRF_CAP-1) and never mapped
 // (RAT binds x1-x31 at reset; rd==0 never allocates), so real tags are
 // always in 1..PRF_CAP-1 and 0 is unambiguous. Guarded by asserts in PRF::pop,
-// PRF::push, RAT::setRAT_PRF and IssueArbiter::resolveSrc.
+// PRF::push, RAT mapping writers and IssueArbiter::resolveSrc.
 inline constexpr int InvalidPhy = 0;
 constexpr int IMEM_CAP = 16;
 constexpr int CKPT_CAP = 32;
@@ -264,14 +261,9 @@ struct PredictInfo {
 };
 
 struct BPUSnapshot {
-  // SARAS: the checkpoint keeps the direction GHR, the AlignQueue tail, and
-  // RAS_top. With RASEntry{retPC,times}, the height != call/ret depth, so
-  // RAS_top is checkpointed directly. The counters are uint8_t — ring
-  // counters wrap at 256, well beyond the current ROB_CAP and local queue
-  // capacities.
+  // RAS recovery starts from archRAS and replays the surviving ROB prefix, so
+  // a branch checkpoint only needs the speculative direction history.
   uint8_t GHR_snapshot;
-  uint8_t alignTail;
-  uint8_t RAS_top;
 };
 
 struct Uop {

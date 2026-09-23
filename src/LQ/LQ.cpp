@@ -1,7 +1,6 @@
 #include "../include/LQ.hpp"
 #include "../include/ROB.hpp"
 #include <cstdint>
-#include <iostream>
 #include <stdexcept>
 
 namespace {

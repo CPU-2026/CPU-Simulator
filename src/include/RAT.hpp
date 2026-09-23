@@ -9,19 +9,29 @@ struct OperandInfo {
   int32_t value;
   uint32_t phyRegIndex;
 };
+struct RATInputROB {
+  Wire<1> isEmpty;
+  Wire<1> willCommit;
+  Wire<ROB_TAG_WIDTH> head;
+  Wire<ROB_TAG_WIDTH> next;
+  Wire<5> headDest;
+  Wire<PHY_TAG_WIDTH> headNewPhy;
+  std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> tag;
+  std::array<Wire<5>, ROB_CAP> dest;
+  std::array<Wire<PHY_TAG_WIDTH>, ROB_CAP> newPhy;
+};
 struct RATInput {
   Wire<1> needSquash;
-  Wire<CKPT_ID_WIDTH> SquashCkptId;
+  Wire<ROB_TAG_WIDTH> SquashTag;
   Wire<1> issueValid;
   Wire<PHY_TAG_WIDTH> issuePhy;
   Wire<5> issueDest;
   Wire<1> issueAllocDest;
-  Wire<CKPT_ID_WIDTH> issueCkptId;
+  RATInputROB rob;
 };
 struct RATInner {
-  std::array<Register<PHY_TAG_WIDTH>, REGISTER_CAP> RAT_PRF;
-  std::array<std::array<Register<PHY_TAG_WIDTH>, REGISTER_CAP>, CKPT_CAP>
-      ratCkpt;
+  std::array<Register<PHY_TAG_WIDTH>, REGISTER_CAP> specRAT;
+  std::array<Register<PHY_TAG_WIDTH>, REGISTER_CAP> archRAT;
   Register<1> bootDone;
 };
 

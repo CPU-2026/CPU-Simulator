@@ -121,9 +121,6 @@ public:
   auto getIsUnsigned(int index) const -> bool;
   auto getNBytes(int index) const -> int;
   bool isAddressReady(int index) const { return static_cast<bool>(LQqueue[index].isAddressReady); }
-  uint32_t getValueState(int index) const {
-    return static_cast<uint32_t>(LQqueue[index].valueState);
-  }
   int CDBDetect() const;
   int LoadDetect() const;
   void work() override;

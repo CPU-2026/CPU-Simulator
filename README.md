@@ -10,7 +10,7 @@ RV32IM 周期级乱序处理器模拟器。用 C++20 `Wire/Register` 建模，�
 cmake -S . -B build/quickstart -DCMAKE_BUILD_TYPE=Release \
   -DCPU_RUNTIME_OUTPUT_DIRECTORY="$PWD/build/quickstart/bin"
 cmake --build build/quickstart -j4
-VERBOSE=clock ./build/quickstart/bin/code < data/testcases/gcd.data
+RESULT_FULL=1 VERBOSE=clock ./build/quickstart/bin/code < data/testcases/gcd.data
 ```
 
 从标准输入读取字节镜像；`VERBOSE=clock` 将周期统计写到标准错误。

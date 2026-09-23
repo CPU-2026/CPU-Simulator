@@ -1,6 +1,6 @@
 #include "../include/PRF.hpp"
-#include "ROB.hpp"
 #include "../include/util.hpp"
+#include "ROB.hpp"
 #include <cassert>
 #include <cstdint>
 void PRF::work() {
@@ -18,12 +18,10 @@ void PRF::work() {
   // Cache frequently used Wire values as local combinational signals
   bool needSquash = static_cast<bool>(squash.needSquash);
   RobTag squashTag = static_cast<uint32_t>(squash.SquashTag);
-  uint8_t ckptId = static_cast<uint32_t>(squash.CkptId);
   bool robWillCommit = static_cast<bool>(rob.robWillCommit);
   bool issueValid = static_cast<bool>(issue.issueValid);
   bool issueAlloc = issueValid && static_cast<bool>(issue.issueAllocDest);
   uint8_t issuePhyVal = static_cast<uint32_t>(issue.issuePhy);
-  uint8_t issueCkpt = static_cast<uint32_t>(issue.issueCkptId);
   bool issueIsCtrl = static_cast<bool>(issue.issueIsControl);
   uint32_t issuePCVal = static_cast<uint32_t>(issue.issuePC);
 
@@ -125,28 +123,26 @@ void PRF::work() {
     PhysicalRegs[cdbPhyDiv].value <= cdbValDiv;
   }
 
-  // ---- Issue: PRFHeadCkpt snapshot + free-list pop ----
-  // Single-write-point for headSeq: compute next value, apply once at end.
+  // ---- Issue: squash owns recovery; only a non-squash cycle can pop. ----
   uint32_t curHead = static_cast<uint32_t>(headSeq);
-  uint32_t headSnap = issueAlloc ? prfSeqNext(static_cast<PrfSeq>(curHead))
-                                 : curHead;
   uint32_t nextHead = curHead;
   bool doPop = false;
   uint8_t popPhy = 0;
-  if (issueValid) {
-    PRFHeadCkpt[issueCkpt] <= headSnap;
-    if (issueAlloc) {
-      popPhy = static_cast<uint32_t>(freeList[prfSlot(static_cast<PrfSeq>(curHead))]);
-      assert(popPhy != InvalidPhy);
-      assert(popPhy == issuePhyVal);
-      nextHead = prfSeqNext(static_cast<PrfSeq>(curHead));
-      doPop = true;
+  if (!needSquash) {
+    if (issueValid) {
+      if (issueAlloc) {
+        assert(curHead != static_cast<uint32_t>(tailSeq));
+        popPhy = static_cast<uint32_t>(
+            freeList[prfSlot(static_cast<PrfSeq>(curHead))]);
+        assert(popPhy != InvalidPhy);
+        assert(popPhy == issuePhyVal);
+        nextHead = prfSeqNext(static_cast<PrfSeq>(curHead));
+        doPop = true;
+      }
     }
   }
-
-  // ---- Pop side effects (ready/link value): identical under squash or not,
-  // applied once here (reference tick does pop before the squash check) ----
   if (doPop) {
+    headSeq <= nextHead;
     if (issueIsCtrl) {
       if (debug::enabled(debug::TOPIC_PRF))
         debug::print("PRF link P%d = %d (pc+4)\n", issuePhyVal, issuePCVal + 4);
@@ -157,40 +153,57 @@ void PRF::work() {
     }
   }
 
-  // ---- Squash: single-write-point for headSeq, handles PRFHeadCkpt hazard
-  // ----
+  // ---- Squash recovery + commit release: gather recycled phys, apply once.
+  // Register discipline: tailSeq is written at most once per cycle and each
+  // freeList element at most once (slots are distinct: at most ROB_CAP+1
+  // pushes, well below one PRF ring). Order matches the reference tick:
+  // flushed newPhy range (SquashTag, oldNext) first, commit oldPhy last.
+  // No liveness check on SquashTag: the broadcast tag is live by
+  // construction -- the FlushArbiter queue clears the broadcast tag itself
+  // every cycle it fires (strict !isOlder clear), and both detection stages
+  // only insert matchesTag-live tags, all read from the same ROB snapshot.
+  uint32_t recPhy[ROB_CAP + 1];
+  uint32_t nRec = 0;
   if (needSquash) {
-    uint32_t ckptVal;
-    if (issueValid && ckptId == issueCkpt) {
-      // Same-cycle write-read hazard: use newly computed headSnap
-      ckptVal = headSnap;
-    } else {
-      ckptVal = static_cast<uint32_t>(PRFHeadCkpt[ckptId]);
+    const RobTag oldNext = static_cast<uint32_t>(rob.robNextTag);
+    RobTag tag = robNextTag(squashTag);
+    bool scanDone = (tag == oldNext);
+    for (int k = 0; k < ROB_CAP; ++k) {
+      if (scanDone)
+        continue;
+      uint32_t recoverPRF = static_cast<uint32_t>(rob.robNewPhy[robSlot(tag)]);
+      if (recoverPRF != static_cast<uint32_t>(InvalidPhy)) {
+        recPhy[nRec] = recoverPRF;
+        nRec = nRec + 1u;
+      }
+      tag = robNextTag(tag);
+      if (tag == oldNext)
+        scanDone = true;
     }
-    assert(prfSeqDistance(static_cast<PrfSeq>(ckptVal),
-                          static_cast<PrfSeq>(
-                              static_cast<uint32_t>(tailSeq))) <=
-           static_cast<uint32_t>(PRF_CAP));
-    nextHead = ckptVal;
-    // doPop implies nextHead != curHead; restore overwrites nextHead
-    if (nextHead != curHead)
-      headSeq <= nextHead;
-  } else if (doPop) {
-    headSeq <= nextHead;
   }
 
   // ---- Commit: independent of squash when the head is strictly older ----
+  // (robWillCommit already folds the age guard, same as the reference
+  // willCommit(squash)). Its oldPhy is appended to the same recycle list.
   if (robWillCommit && !static_cast<bool>(rob.robHeadIsHalt)) {
     uint32_t hType = static_cast<uint32_t>(rob.robHeadType);
     if (hType == static_cast<uint32_t>(ROBType::REGISTER) ||
         hType == static_cast<uint32_t>(ROBType::LINK)) {
       uint32_t oldPhy = static_cast<uint32_t>(rob.robHeadOldPhy);
       if (oldPhy != static_cast<uint32_t>(InvalidPhy)) {
-        uint32_t tail = static_cast<uint32_t>(tailSeq);
-        freeList[prfSlot(static_cast<PrfSeq>(tail))] <= oldPhy;
-        tailSeq <= static_cast<uint32_t>(
-            prfSeqNext(static_cast<PrfSeq>(tail)));
+        recPhy[nRec] = oldPhy;
+        nRec = nRec + 1u;
       }
     }
   }
+  
+  PrfSeq curTail = static_cast<PrfSeq>(static_cast<uint32_t>(tailSeq));
+  for (int k = 0; k < ROB_CAP + 1; ++k) {
+    if (static_cast<uint32_t>(k) >= nRec)
+      continue;
+    freeList[prfSlot(curTail)] <= recPhy[k];
+    curTail = prfSeqNext(curTail);
+  }
+  if (nRec != 0u)
+    tailSeq <= static_cast<uint32_t>(curTail);
 }

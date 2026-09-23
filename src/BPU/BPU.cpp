@@ -1,6 +1,7 @@
 #include "../include/BPU.hpp"
 
 #include <cstdint>
+#include <sys/types.h>
 
 #include "../include/ROB.hpp"
 
@@ -16,16 +17,16 @@ PredictInfo BPU::predict(uint32_t pc) const {
       useGlobal ? static_cast<uint32_t>(dir.globalPHT[globalIndex]) >= 2
                 : static_cast<uint32_t>(dir.localPHT[localIndex]) >= 2;
   const auto BTB_index = p2 & (BTB_CAP - 1);
-  bool btbHit = static_cast<bool>(tgt.BTB[BTB_index].valid) &&
-                static_cast<uint32_t>(tgt.BTB[BTB_index].actualPC) ==
-                    static_cast<uint32_t>(pc);
+  bool btbHit = static_cast<bool>(tgt.BTB[BTB_index].state) &&
+                static_cast<uint32_t>(tgt.BTB[BTB_index].tag) ==
+                    static_cast<uint32_t>(pc >> 8);
   bool taken = btbHit && directionTaken;
-  if (btbHit && static_cast<bool>(tgt.BTB[BTB_index].unconditional))
+  if (btbHit && static_cast<uint32_t>(tgt.BTB[BTB_index].state) >= 2)
     taken = true;
   // RET with empty RAS: don't use BTB target 0, treat as not taken (wild fetch
   // fix)
-  bool isRet = static_cast<bool>(tgt.BTB[BTB_index].isRet);
-  bool rasEmpty = static_cast<uint32_t>(tgt.RAS_top) == 0;
+  bool isRet = static_cast<uint32_t>(tgt.BTB[BTB_index].state) == 3;
+  bool rasEmpty = static_cast<uint32_t>(tgt.specTopOfRAS) == 0;
   if (isRet && rasEmpty) {
     btbHit = false;
     taken = false;
@@ -33,17 +34,16 @@ PredictInfo BPU::predict(uint32_t pc) const {
   // uint32 bit-vector add: signed uint32_t add past the range is host UB.
   uint32_t predictPC = pc + 4u;
   if (taken && btbHit) {
-    if (isRet && static_cast<uint32_t>(tgt.RAS_top) > 0)
+    if (isRet && static_cast<uint32_t>(tgt.specTopOfRAS) > 0)
       predictPC = static_cast<uint32_t>(
-          tgt.RAS[(static_cast<uint32_t>(tgt.RAS_top) - 1) & (RAS_CAP - 1)]
-              .retPC);
+          tgt.specRAS[static_cast<uint32_t>(tgt.specTopOfRAS) - 1].retPC);
     else
-      predictPC = static_cast<uint32_t>(tgt.BTB[BTB_index].target);
+      predictPC = static_cast<uint32_t>(tgt.BTB[BTB_index].target) << 2;
   }
   PredictInfo out{taken, predictPC};
   out.btbHit = btbHit;
   out.unconditional =
-      btbHit && static_cast<bool>(tgt.BTB[BTB_index].unconditional);
+      btbHit && static_cast<uint32_t>(tgt.BTB[BTB_index].state) >= 2;
   out.condSeen = static_cast<bool>(tgt.condSeen[p2 & (CONDSEEN_CAP - 1)]);
   return out;
 }
@@ -107,9 +107,16 @@ void BPU::wire_output() {
 BPUSnapshot BPU::snapshotCheckPoint() const {
   BPUSnapshot ckptSnap;
   ckptSnap.GHR_snapshot = getGHR();
-  ckptSnap.alignTail = static_cast<uint32_t>(tgt.alignTail);
-  ckptSnap.RAS_top = static_cast<uint32_t>(tgt.RAS_top);
   return ckptSnap;
+}
+
+BPUSnapshot BPU::traceState() const { return snapshotCheckPoint(); }
+
+BPUSnapshot BPU::traceCheckpoint(uint8_t id) const {
+  const auto &checkpoint = bpCkpt[id & (CKPT_CAP - 1)];
+  BPUSnapshot snapshot;
+  snapshot.GHR_snapshot = static_cast<uint32_t>(checkpoint.GHR);
+  return snapshot;
 }
 // ---- training requests (decoded once at the top of work()) ----
 struct TrainReq {
@@ -183,12 +190,12 @@ void BPU::work() {
   if (!static_cast<bool>(bru.isBRUEmpty) && robTagMatches(rob, brRobTag)) {
     auto pcResult = static_cast<uint32_t>(bru.bruHeadPCResult);
     auto pcFrom = static_cast<uint32_t>(bru.bruHeadPCFrom);
-    ++branchTotal;
-    bool correct =
-        pcResult == static_cast<uint32_t>(rob.robPredictPC[robSlot(brRobTag)]);
-    if (correct)
-      ++branchCorrect;
     if (!needSquash || ROB::isOlder(brRobTag, squashTag)) {
+      ++branchTotal;
+      bool correct =
+          pcResult == static_cast<uint32_t>(rob.robPredictPC[robSlot(brRobTag)]);
+      if (correct)
+        ++branchCorrect;
       trBru.valid = true;
       trBru.isJump = false;
       trBru.pc = pcFrom;
@@ -197,8 +204,7 @@ void BPU::work() {
       auto cid = static_cast<uint32_t>(rob.robCkptId[robSlot(brRobTag)]);
       // Checkpoints are written only by fetch allocation and read by squash;
       // same-cycle allocation and rollback use distinct IDs.
-      trBru.ghr =
-          static_cast<uint8_t>(static_cast<uint32_t>(bpCkpt[cid].GHR));
+      trBru.ghr = static_cast<uint8_t>(static_cast<uint32_t>(bpCkpt[cid].GHR));
     }
   }
   const RobTag cdbRobTag = static_cast<uint32_t>(cdb.cdbRobTag);
@@ -285,8 +291,6 @@ void BPU::work() {
     auto ckid = static_cast<uint32_t>(outCkptId);
     BPUSnapshot ckptSnap = snapshotCheckPoint();
     bpCkpt[ckid].GHR <= ckptSnap.GHR_snapshot;
-    bpCkpt[ckid].alignTail <= static_cast<uint32_t>(ckptSnap.alignTail);
-    bpCkpt[ckid].RAS_top <= static_cast<uint32_t>(ckptSnap.RAS_top);
     if (static_cast<bool>(outShift))
       ghrLocal =
           static_cast<uint8_t>(((static_cast<uint32_t>(ghrLocal) << 1) |
@@ -295,53 +299,24 @@ void BPU::work() {
     nextCkpt = (ckid + 1) & (CKPT_CAP - 1);
   }
 
-  // ---- RAS / alignQueue local mirror (BRU-port fetchInfo + squash rewind
-  // override) ----
-  uint32_t rasTop = static_cast<uint32_t>(tgt.RAS_top);
-  uint32_t alignTail = static_cast<uint32_t>(tgt.alignTail);
-  // Pre-fi-block base (main-tree semantics): the squash rewind range comes
-  // from the comb snapshot, so this tick's journal entries survive.
-  uint32_t alignTailPreFi = alignTail;
-  uint32_t rasRetPC[RAS_CAP], rasTimes[RAS_CAP];
-  uint32_t alAddr[ALIGNQ_CAP], alIndex[ALIGNQ_CAP], alTimes[ALIGNQ_CAP];
+  // ---- Arch + speculative RAS local mirror (mirrors the main tree) ----
+  // specRAS is the prediction state; archRAS is the commit-time baseline.
+  // The tops are non-wrapping depths in [0, RAS_CAP].
+  uint32_t specTop = static_cast<uint32_t>(tgt.specTopOfRAS);
+  uint32_t archTop = static_cast<uint32_t>(tgt.archTopOfRAS);
+  uint32_t specRAS[RAS_CAP], archRAS[RAS_CAP];
   for (int i = 0; i < RAS_CAP; ++i) {
-    rasRetPC[i] = static_cast<uint32_t>(tgt.RAS[i].retPC);
-    rasTimes[i] = static_cast<uint32_t>(tgt.RAS[i].times);
-  }
-  for (int i = 0; i < ALIGNQ_CAP; ++i) {
-    alAddr[i] = static_cast<uint32_t>(tgt.alignQueue[i].addr);
-    alIndex[i] = static_cast<uint32_t>(tgt.alignQueue[i].index);
-    alTimes[i] = static_cast<uint32_t>(tgt.alignQueue[i].times);
+    specRAS[i] = static_cast<uint32_t>(tgt.specRAS[i].retPC);
+    archRAS[i] = static_cast<uint32_t>(tgt.archRAS[i].retPC);
   }
 
   BTBWriteIntent fetchWriteIntent;
   if (static_cast<bool>(fetchInfo.FetchValid)) {
     const uint32_t ra = static_cast<uint32_t>(fetchInfo.FetchPC) + 4;
     if (static_cast<bool>(fetchInfo.isFetchCall)) {
-      uint32_t topIdx = rasTop & (RAS_CAP - 1);
-      if (rasTop > 0 && rasRetPC[(rasTop - 1) & (RAS_CAP - 1)] == ra) {
-        alAddr[alignTail & (ALIGNQ_CAP - 1)] =
-            rasRetPC[(rasTop - 1) & (RAS_CAP - 1)];
-        alIndex[alignTail & (ALIGNQ_CAP - 1)] = (rasTop - 1) & (RAS_CAP - 1);
-        alTimes[alignTail & (ALIGNQ_CAP - 1)] =
-            rasTimes[(rasTop - 1) & (RAS_CAP - 1)];
-        ++alignTail;
-        ++rasTimes[(rasTop - 1) & (RAS_CAP - 1)];
-      } else {
-        rasRetPC[topIdx] = ra;
-        rasTimes[topIdx] = 1;
-        ++rasTop;
-      }
-    } else if (static_cast<bool>(fetchInfo.isFetchRet) && rasTop > 0) {
-      uint32_t topIdx = (rasTop - 1) & (RAS_CAP - 1);
-      alAddr[alignTail & (ALIGNQ_CAP - 1)] = rasRetPC[topIdx];
-      alIndex[alignTail & (ALIGNQ_CAP - 1)] = topIdx;
-      alTimes[alignTail & (ALIGNQ_CAP - 1)] = rasTimes[topIdx];
-      ++alignTail;
-      if (rasTimes[topIdx] > 1)
-        --rasTimes[topIdx];
-      else
-        --rasTop;
+      specRAS[specTop++] = ra;
+    } else if (static_cast<bool>(fetchInfo.isFetchRet)) {
+      --specTop;
     }
     // Early training (BRU-port fetch side; same-line conflicts arbitrated at
     // the write ports below, fetch highest).
@@ -357,32 +332,63 @@ void BPU::work() {
     fetchWriteIntent.target = static_cast<uint32_t>(fetchInfo.FetchJALTarget);
   }
 
+  // Pre-commit architectural baseline: like the main tree tick() (which reads
+  // the comb snapshot `tgt` for recovery), a same-cycle squash must replay
+  // from the OLD committed state, ignoring this cycle's head commit.
+  uint32_t archTopPreCommit = archTop;
+  uint32_t archRASPre[RAS_CAP];
+  for (int i = 0; i < RAS_CAP; ++i)
+    archRASPre[i] = archRAS[i];
+
+  // Commit is the architectural RAS baseline used for later ROB replay
+  // (mirrors the main tree; CDB never participates).
+  if (static_cast<bool>(rob.robWillCommit)) {
+    const RobTag headTag = static_cast<uint32_t>(rob.robHeadTag);
+    const uint32_t headSlot = robSlot(headTag);
+    if (headSlot < ROB_CAP &&
+        static_cast<uint32_t>(rob.robTag[headSlot]) == headTag) {
+      if (static_cast<bool>(rob.robIsCall[headSlot]))
+        archRAS[archTop++] = static_cast<uint32_t>(rob.robPC[headSlot]) + 4u;
+      else if (static_cast<bool>(rob.robIsRet[headSlot]))
+        --archTop;
+    }
+  }
+
   // Checkpoint allocation and squash rollback never coincide: the allocated
   // ckptId is always newer (ring distance >= 1), so bpCkpt reads never race.
   dark::debug::assert(!(static_cast<bool>(outValid) && needSquash),
                       "fetch-alloc and squash-rollback in the same cycle");
   // ---- squash restore (highest priority over all speculative state) ----
+  // Restore the old committed baseline, then replay every surviving ROB
+  // entry through the squash instruction itself (mirrors the main tree).
   if (needSquash) {
     uint32_t ckid = squashCkpt & (CKPT_CAP - 1);
     uint8_t ckptGHR = static_cast<uint32_t>(bpCkpt[ckid].GHR);
-    uint32_t ckptAlignTail = static_cast<uint32_t>(bpCkpt[ckid].alignTail);
-    uint32_t ckptRasTop = static_cast<uint32_t>(bpCkpt[ckid].RAS_top);
-    uint32_t curTail = alignTailPreFi;
-    uint32_t base = ckptAlignTail;
-    // mod-256 ring distance (alignTail is 8-bit): the main tree computes this
-    // in uint8_t, so a uint32 subtraction would underflow and replay garbage.
-    uint32_t dist = (curTail - base) & 0xFF;
-    for (int k = 0; k < ALIGNQ_CAP; ++k) {
-      if (static_cast<uint32_t>(k) >= dist)
-        continue;
-      uint32_t pos = curTail - 1 - static_cast<uint32_t>(k);
-      uint32_t idx = alIndex[pos & (ALIGNQ_CAP - 1)] & (RAS_CAP - 1);
-      rasRetPC[idx] = alAddr[pos & (ALIGNQ_CAP - 1)];
-      rasTimes[idx] = alTimes[pos & (ALIGNQ_CAP - 1)];
+    dark::debug::assert(robTagMatches(rob, squashTag),
+                        "squash tag must be live in the ROB");
+    uint32_t commitTOS = archTopPreCommit;
+    for (int i = 0; i < RAS_CAP; ++i)
+      specRAS[i] = archRASPre[i];
+    bool recovered = false;
+    RobTag robTag = static_cast<uint32_t>(rob.robHeadTag);
+    for (int i = 0; i < ROB_CAP; ++i) {
+      if (!recovered) {
+        const uint32_t robIndex = robSlot(robTag);
+        if (robIndex < ROB_CAP &&
+            static_cast<uint32_t>(rob.robTag[robIndex]) == robTag) {
+          if (static_cast<bool>(rob.robIsCall[robIndex]))
+            specRAS[commitTOS++] =
+                static_cast<uint32_t>(rob.robPC[robIndex]) + 4u;
+          else if (static_cast<bool>(rob.robIsRet[robIndex]))
+            --commitTOS;
+        }
+        recovered = robTag == squashTag;
+        robTag = robNextTag(robTag);
+      }
     }
+    dark::debug::assert(recovered, "squash tag not found from ROB head");
     ghrLocal = ckptGHR;
-    alignTail = ckptAlignTail;
-    rasTop = ckptRasTop;
+    specTop = commitTOS;
     nextCkpt = (ckid + 1) & (CKPT_CAP - 1);
   }
 
@@ -390,10 +396,10 @@ void BPU::work() {
   //      target are arbitrated separately: a fetch write without a static JAL
   //      target must not shadow a same-line target trained by cdb/bru. ----
   auto writeBTBLine = [&](const BTBWriteIntent &intent) {
-    tgt.BTB[intent.index].actualPC <= intent.actualPC;
-    tgt.BTB[intent.index].valid <= 1;
-    tgt.BTB[intent.index].unconditional <= (intent.unconditional ? 1u : 0u);
-    tgt.BTB[intent.index].isRet <= (intent.isRet ? 1u : 0u);
+    tgt.BTB[intent.index].tag <= (intent.actualPC >> 8);
+    bool isUnconditional = intent.unconditional;
+    bool isRet = intent.isRet;
+    tgt.BTB[intent.index].state <= (isRet ? 3 : (isUnconditional ? 2 : 1));
   };
   const bool fetchCdbSameLine = sameBTBLine(fetchWriteIntent, cdbWriteIntent);
   const bool fetchBruSameLine = sameBTBLine(fetchWriteIntent, bruWriteIntent);
@@ -413,25 +419,22 @@ void BPU::work() {
     writeBTBLine(bruWriteIntent);
 
   if (fetchWriteIntent.lineWrite && fetchWriteIntent.targetWrite)
-    tgt.BTB[fetchWriteIntent.index].target <= fetchWriteIntent.target;
+    tgt.BTB[fetchWriteIntent.index].target <=
+        (fetchWriteIntent.target >> 2);
   if (cdbWriteIntent.lineWrite && !fetchTargetBlocksCdb)
-    tgt.BTB[cdbWriteIntent.index].target <= cdbWriteIntent.target;
+    tgt.BTB[cdbWriteIntent.index].target <= (cdbWriteIntent.target >> 2);
   if (bruWriteIntent.lineWrite && !fetchTargetBlocksBru && !cdbBruSameLine)
-    tgt.BTB[bruWriteIntent.index].target <= bruWriteIntent.target;
+    tgt.BTB[bruWriteIntent.index].target <= (bruWriteIntent.target >> 2);
 
-  // Speculative-state writeback (squash > BRU; CDB never participates)
+  // Speculative-state writeback (squash > BRU; CDB never participates).
+  // archRAS/archTop advance only on commit above; squash replays into spec.
   dir.GHR <= ghrLocal;
   nextCkptId <= nextCkpt;
-  tgt.RAS_top <= rasTop;
-  tgt.alignTail <= alignTail;
+  tgt.specTopOfRAS <= specTop;
+  tgt.archTopOfRAS <= archTop;
 
   for (int i = 0; i < RAS_CAP; ++i) {
-    tgt.RAS[i].retPC <= rasRetPC[i];
-    tgt.RAS[i].times <= rasTimes[i];
-  }
-  for (int i = 0; i < ALIGNQ_CAP; ++i) {
-    tgt.alignQueue[i].addr <= alAddr[i];
-    tgt.alignQueue[i].index <= alIndex[i];
-    tgt.alignQueue[i].times <= alTimes[i];
+    tgt.specRAS[i].retPC <= specRAS[i];
+    tgt.archRAS[i].retPC <= archRAS[i];
   }
 }
