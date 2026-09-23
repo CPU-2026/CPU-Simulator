@@ -168,49 +168,6 @@ void FlushArbiter::work() {
     }
   }
 
-  if (agu.isAGUEmpty == 0 &&
-      isStoreMem(static_cast<uint32_t>(agu.aguHeadMemIndex))) {
-    RobTag aguRobTag = static_cast<uint32_t>(agu.aguHeadRobTag);
-    if (squash.needSquash == 0 ||
-        (squash.needSquash &&
-         ROB::isOlder(aguRobTag, static_cast<uint32_t>(squash.SquashTag)))) {
-      auto storeAddr = static_cast<uint32_t>(agu.aguHeadValue);
-      auto lqHead = static_cast<uint32_t>(lq.lqHead);
-      bool violationHandled = false;
-      for (int k = 0; k < LQ_CAP; ++k) {
-        uint8_t i = (lqHead + k) & LQ_MASK;
-        if (violationHandled)
-          continue;
-        if (lq.lqActive[i] == 0)
-          continue;
-        if (lq.lqAddressReady[i] &&
-            static_cast<uint32_t>(lq.lqAddress[i]) == storeAddr &&
-            (lq.lqValueState[i] == static_cast<uint32_t>(ValueState::READY) ||
-             lq.lqValueState[i] ==
-                 static_cast<uint32_t>(ValueState::FETCHING)) &&
-            ROB::isYounger(static_cast<uint32_t>(lq.lqRobTags[i]), aguRobTag)) {
-          RobTag violTag = static_cast<uint32_t>(lq.lqRobTags[i]);
-          if ((squash.needSquash == 0 ||
-               ROB::isOlder(violTag,
-                            static_cast<uint32_t>(squash.SquashTag))) &&
-              robTagMatches(rob, violTag)) {
-            SquashInfo viol;
-            viol.needSquash = true;
-            viol.SquashTag = violTag;
-            // The redirect target is the VIOLATING LOAD's own PC (ROB::getPC),
-            // NOT its predictedPC: load ROB entries carry predictedPC == 0
-            // (only INT/BR/UJ issuers assign it), so robPredictPC would
-            // squash the machine to address 0 and restart the whole program.
-            viol.SquashPC = static_cast<uint32_t>(rob.robPC[robSlot(violTag)]);
-            viol.CkptId = static_cast<uint32_t>(rob.robCkptId[robSlot(violTag)]);
-            insertPlain(cur, viol);
-            violationHandled = true;
-          }
-        }
-      }
-    }
-  }
-
   // Stage 5: single write-back, 4 fields x CAP slots, each Register once.
   for (int i = 0; i < FLUSHARBITER_CAP; ++i) {
     requests[i].valid <= cur[i].valid;

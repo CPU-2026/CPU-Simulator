@@ -160,6 +160,7 @@ auto SQ::replyToLoadRequest(uint32_t addr,
 
 bool SQ::canDispatchLoad(uint32_t addr, RobTag loadTag) const {
   bool hasSameAddressStore = false;
+  bool hasUnknownAddressStore = false;
   for (int k = 0; k < SQ_CAP; k++) {
     if (hasSameAddressStore)
       continue;
@@ -172,8 +173,10 @@ bool SQ::canDispatchLoad(uint32_t addr, RobTag loadTag) const {
       continue;
     if (SQqueue[cur].isAddressReady && SQqueue[cur].address == addr)
       hasSameAddressStore = true;
+    if (!static_cast<bool>(SQqueue[cur].isAddressReady))
+      hasUnknownAddressStore = true;
   }
-  return !hasSameAddressStore;
+  return !hasSameAddressStore && !hasUnknownAddressStore;
 }
 
 bool SQ::isReadyToCommit(int index) const {

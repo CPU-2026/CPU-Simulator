@@ -85,7 +85,7 @@
 - `work()` 对应 `always_ff`：读 `_M_old`，计算所有 next-state，每个 Register 保持单写口；不使用提前 `return` 隐藏部分写集。
 - `Wire` 对应 `always_comb`：构造/接线阶段赋一次 lambda，按拍懒求值；组合模块的 `work()` 可以为空。
 - CDB、Mem、Dispatch、Issue 等无状态仲裁器没有 Register。把它们建成 Module 的原因是让 `sync()` 统一清 Wire 缓存，而不是给组合逻辑增加状态。
-- checkpoint 是状态复制，不是普通通信总线。RAT、PRF、BPU 的 checkpoint 数组保留为本地 Register 状态，恢复时逐槽写回。活动 `CKPT_CAP=32`，`CKPT_LIVE_MAX=26` 覆盖 ROB/ICache/FQ/IQ 的全部存活 ID；逻辑 ID 与运输载体均为 5 bit（`CKPT_ID_WIDTH`）。PRF 的 `headSeq/tailSeq/PRFHeadCkpt` 统一为 packed 循环序号（`{epoch,index}`，PRF64 为 7 bit）：写入与恢复都取 canonical 值，恢复距离用 `prfSeqDistance` 校验。
+- checkpoint 是状态复制，不是普通通信总线。PRF、BPU 的 checkpoint 数组保留为本地 Register 状态，恢复时逐槽写回；RAT 改为已提交 `archRAT` 基线加存活 ROB 的步进重放，不再存 per-`ckptId` 表。活动 `CKPT_CAP=32`，`CKPT_LIVE_MAX=26` 覆盖 ROB/ICache/FQ/IQ 的全部存活 ID；逻辑 ID 与运输载体均为 5 bit（`CKPT_ID_WIDTH`）。PRF 的 `headSeq/tailSeq/PRFHeadCkpt` 统一为 packed 循环序号（`{epoch,index}`，PRF64 为 7 bit）：写入与恢复都取 canonical 值，恢复距离用 `prfSeqDistance` 校验。
 - IMEM/DMEM 的大存储阵列和缓存数据阵列不因模板化而机械变成 Register 阵列；端口、控制状态和拍级握手才进入模块同步模型。
 - 逻辑索引按 CAP 掩码收紧，并以 `static_assert` 守住容量假设；容量缩减后部分接口载体有意保持原宽度，实际有效范围仍由 CAP 限定。
 
@@ -160,15 +160,10 @@ RAT 和 BPU 使用显式 boot；BPU 对 cycle-0 预测还提供 boot 常量视�
 
 ## RAT 写回收敛
 
-RAT 同拍可能同时遇到 checkpoint 恢复和新指令 rename。每个 `RAT_PRF[i]` 只能有一个写点：
-
-- 恢复值以 checkpoint 的 `_M_old` 为 base；
-- 若本拍 issue 分配目的寄存器且 `i == issueDest`，新映射覆盖恢复值；
-- 这精确对应参考实现的“先 restore，后 `setRAT_PRF`”优先级；
-- 本拍建立的新 checkpoint 捕获的是 **恢复前** RAT 快照，但目的槽写入新 phy，复现旧框架从周期初快照复制后再覆盖目的槽的语义。
-
-因此实现按槽计算 `destHit ? issuePhy : (restore ? checkpointValue : hold)`，并让 checkpoint
-写口独立捕获 `destHit ? issuePhy : preRestoreValue`。这既保留拍级语义，也满足 Register 单写断言。
+RAT 保存 speculative `specRAT` 与已提交 `archRAT` 两张表。提交时仅更新 `archRAT`；
+`archRAT[i]` 起按 `head..SquashTag` 重放目的寄存器映射，且包含仍保留在 ROB 的 squash
+控制指令自身。每个 `specRAT[i]` 仍只有一个写点：squash 重放优先，否则才接受 issue rename；
+同拍 issue 已由仲裁器抑制。该实现与主树一致，也消除了 `ratCkpt` 的状态阵列和冷槽恢复风险。
 
 ## 状态与容量收敛
 
@@ -322,3 +317,14 @@ Tournament 的 globalPHT 与 selector 都以 `((PC>>2)^GHR)&255` 取索引，GHR
 外部消费者，故从 `TargetPred`、`BPUSnapshot` 和其 32 份 Register 镜像删除，另省
 **8 + 32×8 = 264 bit**。完整模板 BPU Register 状态由 **8,774 → 8,246 bit**，相对
 TAGE 基线 24,357 bit 为 **−66.15%**。该变换只删除未观察状态，预期 x10 与 clock 均逐位不变。
+
+### 2026-09-21：BTB 字段收紧
+
+BTB 的 64 项使用 `PC[7:2]` 索引。活动 RV32IM 镜像无压缩指令，故 PC 和跳转目标均为
+4-byte 对齐：`PC[31:8]` tag 与索引可重建完整 PC，`target[31:2]` 保留全部有效目标位。
+原 `{actualPC[31:0], target[31:0], valid, unconditional, isRet}` 为每项 67 bit；改为
+`{tag[23:0], target[29:0], state[1:0]}` 后每项为 56 bit，其中 `state` 编码
+invalid/conditional/unconditional/return，后两者均强制 taken。BTB 共省 **64×11 = 704 bit**，完整模板 BPU
+Register 状态 **8,246 → 7,542 bit**，相对 TAGE 基线 24,357 bit 为 **−69.04%**。该变换
+保留预测命中、无条件跳转和 return 的全部语义。根/模板 Release 与模板 `_DEBUG` 均为 18/18
+x10+cycles 对 golden，clock **12,237,892**；`_DEBUG` 全量零断言。

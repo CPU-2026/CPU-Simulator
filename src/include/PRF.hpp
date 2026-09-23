@@ -10,7 +10,6 @@ struct PRFEntry {
 struct PRFInputSquash {
   Wire<1> needSquash;
   Wire<ROB_TAG_WIDTH> SquashTag;
-  Wire<CKPT_ID_WIDTH> CkptId;
 };
 // Quad-CDB write ports (mirrors the main tree's
 // PRFInput.cdbOfALU/cdbOfLQ/cdbOfMul/cdbOfDiv): the ALU group gates on
@@ -54,7 +53,9 @@ struct PRFInputROB {
   Wire<1> robWillCommit;
   Wire<1> robHeadIsHalt;
   Wire<2> robHeadType;
+  Wire<ROB_TAG_WIDTH> robNextTag;
   Wire<PHY_TAG_WIDTH> robHeadOldPhy;
+  std::array<Wire<PHY_TAG_WIDTH>, ROB_CAP> robNewPhy;
 };
 struct PRFInput {
   PRFInputSquash squash;
@@ -68,7 +69,6 @@ struct PRFInput {
 struct PRFInner {
   std::array<PRFEntry, PRF_CAP> PhysicalRegs;
   std::array<Register<PHY_TAG_WIDTH>, PRF_CAP> freeList;
-  std::array<Register<PRF_SEQ_WIDTH>, CKPT_CAP> PRFHeadCkpt;
   Register<PRF_SEQ_WIDTH> headSeq;
   Register<PRF_SEQ_WIDTH> tailSeq;
   Register<1> bootDone;

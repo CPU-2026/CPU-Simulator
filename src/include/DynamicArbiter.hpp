@@ -9,7 +9,6 @@
 #include "common.h"
 #include "module.h"
 #include <array>
-#include <cstdint>
 struct FlushRequest {
   // NOTE: no per-slot needSquash -- valid==1 implies needSquash==1 by
   // construction (all three inserts only fire when the local SquashInfo
@@ -45,33 +44,14 @@ struct FlushArbiterInputROB {
   std::array<Wire<32>, ROB_CAP> robPC; // true fetch PC (load entries included)
   std::array<Wire<CKPT_ID_WIDTH>, ROB_CAP> robCkptId;
 };
-struct FlushArbiterInputLQ {
-  Wire<LQ_PTR_WIDTH> lqHead;
-  std::array<Wire<1>, LQ_CAP> lqActive;
-  std::array<Wire<1>, LQ_CAP> lqAddressReady;
-  std::array<Wire<ROB_TAG_WIDTH>, LQ_CAP> lqRobTags;
-  std::array<Wire<32>, LQ_CAP> lqAddress;
-  std::array<Wire<2>, LQ_CAP> lqValueState;
-};
-struct FlushArbiterInputAGU{
-  Wire<1> isAGUEmpty;
-  Wire<32> aguHeadValue;
-  Wire<7> aguHeadMemIndex;
-  Wire<ROB_TAG_WIDTH> aguHeadRobTag;
-};
-// FlushArbiter owns its queue and the whole squash flow: stage 1 consumes
-// the accepted squash (clear), stage 2 detects BRU branch mispredicts,
-// stage 3 detects CDB JALR mispredicts, stage 4 detects MDP load violations
-// (store address resolves against younger executed loads) -- all reads from
-// the committed Input Wire views (BRUModule head, aluCDB output,
-// ROBModule, AGUModule head store, LQModule/SQModule), all writes to its own
+// the accepted squash (clear), stage 2 detects BRU branch mispredicts, and
+// stage 3 detects CDB JALR mispredicts -- all reads from the committed Input
+// Wire views (BRUModule head, aluCDB output, ROBModule), all writes to its own
 // queue (receive).
 struct FlushArbiterInput {
   FlushArbiterInputBRU bru;
   FlushArbiterInputCDB cdb;
-  FlushArbiterInputLQ lq;
   FlushArbiterInputROB rob;
-  FlushArbiterInputAGU agu;
   FlushArbiterInputSquash squash;
 };
 struct FlushArbiterInner {

@@ -1018,13 +1018,26 @@ void IssueArbiter::wire_output() {
   robEntry.halt = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 2u ? 1u : 0u;
   };
+  robEntry.isCall = [this]() -> uint32_t {
+    // RISC-V RAS hints (mirrors the main tree): link registers x1/x5.
+    // JALR call: rd is a link register; direct JAL call: rd is a link register.
+    const uint32_t w = static_cast<uint32_t>(win);
+    const uint32_t rd = static_cast<uint32_t>(dec.rd);
+    const bool rdLink = (rd == 1u || rd == 5u);
+    const bool jalrCall =
+        (w == 1u && static_cast<bool>(intIsControl) && rdLink);
+    const bool jalCall =
+        (w == 6u && static_cast<bool>(ujIsControl) && rdLink);
+    return (jalrCall || jalCall) ? 1u : 0u;
+  };
   robEntry.isRet = [this]() -> uint32_t {
-    // JALR x0, 0(x1): return
+    // JALR return: rs1 is a link register and rd is NOT.
+    const uint32_t rs1 = static_cast<uint32_t>(dec.rs1);
+    const uint32_t rd = static_cast<uint32_t>(dec.rd);
+    const bool rdLink = (rd == 1u || rd == 5u);
+    const bool rs1Link = (rs1 == 1u || rs1 == 5u);
     return (static_cast<uint32_t>(win) == 1u &&
-            static_cast<bool>(intIsControl) &&
-            static_cast<uint32_t>(dec.rd) == 0u &&
-            static_cast<uint32_t>(dec.rs1) == 1u &&
-            static_cast<uint32_t>(dec.imm) == 0u)
+            static_cast<bool>(intIsControl) && rs1Link && !rdLink)
                ? 1u
                : 0u;
   };
@@ -1049,7 +1062,7 @@ void IssueArbiter::wire_output() {
                : 0u;
   };
   robEntry.lqTailSnapshot = [this]() -> uint32_t {
-    // LOAD uses the include-self LQ snapshot (LoadViolation rewind guard);
+    // LOAD keeps the include-self LQ recovery boundary.
     // INT/UJ/BR/MUL/DIV and STORE use the raw LQ tail.
     const uint32_t w = static_cast<uint32_t>(win);
     if (w == 1u || w == 4u || w == 5u || w == 6u || w == 8u || w == 9u)

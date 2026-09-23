@@ -67,8 +67,9 @@ VERBOSE=clock,icache ./code < data/testcases/gcd.data
 | 主存延迟 | 20 周期 |
 
 分支预测器的方向侧由 local/global/selector 各 256×2-bit 的 Tournament 表和 8-bit GHR
-组成；目标侧保留 BTB、RAS/SARAS（Target Cache 已删除）。分支误预测、JALR 目标错误和 store-load
-顺序违例统一交给 `FlushArbiter` 恢复。
+组成；目标侧保留 BTB、RAS/SARAS（Target Cache 已删除）。分支误预测与 JALR 目标错误统一
+交给 `FlushArbiter` 恢复；load 采用保守准入，更老未提交 store 地址未知或同址时停发
+cache 请求，不再依赖 store-load 顺序违例恢复。
 
 MUL 使用 radix-4 Booth 部分积和 CSA 压缩树；DIV 使用 SRT radix-4 递推。
 数据通路不使用宿主 `*`、`/` 或 `%` 计算乘除法结果。

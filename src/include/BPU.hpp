@@ -1,6 +1,7 @@
 #pragma once
 #include "common.h"
 #include "module.h"
+#include "register.h"
 #include "tools.h"
 #include <array>
 #include <cstdint>
@@ -31,9 +32,11 @@ struct BPUInputBRU {
 struct BPUInputROB {
   Wire<1> isROBEmpty;
   Wire<ROB_TAG_WIDTH> robHeadTag;
+  Wire<1> robWillCommit;
   std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> robTag;
   std::array<Wire<32>, ROB_CAP> robPredictPC;
   std::array<Wire<32>, ROB_CAP> robPC;
+  std::array<Wire<1>, ROB_CAP> robIsCall;
   std::array<Wire<1>, ROB_CAP> robIsRet;
   std::array<Wire<CKPT_ID_WIDTH>, ROB_CAP> robCkptId;
 };
@@ -77,33 +80,18 @@ struct BPUOutput {
   Wire<CKPT_ID_WIDTH> outCkptId;
 };
 
-// SARAS correction queue entry: the address, its LIFO position, and the
-// times counter before the speculative action (so both pops and
-// times inc/dec are undoable). One entry is recorded for every
-// speculative call-dedup and every speculative ret.
-struct AlignEntry {
-  Register<32> addr;
-  Register<8> index;
-  Register<RAS_TIMES_WIDTH> times;
-};
-
 struct RASEntry {
   Register<32> retPC;
-  Register<RAS_TIMES_WIDTH> times;
 };
 // Register-storage mirror of the comb-domain BTB line.
 struct BTBEntryReg {
-  Register<32> actualPC;
-  Register<32> target;
-  Register<1> valid;
-  Register<1> unconditional;
-  Register<1> isRet;
+  Register<24> tag;
+  Register<30> target; // target[31:2], restored with << 2 on prediction
+  Register<2> state; // 0: invalid, 1: conditional, 2: unconditional, 3: return
 };
 // Register-storage mirror of the plain BPUSnapshot (comb-domain).
 struct BPUSnapshotReg {
   Register<8> GHR;
-  Register<8> alignTail;
-  Register<8> RAS_top;
 };
 
 // Tournament direction predictor: direct-PC local counters, gshare global
@@ -116,16 +104,15 @@ struct DirectionPred {
   Register<8> GHR;
 };
 
-// Target prediction ("where to jump"): BTB (targets + jump type) and the
-// SARAS ring return-address stack with its correction queue. Its ring
-// counters are uint8_t and wrap at 256, well beyond the current
-// ROB_CAP=16 and local queue capacities (ALIGNQ_CAP=16/RAS_CAP=8).
+// Target prediction ("where to jump"): BTB (targets + jump type) and a
+// committed RAS baseline with its speculative copy (mirrors the main tree).
+// The tops are non-wrapping depths in [0, RAS_CAP].
 struct TargetPred {
   std::array<BTBEntryReg, BTB_CAP> BTB;
-  std::array<RASEntry, RAS_CAP> RAS;
-  Register<8> RAS_top; // ring write pointer (wraps at 256)
-  std::array<AlignEntry, ALIGNQ_CAP> alignQueue;
-  Register<8> alignTail; // AlignQueue tail (appended on CALL-dedup / RET)
+  std::array<RASEntry, RAS_CAP> specRAS;
+  std::array<RASEntry, RAS_CAP> archRAS;
+  Register<8> specTopOfRAS;
+  Register<8> archTopOfRAS;
   // Branch-type filter: set when a PC resolves as a conditional (taken or
   // not). Lets the fetch stage shift the GHR for conditionals that are not
   // BTB-resident (never-taken branches never train the BTB), so history
@@ -148,6 +135,8 @@ struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   uint64_t getBranchCorrect() const { return branchCorrect; }
   PredictInfo predict(uint32_t pc) const;
   BPUSnapshot snapshotCheckPoint() const;
+  BPUSnapshot traceState() const;
+  BPUSnapshot traceCheckpoint(uint8_t id) const;
   uint8_t getNextCkptId() const { return static_cast<uint32_t>(nextCkptId); }
   void work() override;
 private:
