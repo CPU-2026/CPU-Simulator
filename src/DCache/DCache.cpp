@@ -74,11 +74,11 @@ int32_t DCache::extractValue(const uint8_t *datas, int off, int n,
 
 DCache::Probe DCache::probe(uint32_t addr) const {
   // pure read over the plain line array: set/tag decode + way scan
-  const uint32_t blockNum = addr >> 4;
-  const uint32_t setIndex = blockNum & (NUM_OF_SETS - 1);
+  const uint32_t blockNum = addr >> DCACHE_OFFSET_BITS;
+  const uint32_t setIndex = blockNum & DCACHE_INDEX_MASK;
   const uint32_t tag = addr >> DCACHE_TAG_SHIFT;
   Probe p{false, 0};
-  for (int i = 0; i < NUM_OF_WAYS; ++i) {
+  for (int i = 0; i < NUM_OF_DCACHE_WAYS; ++i) {
     if (cacheSets[setIndex].lines[i].valid &&
         cacheSets[setIndex].lines[i].tag == tag) {
       p.hit = true;
@@ -89,33 +89,33 @@ DCache::Probe DCache::probe(uint32_t addr) const {
 }
 
 uint32_t DCache::allocateWay(uint32_t set_index) const {
-  // distribute a line without modifying anything: free way first, else
-  // tree-PLRU victim. NB: (plru & 0x4) evaluates to 0 or 4, so the victim
-  // choice must test truthiness -- the old "== 1" form was always false and
-  // pinned every full-set eviction to way 0.
-  int invalidIndex = -1;
-  for (int i = 0; i < NUM_OF_WAYS; ++i) {
-    if (cacheSets[set_index].lines[i].valid == 0 && invalidIndex == -1) {
-      invalidIndex = i;
-    }
-  }
-  uint32_t targetIndex;
-  if (invalidIndex != -1) {
-    targetIndex = static_cast<uint32_t>(invalidIndex);
+  if constexpr (NUM_OF_DCACHE_WAYS == 1) {
+    return 0;
   } else {
-    const uint32_t plru = static_cast<uint32_t>(cacheSets[set_index].PLRU_bit);
-    targetIndex = (plru & 0x4) ? ((plru & 0x1) ? 3u : 2u)
-                               : ((plru & 0x2) ? 1u : 0u);
-  }
+    // distribute a line without modifying anything: free way first, else
+    // tree-PLRU victim. The root mask must be tested for truthiness.
+    int invalidIndex = -1;
+    for (int i = 0; i < NUM_OF_DCACHE_WAYS; ++i) {
+      if (cacheSets[set_index].lines[i].valid == 0 && invalidIndex == -1) {
+        invalidIndex = i;
+      }
+    }
+    uint32_t targetIndex;
+    if (invalidIndex != -1) {
+      targetIndex = static_cast<uint32_t>(invalidIndex);
+    } else {
+      const uint32_t plru = cacheSets[set_index].PLRU_bit.get();
+      targetIndex = (plru & 0x4) ? ((plru & 0x1) ? 3u : 2u)
+                                : ((plru & 0x2) ? 1u : 0u);
+    }
 #ifdef _DEBUG
-  // PLRU is approximate LRU, so there is no strict-LRU assertion here; the
-  // invalid path must always pick a free way. (NB: `!reg` is the framework's
-  // bitwise NOT returning Bit<N> -- contextual bool needs static_cast.)
-  if (invalidIndex != -1) {
-    assert(!static_cast<bool>(cacheSets[set_index].lines[targetIndex].valid));
-  }
+    // The invalid path must always pick a free way.
+    if (invalidIndex != -1) {
+      assert(!static_cast<bool>(cacheSets[set_index].lines[targetIndex].valid));
+    }
 #endif
-  return targetIndex;
+    return targetIndex;
+  }
 }
 
 void DCache::work() {
@@ -124,16 +124,16 @@ void DCache::work() {
     const bool decValid = static_cast<bool>(decisionValid);
     const uint32_t decOp = static_cast<uint32_t>(decisionOp);
     const uint32_t addr = static_cast<uint32_t>(decisionAddr);
-    const uint32_t blockNum = addr >> 4;
-    const uint32_t setIndex = blockNum & (NUM_OF_SETS - 1);
+    const uint32_t blockNum = addr >> DCACHE_OFFSET_BITS;
+    const uint32_t setIndex = blockNum & DCACHE_INDEX_MASK;
     const int n = decodeNBytes(static_cast<uint32_t>(decisionNBytes));
     const Probe p = probe(addr);
     const bool opIsLoad = decOp == static_cast<uint32_t>(Operation::Load);
 #ifdef _DEBUG
     const bool opIsStore = decOp == static_cast<uint32_t>(Operation::Store);
-    // A request must never straddle a 16B line (mirrors main tree PrRd/PrWr).
+    // A request must never straddle a cache line (mirrors main tree PrRd/PrWr).
     if (decValid && (opIsLoad || opIsStore))
-      assert((addr & (DCACHE_BLOCK_CAP - 1)) + n <= DCACHE_BLOCK_CAP);
+      assert((addr & DCACHE_OFFSET_MASK) + n <= DCACHE_BLOCK_CAP);
     // Accepting a new decision requires both DMEM ports to be drained: the
     // arbiter gates on !isBusy(), and busy covers the whole miss, so READY
     // implies the previous op fully completed (mirrors main tree DCache::tick).
@@ -149,7 +149,8 @@ void DCache::work() {
     lbValid <= (lbHit ? 1u : 0u);
     lbValue <= (lbHit ? static_cast<uint32_t>(extractValue(
                             cacheSets[setIndex].lines[p.way].datas.data(),
-                            addr & 0xF, n, static_cast<bool>(decisionIsSigned)))
+                            addr & DCACHE_OFFSET_MASK, n,
+                            static_cast<bool>(decisionIsSigned)))
                       : 0u);
     lbMemIndex <= (lbHit ? static_cast<uint32_t>(decisionMemIndex) : 0u);
     lbRobTag <= (lbHit ? static_cast<uint32_t>(decisionRobTag) : 0u);
@@ -158,7 +159,7 @@ void DCache::work() {
     const uint32_t targetWay = miss ? allocateWay(setIndex) : 0u;
     const bool dirtyVictim = miss && cacheSets[setIndex].lines[targetWay].dirty;
     rqReadValid <= (miss ? 1u : 0u);
-    rqReadAddr <= (miss ? ((addr >> 4) << 4) : 0u);
+    rqReadAddr <= (miss ? (addr & ~DCACHE_OFFSET_MASK) : 0u);
     rqWriteValid <= (dirtyVictim ? 1u : 0u);
     if (dirtyVictim)
       ++statWritebacks;
@@ -170,7 +171,7 @@ void DCache::work() {
              ? static_cast<uint32_t>(((cacheSets[setIndex].lines[targetWay].tag
                                        << DCACHE_INDEX_BITS) +
                                       setIndex)
-                                     << 4)
+                                     << DCACHE_OFFSET_BITS)
              : 0u);
     for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) {
       rqWriteLineData[i] <=
@@ -180,21 +181,23 @@ void DCache::work() {
     if (decValid) {
       if (p.hit) {
         ++statHits;
-        // PLRU update: point every tree bit away from the hit way
-        auto plru = static_cast<uint32_t>(cacheSets[setIndex].PLRU_bit);
-        if (p.way < 2)
-          plru |= 0x4;
-        else
-          plru &= ~0x4;
-        if (p.way == 0)
-          plru |= 0x2;
-        else if (p.way == 1)
-          plru &= ~0x2;
-        else if (p.way == 2)
-          plru |= 0x1;
-        else
-          plru &= ~0x1;
-        cacheSets[setIndex].PLRU_bit <= plru;
+        if constexpr (NUM_OF_DCACHE_WAYS > 1) {
+          // PLRU update: point every tree bit away from the hit way
+          auto plru = cacheSets[setIndex].PLRU_bit.get();
+          if (p.way < 2)
+            plru |= 0x4;
+          else
+            plru &= ~0x4;
+          if (p.way == 0)
+            plru |= 0x2;
+          else if (p.way == 1)
+            plru &= ~0x2;
+          else if (p.way == 2)
+            plru |= 0x1;
+          else
+            plru &= ~0x1;
+          cacheSets[setIndex].PLRU_bit.set(plru);
+        }
         if (opIsLoad) {
           // clean-hit load: data already latched into the loadBuffer pulse
         } else {
@@ -202,7 +205,8 @@ void DCache::work() {
           cacheSets[setIndex].lines[p.way].dirty <= true;
           for (int i = 0; i < 4; ++i) {
             if (i < n && addr + i < MEM_SIZE) {
-              cacheSets[setIndex].lines[p.way].datas[(addr & 0xF) + i] =
+              cacheSets[setIndex].lines[p.way].datas[
+                  (addr & DCACHE_OFFSET_MASK) + i] =
                   (static_cast<uint32_t>(decisionValue) >> (i << 3)) & 0xFF;
             }
           }
@@ -218,7 +222,7 @@ void DCache::work() {
         parkNBytes <= static_cast<uint32_t>(decisionNBytes);
         parkRobTag <= static_cast<uint32_t>(decisionRobTag);
         parkMemIndex <= static_cast<uint32_t>(decisionMemIndex);
-        parkTargetWay <= targetWay;
+        parkTargetWay.set(targetWay);
         busy <= 1u;
         phase <= DCACHE_WAIT;
       }
@@ -245,9 +249,9 @@ void DCache::work() {
     if (done) {
       // fill the line from the completed read, then serve the parked op
       const uint32_t paddr = static_cast<uint32_t>(parkAddr);
-      const uint32_t pset = (paddr >> 4) & (NUM_OF_SETS - 1);
+      const uint32_t pset = (paddr >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
       const uint32_t ptag = paddr >> DCACHE_TAG_SHIFT;
-      const uint32_t pway = static_cast<uint32_t>(parkTargetWay);
+      const uint32_t pway = parkTargetWay.get();
       auto &line = cacheSets[pset].lines[pway];
       for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) {
         line.datas[i] =
@@ -258,27 +262,29 @@ void DCache::work() {
       // same cycle -- two <= on one register would trip register.h:38 (_DEBUG)
       line.dirty <= serveStore;
       line.tag <= ptag;
-      // PLRU update: point every tree bit away from the filled way
-      auto plru = static_cast<uint32_t>(cacheSets[pset].PLRU_bit);
-      if (pway < 2)
-        plru |= 0x4;
-      else
-        plru &= ~0x4;
-      if (pway == 0)
-        plru |= 0x2;
-      else if (pway == 1)
-        plru &= ~0x2;
-      else if (pway == 2)
-        plru |= 0x1;
-      else
-        plru &= ~0x1;
-      cacheSets[pset].PLRU_bit <= plru;
+      if constexpr (NUM_OF_DCACHE_WAYS > 1) {
+        // PLRU update: point every tree bit away from the filled way
+        auto plru = cacheSets[pset].PLRU_bit.get();
+        if (pway < 2)
+          plru |= 0x4;
+        else
+          plru &= ~0x4;
+        if (pway == 0)
+          plru |= 0x2;
+        else if (pway == 1)
+          plru &= ~0x2;
+        else if (pway == 2)
+          plru |= 0x1;
+        else
+          plru &= ~0x1;
+        cacheSets[pset].PLRU_bit.set(plru);
+      }
       if (serveLoad) {
         // datas were just filled from the DMEM reply, so reading the line is
         // equivalent to reading the reply bus; sign-extension lives only in
         // extractValue (single copy of the mask logic)
         lbValueNext = static_cast<uint32_t>(extractValue(
-            line.datas.data(), static_cast<int>(paddr & 0xF),
+            line.datas.data(), static_cast<int>(paddr & DCACHE_OFFSET_MASK),
             decodeNBytes(static_cast<uint32_t>(parkNBytes)),
             static_cast<bool>(parkIsSigned)));
       }
@@ -286,7 +292,7 @@ void DCache::work() {
         const int pn = decodeNBytes(static_cast<uint32_t>(parkNBytes));
         for (int i = 0; i < 4; ++i) {
           if (i < pn && paddr + i < MEM_SIZE) {
-            line.datas[(paddr & 0xF) + i] =
+            line.datas[(paddr & DCACHE_OFFSET_MASK) + i] =
                 (static_cast<uint32_t>(parkValue) >> (i << 3)) & 0xFF;
           }
         }

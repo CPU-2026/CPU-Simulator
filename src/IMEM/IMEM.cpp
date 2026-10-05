@@ -39,11 +39,11 @@ void IMEM::work() {
       auto next = static_cast<uint32_t>(IMEMreqs[i].remainCycle) - 1;
       IMEMreqs[i].remainCycle <= next;
       if (next == 0) {
-        // line burst fill: one wide read per word (4x32-bit)
-        for (int w = 0; w < (CACHE_BLOCK_CAP >> 2); ++w) {
+        // line burst fill: one read per word in the configured instruction line
+        for (int w = 0; w < ICACHE_WORDS_PER_LINE; ++w) {
           IMEMreqs[i].Data[w] <= read_word(
               static_cast<uint32_t>(IMEMreqs[i].lineAddr) +
-              static_cast<uint32_t>(w << 2));
+              static_cast<uint32_t>(w << RV32_WORD_BYTE_BITS));
         }
       }
     }

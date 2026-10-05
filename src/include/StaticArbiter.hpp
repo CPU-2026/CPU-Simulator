@@ -217,10 +217,10 @@ struct IssueArbInputPrf {
 };
 struct IssueArbInputLsq {
   Wire<1> lqFull, sqFull;
-  Wire<LQ_PTR_WIDTH> lqTail;
-  Wire<SQ_PTR_WIDTH> sqTail;
-  Wire<LQ_PTR_WIDTH> lqTailSnapshot;
-  Wire<SQ_PTR_WIDTH> sqTailSnapshot;
+  Wire<LQ_SEQ_WIDTH> lqTail;
+  Wire<SQ_SEQ_WIDTH> sqTail;
+  Wire<LQ_SEQ_WIDTH> lqTailSnapshot;
+  Wire<SQ_SEQ_WIDTH> sqTailSnapshot;
 };
 // Raw RAT operand read; the ready->constant resolve lives in the module
 // (verbatim resolveSrc, gated exactly like the former per-branch call
@@ -345,8 +345,8 @@ struct IssueArbOutRobEntry {
   Wire<CKPT_ID_WIDTH> ckptId;
   Wire<32> predictedPC;
   Wire<32> pc;
-  Wire<LQ_PTR_WIDTH> lqTailSnapshot;
-  Wire<SQ_PTR_WIDTH> sqTailSnapshot;
+  Wire<LQ_SEQ_WIDTH> lqTailSnapshot;
+  Wire<SQ_SEQ_WIDTH> sqTailSnapshot;
   Wire<PHY_TAG_WIDTH> newPhy, oldPhy;
 };
 struct IssueArbOutput {

@@ -4,6 +4,12 @@
 > 分析口径：将 `Register` 视为周期边界，将 `Wire`、桥接访问器、无状态 Module 和 `work()` 中写入
 > `Register` 前的计算视为组合逻辑。
 
+> 2026-10-01：两树 ICache 已对齐 1 KB 同步 SRAM 和队首 n+1 旁路，Release 与模板 `_DEBUG` 全量通过。
+> 下文保留原结构性分析，SRAM 端口及已寄存输出至 FQ 的 lane/mux 旁路仍须重新送入 STA；
+> 仿真周期统计不是 fmax 测量。当前基线与进展见 [根级 process.md](../../docs/process.md)。
+> 同日 D$ 已采用 16 KB/64 B 行直接映射，原四路探测/选路及 PLRU 状态不参与活动配置；
+> 64 B 回填/写回载荷与直接映射路径应纳入新一轮 STA。总 clock −0.150397% 是周期数验收结果。
+
 ## 1. 结论与证据边界
 
 当前**没有**综合网表、目标器件/标准单元库、时钟与 I/O 约束，也没有 STA 报告。因此本文只给出
@@ -140,9 +146,10 @@ DIV 的 SRT 循环每拍只执行一轮并由 `loopTimes`/stage valid 寄存器�
 | BPU 固定表方向预测 | Tournament 直接读取 256 项 localPHT，以及由 8-bit GHR 与 PC 哈希索引的 256 项 globalPHT/selector；squash 直接恢复 checkpoint GHR。 | 方向路径是固定索引和三张 2-bit 表的读取/选择，不含可变历史折叠或恢复重建；其真实延迟仍需 STA 测量。 |
 | dead unresolved-store Wire | `sqHasOlderUnresolvedAddressStore` 已从模板源码消失，当前全树无定义或消费者。 | 不再存在误接后展开大规模冗余 CAM 的风险。 |
 | 固定边界循环 | DCache 字节装配/写入均为固定 4 lane 加条件使能；FlushArbiter 插入定位和搬移均以 `FLUSHARBITER_CAP` 为常量边界；Tournament 表均以固定容量直接索引。 | 这些结构不再由运行期长度决定 trip count；BPU 表更新写口自 2026-09-20 起同为固定写口网络。 |
+| ICache SRAM 读边界 | **2026-10-01 已对齐。** data 为 `SRAM<16,512,32>`；tag 命中后先同步读整行，下拍队首可直接旁路交付，背压/年轻结果仍落槽。 | SRAM 读边界保留；n+1 旁路新增 readData Register→lane 选择→返回 mux→FQ/HALT 的组合路径，需联合原回填/仲裁路径送入 STA。clock −0.6617% 不等于 fmax 提升。 |
 
-完整的循环综合性分类与 host-only 边界见
-[不可综合循环审计](../../docs/non-synthesizable-loops.md)；模板 BPU 的写口网络已无运行期循环边界。该问题是 RTL 生成前的综合性门禁，不应与“已由
+固定循环与 host-only 边界约束见 [help.md](help.md) §10，SRAM 改造状态见
+[根级 process.md](../../docs/process.md)；模板 BPU 的写口网络已无运行期循环边界。该问题是 RTL 生成前的综合性门禁，不应与“已由
 STA 证明的 fmax 瓶颈”混为一谈。
 
 ## 5. 建议的测量顺序

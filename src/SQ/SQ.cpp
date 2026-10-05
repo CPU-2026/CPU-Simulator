@@ -9,22 +9,18 @@ bool SQ::isEmpty() const {
 }
 
 bool SQ::isFull() const {
-  return ((static_cast<uint32_t>(tail) + 1) & SQ_MASK) ==
-         static_cast<uint32_t>(head);
+  return static_cast<uint32_t>(tail) == (static_cast<uint32_t>(head) ^ SQ_CAP);
 }
 
 bool SQ::isActive(uint8_t index) const {
   if (static_cast<uint32_t>(head) == static_cast<uint32_t>(tail))
     return false;
-  return ((static_cast<uint32_t>(index) - static_cast<uint32_t>(head) +
-           SQ_CAP) &
-           SQ_MASK) <
-         ((static_cast<uint32_t>(tail) - static_cast<uint32_t>(head) +
-           SQ_CAP) &
-           SQ_MASK);
+  return index < SQ_CAP &&
+         ((static_cast<uint32_t>(index) - static_cast<uint32_t>(head)) & SQ_MASK) <
+         ((static_cast<uint32_t>(tail) - static_cast<uint32_t>(head)) & SQ_SEQ_MASK);
 }
 
-uint8_t SQ::getHead() const { return static_cast<uint32_t>(head); }
+uint8_t SQ::getHead() const { return static_cast<uint32_t>(head) & SQ_MASK; }
 uint8_t SQ::getTail() const { return static_cast<uint32_t>(tail); }
 
 auto SQ::getAddress(int index) const -> uint32_t {
@@ -40,7 +36,7 @@ auto SQ::getValue(int index) const -> int32_t {
 }
 
 auto SQ::headRobTag() const -> RobTag {
-  return static_cast<uint32_t>(SQqueue[static_cast<uint32_t>(head)].robTag);
+  return static_cast<uint32_t>(SQqueue[static_cast<uint32_t>(head) & SQ_MASK].robTag);
 }
 
 auto SQ::getRobTag(int index) const -> RobTag {
@@ -68,7 +64,8 @@ auto SQ::planDataForward(int index, int32_t value) const -> StoreNotify {
     uint8_t i = (index + k) & SQ_MASK;
     if (i == index || !isActive(i))
       continue;
-    if (((i - index) & SQ_MASK) >= ((tail - index) & SQ_MASK))
+    if (((i - static_cast<uint32_t>(head)) & SQ_MASK) <=
+        ((static_cast<uint32_t>(index) - static_cast<uint32_t>(head)) & SQ_MASK))
       continue;
     if (SQqueue[i].address == SQqueue[index].address &&
         SQqueue[i].isAddressReady && !FoundKnownSameAddressOldest) {
@@ -103,7 +100,8 @@ auto SQ::planAddressForward(int index, uint32_t address) const -> StoreNotify {
     uint8_t i = (index + k) & SQ_MASK;
     if (i == index || !isActive(i))
       continue;
-    if (((i - index) & SQ_MASK) >= ((tail - index) & SQ_MASK))
+    if (((i - static_cast<uint32_t>(head)) & SQ_MASK) <=
+        ((static_cast<uint32_t>(index) - static_cast<uint32_t>(head)) & SQ_MASK))
       continue;
     if (SQqueue[i].address == address && SQqueue[i].isAddressReady &&
         !FoundKnownSameAddressOldest) {
@@ -210,7 +208,7 @@ void SQ::work() {
   // the local intent, preserving main-tree last-writer-wins ordering.
   if (static_cast<bool>(issue.issueValid) &&
       static_cast<bool>(issue.issueStore)) {
-    const uint32_t t = static_cast<uint32_t>(tail);
+    const uint32_t t = static_cast<uint32_t>(tail) & SQ_MASK;
     intent[t].tagWrite = true;
     intent[t].tag = static_cast<uint32_t>(issue.issueTag);
     intent[t].addressWrite = true;
@@ -226,7 +224,7 @@ void SQ::work() {
     intent[t].committedWrite = true;
     intent[t].committed = false;
     tailWrite = true;
-    tailData = (t + 1) & SQ_MASK;
+    tailData = (static_cast<uint32_t>(tail) + 1) & SQ_SEQ_MASK;
   }
 
   // store value ready: write the value from the PRF (RS owns the slot, it
@@ -258,7 +256,7 @@ void SQ::work() {
   if (static_cast<bool>(memDispatch.memDispatchValid) &&
       static_cast<bool>(memDispatch.memDispatchIsStore)) {
     headWrite = true;
-    headData = (static_cast<uint32_t>(head) + 1) & SQ_MASK;
+    headData = (static_cast<uint32_t>(head) + 1) & SQ_SEQ_MASK;
   }
 
   if (static_cast<bool>(rob.storeWillCommit)) {

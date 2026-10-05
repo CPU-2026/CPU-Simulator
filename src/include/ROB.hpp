@@ -28,8 +28,8 @@ struct ROBInputEntry {
   Wire<CKPT_ID_WIDTH> ckptId;
   Wire<32> predictedPC;
   Wire<32> pc;
-  Wire<LQ_PTR_WIDTH> lqTailSnapshot;
-  Wire<SQ_PTR_WIDTH> sqTailSnapshot;
+  Wire<LQ_SEQ_WIDTH> lqTailSnapshot;
+  Wire<SQ_SEQ_WIDTH> sqTailSnapshot;
   Wire<PHY_TAG_WIDTH> newPhy;
   Wire<PHY_TAG_WIDTH> oldPhy;
 };
@@ -100,8 +100,8 @@ struct ROBOutput {
      std::array<Wire<CKPT_ID_WIDTH>, ROB_CAP> ckptId;
     std::array<Wire<32>, ROB_CAP> predictedPC;
     std::array<Wire<32>, ROB_CAP> pc;
-    std::array<Wire<LQ_PTR_WIDTH>, ROB_CAP> lqTailSnapshot;
-    std::array<Wire<SQ_PTR_WIDTH>, ROB_CAP> sqTailSnapshot;
+    std::array<Wire<LQ_SEQ_WIDTH>, ROB_CAP> lqTailSnapshot;
+    std::array<Wire<SQ_SEQ_WIDTH>, ROB_CAP> sqTailSnapshot;
     std::array<Wire<PHY_TAG_WIDTH>, ROB_CAP> newPhy;
     std::array<Wire<PHY_TAG_WIDTH>, ROB_CAP> oldPhy;
   };
@@ -120,8 +120,8 @@ struct ROBEntryReg {
   Register<CKPT_ID_WIDTH> ckptId;
   Register<32> predictedPC;
   Register<32> pc;
-  Register<LQ_PTR_WIDTH> lqTailSnapshot;
-  Register<SQ_PTR_WIDTH> sqTailSnapshot;
+  Register<LQ_SEQ_WIDTH> lqTailSnapshot;
+  Register<SQ_SEQ_WIDTH> sqTailSnapshot;
   Register<PHY_TAG_WIDTH> newPhy;
   Register<PHY_TAG_WIDTH> oldPhy;
 };

@@ -55,19 +55,19 @@ VERBOSE=clock,icache ./code < data/testcases/gcd.data
 | --- | --- |
 | ISA | RV32I 整数核心指令 + RV32M |
 | 取指 / 发射 / 提交宽度 | 1 / 1 / 1 |
-| ROB / PRF / RAT | 16 / 64 / 32 |
+| ROB / PRF / RAT | 16 / 48 / 32 |
 | FQ / IQ | 4 / 4 |
 | Integer RS | 4 |
 | MUL / DIV / Load / Branch RS | 2 / 1 / 4 / 4 |
 | Store Address / Store Value RS | 各 4 |
 | LQ / SQ | 8 / 8 |
 | 结果总线 | ALU、Load、MUL、DIV 四路独立 CDB |
-| ICache | 8 KiB，直接映射，16 B line |
-| DCache | 64 KiB，4 路，16 B line，write-back |
+| ICache | 1 KiB，16×64 B，单端口同步 SRAM；4 项请求队列，队首命中最早 n+1 拍旁路交付 FQ |
+| DCache | 8 KiB，直接映射，64 B line，write-back + write-allocate |
 | 主存延迟 | 20 周期 |
 
 分支预测器的方向侧由 local/global/selector 各 256×2-bit 的 Tournament 表和 8-bit GHR
-组成；目标侧保留 BTB、RAS/SARAS（Target Cache 已删除）。分支误预测与 JALR 目标错误统一
+组成；目标侧保留 BTB64、specRAS/archRAS 各 32（按提交基线与 ROB 重放恢复）。分支误预测与 JALR 目标错误统一
 交给 `FlushArbiter` 恢复；load 采用保守准入，更老未提交 store 地址未知或同址时停发
 cache 请求，不再依赖 store-load 顺序违例恢复。
 
@@ -126,7 +126,7 @@ docs/                使用、架构、迁移回顾和 fmax 文档
 - [`docs/progress.md`](docs/progress.md)：模板迁移回顾、验证政策和关键经验。
 - [`docs/fmax-critical-path-analysis.md`](docs/fmax-critical-path-analysis.md)：结构性关键路径分析。
 - [`../docs/benchmarks.md`](../docs/benchmarks.md)：测试结果和性能数据的根级 SSOT。
-- [`../docs/non-synthesizable-loops.md`](../docs/non-synthesizable-loops.md)：数据通路循环综合策略。
+- [`../docs/process.md`](../docs/process.md)：大数组 SRAM 化阶段、端口契约与验证结果。
 
 当前参数以 `include/common.h` 和 `src/include/` 中的定义为准。
 
@@ -150,6 +150,13 @@ golden 或零用例都会失败。历史扩展收益数据只保留在根级 ben
 对应的可运行资产。`test_IPC.sh` 要求每个 IPC 镜像的自校验结果 `x10 == 0`，任一失败
 都不会覆盖根级 `../docs/ipc_benchmarks.md`。
 
+**当前基线状态（2026-10-01）**：两树 1 KB、64 B 行同步 SRAM ICache 的队首 n+1 旁路已对齐；
+数据侧采用 **16 KiB、64 B 行、直接映射 DCache**；主树、本树 Release 与 `_DEBUG` 各
+18/18 x10+clock 对活动 golden，总 clock 均为 **12,209,929**（相对原 64 KiB 四路 D$
+**−0.150397%**）。独立六例几何 IPC **0.720539**。本树保留 `refillValid/refillSlot`，接线与验收见
+[`docs/cache.md`](docs/cache.md)、[`docs/progress.md`](docs/progress.md) 和
+[`../docs/process.md`](../docs/process.md)。
+
 `reorder_test` 已随旧测试脚手架退役。框架仍提供 `run_once_shuffle()`，但它不再是仓库的日常回归入口。
 
 ## 调试
@@ -169,3 +176,8 @@ issue,exec,wb,commit,lsq,mem,clock,branch,prf,mdp,bpmiss,icache,dcache
 - `0x0ff00513` 不能作为普通 `addi` 使用。
 - 顶层没有最大周期限制，缺少 HALT 的程序不会自动结束。
 - 模型使用 lambda、虚函数和动态对象，不能直接综合。
+## 公共容量同步 3A（2026-10-05）
+
+当前FQ/IQ使用3-bit、LQ/SQ使用4-bit epoch指针，4/4/8/8项全部可用；D$8 KiB/64 B直映。
+七池RS与原ALU时序保持，满时停收规则保持，3B未实施。Release+`_DEBUG`的18+6例与主树
+完整结果、退休数、周期和统计逐项一致。下方带日期的旧配置为历史，活动基线见根级docs。

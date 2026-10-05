@@ -1,7 +1,33 @@
 # 模板迁移回顾与当前状态
 
+## 当前：3B-1 IQ 满时替换（2026-10-05）
+
+主树/模板增加IQ.canAccept(actualIssue)，FQ转移使用相同ready。主树comb分发真实issueValid，
+tick仍读this/Input逐字段写目标；模板读取old Register。RTL共享FIFO不加参数开关，直接
+支持full+pop替换，ICache外层四项总预算仍约束实际输入。
+
+四方FQ/IQ域对拍1088步/2176点一致，含284次满IQ替换、回绕、阻塞、flush/reset；RTL10/10通过。
+两树18+6完整结果/周期/统计一致，每例cycles与3A相同，总12,246,363。I$/分支统计变化，
+活动表只更新统计；FQ上游/HALT/取指预留优化留3B-2。
+
+## 已完成：公共容量同步 3A（2026-10-05）
+
+FQ/IQ 的 Register 从 2-bit slot 扩为 3-bit epoch+slot；LQ/SQ 从 3 bit 扩为 4 bit，
+include-self 恢复快照、ROB 条目和 Wire 全链一起扩宽。数组只取 slot，转发扫描以
+从 head 的物理位置和完整序号占用计算，满八项不会被误判为空。满时停收保持，3B 未实施。
+D$16 KB→8 KB（128×64 B 直映），checkpoint 存活预算26→28，ALU 时序不变。
+
+容量扩大暴露 RAS 空 pop 越界：ISA/clock 恰好相同但两树错路取指不同。统一32项非环形
+栈的空 pop/满 push 保持后，统计也对齐。主树所有20个 tick 改为只写 CPUstate，D$/DMEM
+读取在comb采样；主树DMEM写完成在tick直接落内存，不增加提交阶段。
+审计入口为共同目录sync/audit_tick.py。
+
+验证：主树 O2+断言、模板 Release+`_DEBUG`，18/18 RV32IM 与6/6 IPC 全部结果、退休数、
+clock/IPC clock、分支/Cache统计一致；活动总clock12,246,363，六例几何IPC0.640350140801。
+RTL 10/10 容量/接口测试通过；这不代表整核软硬件周期等价。
+
 > `src/` 到 RISC-V-Simulator-Template 的阶段 0--9 迁移已于 2026-08-30 完成。
-> 本文不再充当逐日任务清单，而记录终态架构、迁移成立的时序依据、仍有约束力的经验和当前唯一的数据通路遗留项。
+> 本文记录终态架构、迁移成立的时序依据、仍有约束力的经验和当前数据通路改造状态。
 
 ## 文档入口
 
@@ -11,8 +37,8 @@
 - 当前 ICache/DCache/IMEM/DMEM 层次：[缓存](cache.md)。
 - 模板运行、框架 API 与常见错误：[使用说明](help.md)。
 - 回归结果与性能口径的唯一基线：仓库根目录 [`../../docs/benchmarks.md`](../../docs/benchmarks.md)。
-- 可综合循环的完整审计与分类：仓库根目录
-  [`../../docs/non-synthesizable-loops.md`](../../docs/non-synthesizable-loops.md)。
+- 大数组 SRAM 化阶段、端口契约与当前验证结果：仓库根目录
+  [`../../docs/process.md`](../../docs/process.md)。
 
 ## 当前结论
 
@@ -24,12 +50,69 @@
 | CPU 运行时 | 模块按值归 `CPU` 所有，以非拥有指针注册到 `dark::CPU`，每拍调用 `run_once()` |
 | 旧机制 | `comb()`、`tick()`、模块快照成员和周期性 `memcpy` 已退出模板树 |
 | 执行/写回 | ALU、LQ、MUL、DIV 四路独立结果总线；MUL 与 DIV 有专用 RS 和派发通道 |
-| 分支预测 | Tournament：local/global/selector 各 256×2b，8-bit GHR；目标侧 BTB64/RAS8/SARAS16/condSeen512（BHT/Target Cache 已删除） |
+| 分支预测 | Tournament：local/global/selector 各 256×2b，8-bit GHR；目标侧 BTB64、specRAS/archRAS 各 32、condSeen512；GHR checkpoint + archRAS/ROB 重放恢复 |
 | 恢复 | ROB tag、checkpoint、FlushArbiter 和各模块本地恢复状态共同完成整窗 squash |
-| 验证 | 双树 `x10` 与等价改动的 `clock` 对拍，加 Release、`_DEBUG` 单写断言和基准表核验 |
+| ICache SRAM 同步 | 两树 1 KB/64 B 行、`SRAM<16,512,32>`、回填握手与端口背压已对齐；本树嵌套 SRAM work/sync，队首 n+1 旁路 |
+| DCache | 8 KB / 128 组 / 直接映射 / 64 B 行；写回+写分配，20 拍整行回填，单项 park |
+| 验证 | 主树、本树 Release 与 `_DEBUG` 各 18/18 x10+cycles 对活动表；逐例 clock 一致，总 clock 12,209,929；IPC 六例几何均值 0.720539 |
 
 迁移收官后的 DCache、MUL、DIV 等扩展都直接按同一 `Module + Register + Wire`
 模型接入，不再引入第二套快照机制。
+
+## 历史：缓存几何参数化与 16 KB 直接映射 DCache（2026-10-01）
+
+先以 64 KB/四路/16 B D$ 做等价重构：两树 Release 18+6 例所有字段前后逐项一致，
+本树 `_DEBUG` 与同编译选项改前版 24/24 等价。旧组数/路数名称替换为
+`NUM_OF_ICACHE_SETS`、`NUM_OF_DCACHE_SETS`、`NUM_OF_DCACHE_WAYS`，地址移位、掩码、
+tag/way/PLRU 位宽与回填载荷均由基础参数派生。
+
+随后采用 256 组×1 路×64 B 的 D$：固定选 way 0，零位替换和 way 状态用 `DCacheState<0>`
+空特化，避免 `Register<0>`；四路分支仍保留。总 clock **12,228,320→12,209,929**，
+**−0.150397%**，满足总 clock 相差 ≤1% 的门槛。两树 Release 18+6 例完整 x10、retired、
+clock、IPC clock 和统计逐项一致，本树 `_DEBUG` 全量结果与周期通过、零断言。
+独立六例几何 IPC **0.625380057590→0.720538578156**；vvadd miss **300→76**。
+golden 与两树架构说明同步到根级活动表，历史表保留在 [benchmarks.md](../../docs/benchmarks.md)。
+
+## 历史：先主树、后模板的队首 n+1 旁路（2026-10-01）
+
+先全量重编 n+2 主树并核对旧活动表，再仅修改 ICache 的队首返回访问器和落槽门控。
+主树 18/18 完整 32-bit x10、retired 不变，ASan/UBSan 定向 8/8 通过后，才移植本树。
+新增 `headReadReady()` 组合谓词，现有 `isReturnReady()/returnRaw()` 在保存槽与旧 SRAM
+输出之间选择；FQ、pop 和 HALT 共用这组返回视图，PC/预测 PC/ckptId 仍取队首槽。
+`readConsumed = popConsume && headReadReady()`，已消费读跳过落槽，避免 ready 单拍双写；
+背压或年轻 hit 仍保存，squash 优先。`refillValid/refillSlot` 两个函数保留。
+
+本树 Release 与主树完整 x10、clock、IPC clock、分支及缓存计数逐项一致；`_DEBUG`
+全量 18/18 零断言，另有 `_DEBUG` + ASan/UBSan 10/10 定向场景，含连续旁路 pop+新读与回绕。
+总 clock **12,309,770→12,228,320（−81,450，−0.6617%）**，15 例更快、3 例不变、无退化；
+精确几何 IPC **+1.3342%**，pi 以外 17 例合计 clock **−1.8160%**。
+活动 golden 已更新，旧 n+2 完整表及逐例分析见 [根级 benchmarks.md](../../docs/benchmarks.md)，
+阶段与验收细节见 [根级 process.md](../../docs/process.md)。
+
+## 历史：双树 ICache SRAM 化与 n+2 对齐（2026-09-30）
+
+主树将 data 接入 `SRAM<16,512,32>`，64 B 行、16-word `LineReturn`，保留 4 项请求队列。
+组合选择从旧 head 顺序扫描，匹配一个存活、未就绪、非待落槽 hit 的请求；`fillFire`
+统一确认 IMEM 消费、请求完成及 SRAM 行写入，`readBlocked` 反压与回填写冲突的命中读。
+当时命中 n 拍读、n+1 拍登记请求槽、最早 n+2 拍进入 FQ，尚未加入直接交付旁路。
+
+本轮修复过一个真实的组合接线顺序错误：将 `FetchDecision` 构建放在消费者输入赋值之后，
+使消费者获得上一拍决定，容量背压和 PC 推进错拍，全部用例触发 IMEM 请求队列满断言。
+将回填仲裁与决定构建提前到分发之前，全量重编后，18 个镜像全部正常退出且 x10 正确。
+当时活动表总 clock **12,309,770**，脚本几何 IPC **0.428542**，分支正确率 **93.9597%**。
+
+本树接线现已完成，保留 `refillValid()` / `refillSlot()` 两个组合函数。请求槽 valid 表示占用、
+ready 表示结果就绪，新 hit/miss 先占槽、未 ready；回填匹配旧存活窗口，排除待落槽 hit。
+`ICacheData` 嵌入 Inner，非 squash 拍由 ICache 调用一次 SRAM work，父模块 sync 递归提交
+读输出并清端口 Wire 缓存。`readBlocked` 接未门控的 FetchUnit PC，避免 BPU.outPC 准入反馈环。
+squash 与普通落槽、回填和 push 互斥；HALT 只在 FQ 可接收时锁存停取。
+
+全量重编后主树、模板 Release 与 `_DEBUG` 各 **18/18 x10+cycles** 对活动表，逐例 clock、
+IPC clock、retired、整体分支率和 I$/D$ 命中率一致，框架断言零触发。
+另通过仓库外 **10 个 `_DEBUG` + ASan/UBSan 定向场景**，覆盖回绕重复行、年轻先完成、
+待落槽 hit、pop/refill/push 同拍、squash、完整 PC、连续读 lane 身份及端口背压。
+新基线与阶段清单分别见
+[`../../docs/benchmarks.md`](../../docs/benchmarks.md)、[`../../docs/process.md`](../../docs/process.md)。
 
 ## 阶段 0--9 回顾
 
@@ -97,7 +180,7 @@
 1. 主树与模板树对同一镜像比较 `x10`；行为等价改动还必须逐拍比较 `clock`，差一拍就是回归。
 2. `x10 & 0xFF` 与现行性能基线只认 [`../../docs/benchmarks.md`](../../docs/benchmarks.md)；本文仅在带日期的架构定案中保留对应验收快照。
 3. Release 验证功能与时序，`_DEBUG` 验证 Register 单写、索引和结构不变量。
-4. 纯表示变换不得改变 clock；有意的微架构改动必须单独说明原因、验证结果和基线更新，不能用“模板天然漂移”解释差异。
+4. 纯表示变换不得改变 clock；有意的微架构改动必须单独说明原因、验证结果和基线更新，不能用“模板天然漂移”解释差异。当前 SRAM ICache 两树已通过根级活动表逐例严格门禁。
 5. 统一 RV32IM 镜像同时覆盖基础整数路径与真实 `mul/div/rem` 路径；不含 M 指令的 `naive` 作为阴性对照，长用例只作为里程碑，不把临时耗时写入本文。
 
 `run_once_shuffle()` 仍是框架能力，也曾证明 Wire/Register 结构没有隐藏的模块执行顺序依赖；

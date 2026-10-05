@@ -23,7 +23,7 @@ struct SQInputMemDispatch {
   Wire<1> memDispatchIsStore;
 };
 struct SQInputROB {
-  Wire<SQ_PTR_WIDTH> squashSQTailSnapshot;
+  Wire<SQ_SEQ_WIDTH> squashSQTailSnapshot;
   Wire<1> squashTagMatch;
   Wire<ROB_TAG_WIDTH> robHeadTag;
   Wire<1> storeWillCommit;
@@ -90,8 +90,8 @@ struct SQOutput {
 
 struct SQInner {
   std::array<SQEntry, SQ_CAP> SQqueue;
-  Register<SQ_PTR_WIDTH> head;
-  Register<SQ_PTR_WIDTH> tail;
+  Register<SQ_SEQ_WIDTH> head;
+  Register<SQ_SEQ_WIDTH> tail;
 };
 
 struct StoreNotify {
@@ -117,11 +117,11 @@ public:
   bool isFull() const;
   bool isActive(uint8_t index) const;
   uint8_t getHead() const;
-  uint8_t getTail() const;
+  uint8_t getTail() const; // Packed sequence, not a physical array index.
   // Occupancy boundary AFTER this cycle's own enqueue (see
   // LQ::getTailSnapshot).
   uint8_t getTailSnapshot() const {
-    return static_cast<uint32_t>((tail + 1) & SQ_MASK);
+    return static_cast<uint32_t>((tail + 1) & SQ_SEQ_MASK);
   }
   bool isReadyToCommit(int index) const;
   bool isCommitted(int index) const {

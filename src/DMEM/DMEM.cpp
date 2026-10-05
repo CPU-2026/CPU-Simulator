@@ -36,7 +36,8 @@ void DMEM::work() {
                          static_cast<uint32_t>(execWriteRemainCycle) == 1;
 
   if (readDone) {
-    const uint32_t blockBase = static_cast<uint32_t>(execReadAddress) & ~0xFu;
+    const uint32_t blockBase =
+        static_cast<uint32_t>(execReadAddress) & ~DCACHE_OFFSET_MASK;
     for (int i = 0; i < DCACHE_BLOCK_CAP; ++i)
       replyLineData[i] <= read_data(blockBase + i);
     readBusy <= false;

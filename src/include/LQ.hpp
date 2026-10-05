@@ -45,7 +45,7 @@ struct LQInputAGU {
 struct LQInputROB {
   Wire<1> isROBEmpty;
   Wire<ROB_TAG_WIDTH> robHeadTag;
-  Wire<LQ_PTR_WIDTH> squashLQTailSnapshot;
+  Wire<LQ_SEQ_WIDTH> squashLQTailSnapshot;
   Wire<1> squashTagMatch;
 };
 struct LQInputLoadResp {
@@ -91,8 +91,8 @@ struct LQInput {
 };
 struct LQInner {
   std::array<LQEntry, LQ_CAP> LQqueue;
-  Register<LQ_PTR_WIDTH> head;
-  Register<LQ_PTR_WIDTH> tail;
+  Register<LQ_SEQ_WIDTH> head;
+  Register<LQ_SEQ_WIDTH> tail;
 };
 class LQ : public dark::Module<LQInput, LQInner> {
   // (2026-09-01) The former private mutators (pushLoad/pop/writeAddress/
@@ -106,13 +106,13 @@ public:
   bool isFull() const;
   bool isActive(uint8_t index) const;
   uint8_t getHead() const;
-  uint8_t getTail() const;
+  uint8_t getTail() const; // Packed sequence, not a physical array index.
   // Occupancy boundary AFTER this cycle's own enqueue (the caller pushes
   // exactly one entry at [tail] later this cycle). Distinct from the raw
   // tail: memIndex wants "my slot" (= old tail), squash snapshots want
   // "the border that keeps me alive" (= old tail + 1).
   uint8_t getTailSnapshot() const {
-    return static_cast<uint32_t>((tail + 1) & LQ_MASK);
+    return static_cast<uint32_t>((tail + 1) & LQ_SEQ_MASK);
   }
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;

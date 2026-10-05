@@ -12,11 +12,15 @@ constexpr int LQ_CAP = 8;
 constexpr int SQ_CAP = 8;
 constexpr int LQ_MASK = LQ_CAP - 1;
 constexpr int SQ_MASK = SQ_CAP - 1;
+constexpr int LQ_SEQ_MASK = (LQ_CAP << 1) - 1;
+constexpr int SQ_SEQ_MASK = (SQ_CAP << 1) - 1;
 // Tight hardware carrier widths for the queue pointer domains: each is the
 // smallest field holding 0..CAP-1, and every wrap uses & (CAP-1), so a
 // power-of-two CAP needs exactly bit_width(CAP-1) bits.
 constexpr int LQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(LQ_CAP - 1));
 constexpr int SQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(SQ_CAP - 1));
+constexpr int LQ_SEQ_WIDTH = LQ_PTR_WIDTH + 1;
+constexpr int SQ_SEQ_WIDTH = SQ_PTR_WIDTH + 1;
 static_assert((1u << LQ_PTR_WIDTH) == static_cast<uint32_t>(LQ_CAP));
 static_assert((1u << SQ_PTR_WIDTH) == static_cast<uint32_t>(SQ_CAP));
 constexpr int MEMQ_SCAN_WINDOW = SQ_CAP < 8 ? SQ_CAP : 8;
@@ -49,6 +53,10 @@ constexpr int FQ_CAP = 4;
 constexpr int IQ_CAP = 4;
 constexpr int FQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(FQ_CAP - 1));
 constexpr int IQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(IQ_CAP - 1));
+constexpr int FQ_SEQ_WIDTH = FQ_PTR_WIDTH + 1;
+constexpr int IQ_SEQ_WIDTH = IQ_PTR_WIDTH + 1;
+constexpr int FQ_SEQ_MASK = (FQ_CAP << 1) - 1;
+constexpr int IQ_SEQ_MASK = (IQ_CAP << 1) - 1;
 static_assert((1u << FQ_PTR_WIDTH) == static_cast<uint32_t>(FQ_CAP));
 static_assert((1u << IQ_PTR_WIDTH) == static_cast<uint32_t>(IQ_CAP));
 constexpr int REGISTER_CAP = 32;
@@ -165,30 +173,72 @@ constexpr int CKPT_ID_WIDTH =
     std::bit_width(static_cast<uint32_t>(CKPT_CAP - 1));
 static_assert(static_cast<uint32_t>(CKPT_CAP) == (1u << CKPT_ID_WIDTH),
               "checkpoint carrier must hold every ID exactly");
-constexpr int CACHE_BLOCK_CAP = 16;
-constexpr int CACHE_CAP = 512; // 8KB direct-mapped (512x16B), mirrors main tree
+// RV32 word geometry, shared by instruction-line packing and SRAM lanes.
+constexpr int RV32_WORD_BYTES = sizeof(uint32_t);
+constexpr int RV32_WORD_BITS = RV32_WORD_BYTES << 3;
+constexpr int RV32_WORD_BYTE_BITS =
+    std::bit_width(static_cast<uint32_t>(RV32_WORD_BYTES - 1));
+
+// ICache geometry: direct-mapped, so each set is one SRAM row.
+constexpr int ICACHE_BLOCK_CAP = 64; // 64 B per line
+constexpr int NUM_OF_ICACHE_SETS = 16;
+static_assert(ICACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
+                  std::has_single_bit(static_cast<uint32_t>(ICACHE_BLOCK_CAP)),
+              "ICache line size must be a power of two holding an RV32 word");
+static_assert(NUM_OF_ICACHE_SETS >= 2 &&
+                  std::has_single_bit(static_cast<uint32_t>(NUM_OF_ICACHE_SETS)),
+              "ICache set count must be a power of two with at least two sets");
+constexpr int ICACHE_OFFSET_BITS =
+    std::bit_width(static_cast<uint32_t>(ICACHE_BLOCK_CAP - 1));
+constexpr uint32_t ICACHE_OFFSET_MASK = ICACHE_BLOCK_CAP - 1u;
+constexpr int ICACHE_INDEX_BITS =
+    std::bit_width(static_cast<uint32_t>(NUM_OF_ICACHE_SETS - 1));
+constexpr uint32_t ICACHE_INDEX_MASK = NUM_OF_ICACHE_SETS - 1u;
+constexpr int ICACHE_TAG_SHIFT = ICACHE_OFFSET_BITS + ICACHE_INDEX_BITS;
+constexpr int ICACHE_TAG_WIDTH = RV32_WORD_BITS - ICACHE_TAG_SHIFT;
+constexpr int ICACHE_LINE_BITS = ICACHE_BLOCK_CAP << 3;
+constexpr int ICACHE_WORDS_PER_LINE = ICACHE_BLOCK_CAP >> RV32_WORD_BYTE_BITS;
+constexpr uint32_t ICACHE_WORD_INDEX_MASK = ICACHE_WORDS_PER_LINE - 1u;
+constexpr int ICACHE_WORD_BITS = ICACHE_WORDS_PER_LINE > 1
+    ? std::bit_width(static_cast<uint32_t>(ICACHE_WORDS_PER_LINE - 1)) : 1;
+static_assert(ICACHE_TAG_WIDTH > 0 && ICACHE_TAG_WIDTH <= RV32_WORD_BITS,
+              "ICache address split must leave a valid tag width");
 constexpr int REQUEST_CAP = 4;
 constexpr int CKPT_LIVE_MAX =
-    ROB_CAP + REQUEST_CAP + (FQ_CAP - 1) + (IQ_CAP - 1);
+    ROB_CAP + REQUEST_CAP + FQ_CAP + IQ_CAP;
 static_assert(CKPT_CAP > 0 && (CKPT_CAP & (CKPT_CAP - 1)) == 0,
               "checkpoint wrap uses &(CKPT_CAP-1)");
 static_assert(CKPT_CAP >= CKPT_LIVE_MAX,
               "checkpoint IDs must cover ROB + ICache + FQ + IQ");
 static_assert(CKPT_CAP <= (1 << 6),
               "checkpoint IDs must fit the retained 6-bit carrier");
-// ---- DCache geometry (mirrors main tree common.hpp) ----
-// 64KB / 4-way / 16B lines. All constexpr: to shrink the cache for stress
-// testing (capacity evictions / dirty-writeback path), edit NUM_OF_SETS and
-// DCACHE_INDEX_BITS here -- they must keep the 2^DCACHE_INDEX_BITS relation.
-constexpr int DCACHE_BLOCK_CAP = 16;
-constexpr int NUM_OF_SETS = 1024;
-constexpr int DCACHE_INDEX_BITS = 10;              // log2(NUM_OF_SETS)
-constexpr int DCACHE_TAG_SHIFT = 4 + DCACHE_INDEX_BITS; // 16B block + set idx
-constexpr int NUM_OF_WAYS = 4;
+// DCache geometry (mirrors main tree common.hpp). Address fields and masks
+// are derived from the line size and set count.
+constexpr int DCACHE_BLOCK_CAP = 64;
+constexpr int NUM_OF_DCACHE_SETS = 128;
+constexpr int NUM_OF_DCACHE_WAYS = 1;
 constexpr int MEM_LATENCY = 20;
-static_assert(NUM_OF_SETS == (1 << DCACHE_INDEX_BITS),
-              "NUM_OF_SETS must be 2^DCACHE_INDEX_BITS");
-static_assert(DCACHE_BLOCK_CAP == 16, "16B lines assumed by DCACHE_TAG_SHIFT");
+static_assert(DCACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
+                  std::has_single_bit(static_cast<uint32_t>(DCACHE_BLOCK_CAP)),
+              "DCache line size must be a power of two holding an RV32 word");
+static_assert(NUM_OF_DCACHE_SETS > 0 &&
+                  std::has_single_bit(static_cast<uint32_t>(NUM_OF_DCACHE_SETS)),
+              "DCache set count must be a positive power of two");
+static_assert(NUM_OF_DCACHE_WAYS == 1 || NUM_OF_DCACHE_WAYS == 4,
+              "DCache supports direct mapping or four-way tree-PLRU");
+constexpr int DCACHE_OFFSET_BITS =
+    std::bit_width(static_cast<uint32_t>(DCACHE_BLOCK_CAP - 1));
+constexpr uint32_t DCACHE_OFFSET_MASK = DCACHE_BLOCK_CAP - 1u;
+constexpr int DCACHE_INDEX_BITS =
+    std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_SETS - 1));
+constexpr uint32_t DCACHE_INDEX_MASK = NUM_OF_DCACHE_SETS - 1u;
+constexpr int DCACHE_TAG_SHIFT = DCACHE_OFFSET_BITS + DCACHE_INDEX_BITS;
+constexpr int DCACHE_TAG_WIDTH = RV32_WORD_BITS - DCACHE_TAG_SHIFT;
+constexpr int DCACHE_WAY_BITS =
+    std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_WAYS - 1));
+constexpr int DCACHE_PLRU_BITS = NUM_OF_DCACHE_WAYS - 1;
+static_assert(DCACHE_TAG_WIDTH > 0 && DCACHE_TAG_WIDTH <= RV32_WORD_BITS,
+              "DCache address split must leave a valid tag width");
 enum class ValueState : uint32_t{
   NOTREADY,
   FETCHING,
@@ -286,15 +336,13 @@ class ROB;
 class PRF;
 struct BPU;
 
-// IMEM -> ICache line-return bus: a full 16B cache line delivered as a
-// fixed-width 4x32-bit word bundle (RTL-style data bus, not a pointer),
-// combinational over the producer's committed state (Wire, NOT Register,
-// so it adds no latency). word index 0..3 maps to byte offsets 0..15; the
-// critical word for a fetch at pc is data[(pc >> 2) & 3].
+// IMEM -> ICache line-return bus: one complete instruction line as an RV32
+// word bundle, combinational over committed producer state (Wire, not
+// Register, so it adds no latency). Word count/index follow ICache geometry.
 struct LineReturn {
   Wire<1> valid;
   Wire<32> lineAddr;
-  std::array<Wire<32>, (CACHE_BLOCK_CAP >> 2)> data;
+  std::array<Wire<RV32_WORD_BITS>, ICACHE_WORDS_PER_LINE> data;
 };
 
 // Pre-decode scan result carried from the FQ push to the BPU. Used for RAS

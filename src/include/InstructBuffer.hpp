@@ -22,12 +22,12 @@ struct FQInput {
   Wire<32> icacheReturnPC;
   Wire<32> icacheReturnPredictedPC;
   Wire<CKPT_ID_WIDTH> icacheReturnCkptId;
-  Wire<1> decodeFull;
+  Wire<1> decodeFull; // IQ blocks this cycle, including dequeue lookahead.
 };
 
 struct FQOutput {
-  Register<FQ_PTR_WIDTH> head;
-  Register<FQ_PTR_WIDTH> tail;
+  Register<FQ_SEQ_WIDTH> head;
+  Register<FQ_SEQ_WIDTH> tail;
   // Pre-decode observation of the last push (committed next cycle): feeds
   // the BPU's scanner for RAS maintenance / early BTB training.
   Register<1> lastValid;
@@ -45,8 +45,8 @@ struct InstructBuffer : dark::Module<FQInput, FQOutput, FQInner> {
   // bridge accessors: combinational reads of the committed (_M_old) state
   // (renamed from FetchQueue; member aliases FQModule/FQ* kept for callers)
   bool isFull() const {
-    return ((static_cast<uint32_t>(tail) + 1) & (FQ_CAP - 1)) ==
-           static_cast<uint32_t>(head);
+    return static_cast<uint32_t>(tail) ==
+           (static_cast<uint32_t>(head) ^ FQ_CAP);
   }
   bool isEmpty() const {
     return static_cast<uint32_t>(head) == static_cast<uint32_t>(tail);
@@ -61,18 +61,18 @@ struct InstructBuffer : dark::Module<FQInput, FQOutput, FQInner> {
     return static_cast<bool>(lastValid);
   }
   uint32_t headRaw() const {
-    return static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].raw);
+    return static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (FQ_CAP - 1)].raw);
   }
   int headpc() const {
     return static_cast<int>(
-        static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].pc));
+        static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (FQ_CAP - 1)].pc));
   }
   int32_t headPredictedPC() const {
     return static_cast<int32_t>(static_cast<uint32_t>(
-        entries[static_cast<uint32_t>(head)].predictedPC));
+        entries[static_cast<uint32_t>(head) & (FQ_CAP - 1)].predictedPC));
   }
   uint8_t headCkptId() const {
     return static_cast<uint8_t>(static_cast<uint32_t>(
-        entries[static_cast<uint32_t>(head)].ckptId));
+        entries[static_cast<uint32_t>(head) & (FQ_CAP - 1)].ckptId));
   }
 };

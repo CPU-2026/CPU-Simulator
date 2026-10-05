@@ -13,13 +13,13 @@ void InstructBuffer::work() {
     // stage 2 push: latch an ICache line return unless halted or full
     if (static_cast<bool>(icacheReturnReady) &&
         !static_cast<bool>(haltFetched) && !isFull()) {
-      auto t = static_cast<uint32_t>(tail);
+      auto t = static_cast<uint32_t>(tail) & (FQ_CAP - 1);
       entries[t].raw <= static_cast<uint32_t>(icacheReturnRaw);
       entries[t].pc <= static_cast<uint32_t>(icacheReturnPC);
       entries[t].predictedPC <=
           static_cast<uint32_t>(icacheReturnPredictedPC);
       entries[t].ckptId <= static_cast<uint32_t>(icacheReturnCkptId);
-      tail <= ((t + 1) & (FQ_CAP - 1));
+      tail <= ((static_cast<uint32_t>(tail) + 1) & FQ_SEQ_MASK);
       lastValid <= 1;
       lastRaw <= static_cast<uint32_t>(icacheReturnRaw);
       lastPC <= static_cast<uint32_t>(icacheReturnPC);
@@ -28,7 +28,7 @@ void InstructBuffer::work() {
     }
     // stage 1 pop: hand the head entry to the decoder when it can accept it
     if (!isEmpty() && !static_cast<bool>(decodeFull)) {
-      head <= ((static_cast<uint32_t>(head) + 1) & (FQ_CAP - 1));
+      head <= ((static_cast<uint32_t>(head) + 1) & FQ_SEQ_MASK);
     }
   }
 }

@@ -1,29 +1,27 @@
 #pragma once
-#include "Memory.hpp" // MEM_SIZE guard below
+#include "SRAM.hpp"
 #include "common.h"
 #include "module.h"
 #include "tools.h"
 #include <array>
 #include <cstdint>
-#include <cstring>
 
-static_assert(REQUEST_CAP == 4); // head is a 2-bit ring pointer
-static_assert(MEM_SIZE == (1u << 17)); // tag = addr[17:13] must fit Register<4>
+static_assert(REQUEST_CAP >= 2 && (REQUEST_CAP & (REQUEST_CAP - 1)) == 0);
+constexpr int ICACHE_REQUEST_BITS = std::bit_width(REQUEST_CAP - 1u);
 
 struct CacheLine {
   Register<1> valid;
-  Register<4> tag; // addr[17:13] -- 8KB cache in 128KB space leaves 4 tag bits
-  std::array<Register<32>, (CACHE_BLOCK_CAP >> 2)> Data; // 4 words per line
+  Register<ICACHE_TAG_WIDTH> tag;
 };
 
 struct ICacheInput {
   Wire<1> needSquash;
   Wire<1> fetchValid;
-  Wire<32> fetchPC;
+  Wire<32> fetchPC; // Ungated PC: read-port backpressure must not depend on fetchValid.
   Wire<32> fetchPredictPC;
   Wire<CKPT_ID_WIDTH> fetchCkptId;
   Wire<1> popConsume;
-  LineReturn lineReturn;
+  LineReturn lineReturn; // Offered IMEM return, before the fillFire handshake.
 };
 
 struct ICacheOutput {
@@ -40,14 +38,21 @@ struct ICacheOutput {
     Register<1> ready;
   };
   std::array<ICacheRequest, REQUEST_CAP> requestBuffer;
+  Wire<1> fillFire;
+  Wire<1> readBlocked;
 };
 
 struct ICacheInner {
-  std::array<CacheLine, CACHE_CAP> blocks;
-  Register<2> head;
+  SRAM<NUM_OF_ICACHE_SETS, ICACHE_LINE_BITS, RV32_WORD_BITS> ICacheData;
+  std::array<CacheLine, NUM_OF_ICACHE_SETS> blocks;
+  Register<ICACHE_REQUEST_BITS> head;
+  Register<ICACHE_REQUEST_BITS> readIndex;
+  Register<ICACHE_WORD_BITS> readLaneIndex;
+  Register<1> readValid;
 };
 
 struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
+  ICache();
   // host-only cache profile counters (mirrors the main tree's ICache
   // hitCount/missCount). Incremented at the stage-1 push, once per accepted
   // fetch request. They are statistics, never read by the datapath, so they
@@ -64,20 +69,32 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
     return n;
   }
   bool isRequestFull() const { return occupancy() == REQUEST_CAP; }
-  // deliverable = occupied AND instruction present (old valid-bit semantics)
+  // Only the occupied head may bypass the request-slot register. Read data
+  // and the saved slot/lane identity all come from the committed old state.
+  bool headReadReady() const {
+    const auto h = static_cast<uint32_t>(head);
+    return static_cast<bool>(requestBuffer[h].valid) &&
+           !static_cast<bool>(requestBuffer[h].ready) &&
+           static_cast<bool>(readValid) &&
+           static_cast<uint32_t>(readIndex) == h;
+  }
+  // A saved instruction or a matching completed SRAM read is deliverable.
   bool isReturnReady() const {
     auto h = static_cast<uint32_t>(head);
     return static_cast<bool>(requestBuffer[h].valid) &&
-           static_cast<bool>(requestBuffer[h].ready);
+           (static_cast<bool>(requestBuffer[h].ready) || headReadReady());
   }
-  bool hit(uint32_t addr) const;
-  // one 32-bit word of a cached line (Data is stored as words)
-  uint32_t lineWord(uint32_t lineIdx, uint32_t w) const {
-    return static_cast<uint32_t>(blocks[lineIdx].Data[w]);
+  bool hit(uint32_t addr) const {
+    auto index = (addr >> ICACHE_OFFSET_BITS) & ICACHE_INDEX_MASK;
+    return static_cast<bool>(blocks[index].valid) &&
+           static_cast<uint32_t>(blocks[index].tag) ==
+                (addr >> ICACHE_TAG_SHIFT);
   }
   auto returnRaw() const {
-    return static_cast<uint32_t>(
-        requestBuffer[static_cast<uint32_t>(head)].raw_inst);
+    return headReadReady()
+               ? ICacheData.readLane(static_cast<uint32_t>(readLaneIndex))
+               : static_cast<uint32_t>(
+                     requestBuffer[static_cast<uint32_t>(head)].raw_inst);
   }
   auto returnPC() const {
     return static_cast<uint32_t>(requestBuffer[static_cast<uint32_t>(head)].PC);
@@ -89,6 +106,48 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
   auto returnCkptId() const {
     return static_cast<uint32_t>(
         requestBuffer[static_cast<uint32_t>(head)].ckptId);
+  }
+  bool refillValid() const {
+    bool found = false;
+    const uint32_t occ = occupancy();
+    const bool offered = static_cast<bool>(lineReturn.valid);
+    const uint32_t lineAddr = static_cast<uint32_t>(lineReturn.lineAddr);
+    for (int age = 0; age < REQUEST_CAP; ++age) {
+      const auto slot = (static_cast<uint32_t>(head) + age) & (REQUEST_CAP - 1);
+      const uint32_t requestLine =
+          static_cast<uint32_t>(requestBuffer[slot].PC) &
+          ~ICACHE_OFFSET_MASK;
+      if (offered && age < occ && !found &&
+          static_cast<bool>(requestBuffer[slot].valid) &&
+          !static_cast<bool>(requestBuffer[slot].ready) &&
+          !(static_cast<bool>(readValid) &&
+            static_cast<uint32_t>(readIndex) == slot) && requestLine == lineAddr) {
+        found = true;
+      }
+    }
+    return found;
+  }
+  uint8_t refillSlot() const {
+    bool found = false;
+    uint8_t refillTarget = 0;
+    const uint32_t occ = occupancy();
+    const bool offered = static_cast<bool>(lineReturn.valid);
+    const uint32_t lineAddr = static_cast<uint32_t>(lineReturn.lineAddr);
+    for (int age = 0; age < REQUEST_CAP; ++age) {
+      const auto slot = (static_cast<uint32_t>(head) + age) & (REQUEST_CAP - 1);
+      const uint32_t requestLine =
+          static_cast<uint32_t>(requestBuffer[slot].PC) &
+          ~ICACHE_OFFSET_MASK;
+      if (offered && age < occ && !found &&
+          static_cast<bool>(requestBuffer[slot].valid) &&
+          !static_cast<bool>(requestBuffer[slot].ready) &&
+          !(static_cast<bool>(readValid) &&
+            static_cast<uint32_t>(readIndex) == slot) && requestLine == lineAddr) {
+        found = true;
+        refillTarget = static_cast<uint8_t>(slot);
+      }
+    }
+    return refillTarget;
   }
   // combinational predicate: the ICache head holds the halt instruction.
   // Member function (not a stored Register) so it is visible the same cycle.

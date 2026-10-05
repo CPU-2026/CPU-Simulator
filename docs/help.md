@@ -1,5 +1,12 @@
 # RISC-V Simulator Template 使用指南
 
+> 3B-1已完成：共同目录`python3 sync/run_iq.py`验证两树真实FQ/IQ与RTL/deque oracle，
+> 满IQ替换有效，18+6周期继续匹配golden；FQ上游/取指lookahead留下一小步。
+
+> **2026-10-05**：公共容量同步3A已落地（FQ/IQ4、LQ/SQ8 全容量 epoch，D$8 KB）；
+> 18+6例与主树完整结果/周期/统计一致。原16 KB基线留作历史，当前活动表已复核更新。
+> 对拍/容量测试与主树 tick 只写审计入口见共同父目录 sync/README.md。
+
 本文是 `RISC-V-Simulator-Template/` 的实际使用入口。除特别说明外，命令都在该目录执行。
 
 ## 1. 仓库用途
@@ -100,8 +107,8 @@ VERBOSE=clock ./code < data/testcases/gcd.data
 当前输出包含：
 
 ```text
-clock: 1184
-ipc: 0.355030 retired=420 cycles=1183
+clock: 177
+ipc: 0.232955 retired=41 cycles=176
 178
 ```
 
@@ -158,6 +165,12 @@ BP_BIN=./build-release/code ./test_IPC.sh
 缺失 golden 与零用例。`test_IPC.sh` 在任一自校验失败时保持原报告不变；运行前应确认
 确实要改写根级 IPC 报告。
 
+**2026-10-01 基线说明**：两树 1 KB/64 B 行同步 SRAM ICache 的队首 n+1 旁路已对齐；主树、本树 Release
+与 `_DEBUG` 各 18/18 x10+cycles 对根级活动表。数据侧现为 **16 KB/64 B 行直接映射 DCache**，
+总 clock 均为 **12,209,929**；独立六例几何 IPC **0.720539**。
+`test.sh` 始终严格检查 result 与 cycles。同步范围和当前 n+1 队首交付时序见
+[cache.md](cache.md)、[progress.md](progress.md) 与 [根级 process.md](../../docs/process.md)。
+
 ## 5. 文档地图
 
 当前实现说明优先阅读以下本地文档：
@@ -177,7 +190,7 @@ BP_BIN=./build-release/code ./test_IPC.sh
 | 根级文档 | 内容 |
 | --- | --- |
 | [../../docs/benchmarks.md](../../docs/benchmarks.md) | x10、cycles、IPC、分支和 Cache 的回归 SSOT |
-| [../../docs/non-synthesizable-loops.md](../../docs/non-synthesizable-loops.md) | 不定长循环与可综合性审计 |
+| [../../docs/process.md](../../docs/process.md) | 大数组 SRAM 化阶段、端口契约与当前验证结果 |
 | [../../docs/ipc_benchmarks.md](../../docs/ipc_benchmarks.md) | `test_IPC.sh` 生成的 IPC 报告 |
 
 ## 6. 一拍到底发生什么
@@ -398,8 +411,8 @@ cpu.add_module(owned);    // 当前 API 会 move，调用后 owned 为空
 - host-only 输入解析、结束统计、编译期常量和明确包在断言条件中的参考模型不属于综合数据通路，
   但应保持清晰标注。
 
-不要因为代码是 C++ 就假设编译器会替你保持目标 RTL 结构。具体审计结论见根级
-[不可综合循环审计](../../docs/non-synthesizable-loops.md)。
+不要因为代码是 C++ 就假设编译器会替你保持目标 RTL 结构。SRAM 化的端口、周期边界与
+验证约束见根级 [process.md](../../docs/process.md)。
 
 ## 11. 常见错误速查
 

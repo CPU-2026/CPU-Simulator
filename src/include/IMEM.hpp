@@ -19,9 +19,8 @@ struct IMEMOutput {
 };
 struct IMEMInner {
   struct IMEMRequest {
-    // line stored as 4x32-bit words (RTL: one 128-bit SRAM read port),
-    // not as 16 individual bytes
-    std::array<Register<32>, (CACHE_BLOCK_CAP >> 2)> Data;
+    // Instruction line stored as RV32 words, with count derived from ICache.
+    std::array<Register<RV32_WORD_BITS>, ICACHE_WORDS_PER_LINE> Data;
     Register<32> lineAddr;
     Register<6> remainCycle;
     Register<1> valid;
@@ -31,12 +30,12 @@ struct IMEMInner {
 struct IMEM : public Memory, dark::Module<IMEMInput, IMEMOutput, IMEMInner> {
   IMEM(const Memory &mem) : Memory(mem) {}
   // wide instruction-fetch read port: callers pass word-aligned addresses
-  // (lineAddr is masked to 16B in CPU::wire(); RTL: addr[1:0] unwired).
+  // (lineAddr is line-aligned in CPU::wire(); RTL: word byte bits unwired).
   // Byte packing lives here and nowhere else on the fetch path; DMEM keeps
   // the byte-granularity interface (lb/sb need byte enables).
   uint32_t read_word(uint32_t addr) const {
     uint32_t w = 0;
-    for (int b = 0; b < 4; ++b)
+    for (int b = 0; b < RV32_WORD_BYTES; ++b)
       w |= static_cast<uint32_t>(read_data(addr + static_cast<uint32_t>(b)))
            << (b << 3);
     return w;

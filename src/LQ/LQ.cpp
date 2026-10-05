@@ -26,15 +26,15 @@ struct LQWriteIntent {
 
 bool LQ::isEmpty() const { return static_cast<uint32_t>(tail) == static_cast<uint32_t>(head); }
 
-bool LQ::isFull() const { return ((static_cast<uint32_t>(tail) + 1) & LQ_MASK) == static_cast<uint32_t>(head); }
+bool LQ::isFull() const { return static_cast<uint32_t>(tail) == (static_cast<uint32_t>(head) ^ LQ_CAP); }
 
 bool LQ::isActive(uint8_t index) const {
   if (static_cast<uint32_t>(head) == static_cast<uint32_t>(tail))
     return false;
-  return ((index - static_cast<uint32_t>(head) + LQ_CAP) & LQ_MASK) < ((static_cast<uint32_t>(tail) - static_cast<uint32_t>(head) + LQ_CAP) & LQ_MASK);
+  return index < LQ_CAP && ((index - static_cast<uint32_t>(head)) & LQ_MASK) < ((static_cast<uint32_t>(tail) - static_cast<uint32_t>(head)) & LQ_SEQ_MASK);
 }
 
-uint8_t LQ::getHead() const { return static_cast<uint32_t>(head); }
+uint8_t LQ::getHead() const { return static_cast<uint32_t>(head) & LQ_MASK; }
 uint8_t LQ::getTail() const { return static_cast<uint32_t>(tail); }
 
 auto LQ::getAddress(int index) const -> uint32_t {
@@ -51,7 +51,7 @@ auto LQ::getValue(int index) const -> int32_t {
 }
 
 auto LQ::headRobTag() const -> RobTag {
-  return static_cast<uint32_t>(LQqueue[static_cast<uint32_t>(head)].robTag);
+  return static_cast<uint32_t>(LQqueue[static_cast<uint32_t>(head) & LQ_MASK].robTag);
 }
 
 auto LQ::getRobTag(int index) const -> RobTag {
@@ -140,7 +140,7 @@ void LQ::work() {
   //    reachable by later sources since it is inactive this cycle); the
   //    multi-writer fields and tail go through intents.
   if (static_cast<bool>(issue.issueValid) && static_cast<bool>(issue.issueLoad)) {
-    auto t = static_cast<uint32_t>(tail);
+    auto t = static_cast<uint32_t>(tail) & LQ_MASK;
     LQqueue[t].robTag <= static_cast<uint32_t>(issue.issueTag);
     LQqueue[t].n_bytes <= static_cast<uint32_t>(issue.issueBytes);
     LQqueue[t].isUnsigned <= static_cast<uint32_t>(issue.issueIsUnsigned);
@@ -149,7 +149,7 @@ void LQ::work() {
     intent[static_cast<int>(t)].bcastWrite = true;
     intent[static_cast<int>(t)].bcastData = false;
     tailWritten = true;
-    tailData = (t + 1) & LQ_MASK;
+    tailData = (static_cast<uint32_t>(tail) + 1) & LQ_SEQ_MASK;
   }
 
   // 2. store-forward broadcasts from SQ (data-ready events pre-computed in comb)
@@ -240,12 +240,11 @@ void LQ::work() {
   }
 
   // 5. retire pop
-  uint8_t cur = getHead();
-  bool retireLoad = !static_cast<bool>(squash.needSquash) && cur != getTail() &&
+  bool retireLoad = !static_cast<bool>(squash.needSquash) && !isEmpty() &&
                     (static_cast<bool>(rob.isROBEmpty) ||
                      ROB::isOlder(headRobTag(), static_cast<uint32_t>(rob.robHeadTag)));
   if (retireLoad) {
-    head <= ((static_cast<uint32_t>(head) + 1) & LQ_MASK);
+    head <= ((static_cast<uint32_t>(head) + 1) & LQ_SEQ_MASK);
   }
 
   // 6. load response — the cycle-start FETCHING state proves this entry was
