@@ -5,7 +5,7 @@
 #include <array>
 #include <cstdint>
 
-// 64KB 4-way 16B-line data cache: tree-PLRU (3 bit/set) / write-back +
+// Parameterized data cache: direct-mapped or four-way tree-PLRU / write-back +
 // write-allocate / parked-request FSM / dual-port line-granular DMEM behind it
 // (the DCache is DMEM's only client; DMEM never sees sub-word accesses
 // anymore).
@@ -66,16 +66,31 @@ struct Cacheline {
   Register<1> valid;
   Register<1> dirty;
   std::array<uint8_t, DCACHE_BLOCK_CAP> datas{}; // plain SRAM: never synced
-  Register<18> tag;
+  Register<DCACHE_TAG_WIDTH> tag;
   void sync() {
     dark::Visitor::sync(valid);
     dark::Visitor::sync(dirty);
     dark::Visitor::sync(tag);
   }
 };
+// Optional replacement/way state: direct mapping has zero logical bits and
+// no Register. The four-way specialization retains the original registers.
+template <int Bits> struct DCacheState {
+  static constexpr int _Bit_Len = Bits;
+  Register<Bits> value;
+  uint32_t get() const { return static_cast<uint32_t>(value); }
+  void set(uint32_t next) { value <= next; }
+  void sync() { dark::Visitor::sync(value); }
+};
+template <> struct DCacheState<0> {
+  static constexpr int _Bit_Len = 0;
+  uint32_t get() const { return 0; }
+  void set(uint32_t) {}
+  void sync() {}
+};
 struct CacheSet {
-  std::array<Cacheline, NUM_OF_WAYS> lines;
-  Register<3> PLRU_bit;
+  std::array<Cacheline, NUM_OF_DCACHE_WAYS> lines;
+  [[no_unique_address]] DCacheState<DCACHE_PLRU_BITS> PLRU_bit;
   void sync() {
     for (auto &l : lines)
       dark::Visitor::sync(l);
@@ -94,7 +109,7 @@ struct DCacheInner {
   Register<2> parkNBytes; // nEnc encoding (see decisionNBytes)
   Register<ROB_TAG_WIDTH> parkRobTag;
   Register<7> parkMemIndex;
-  Register<2> parkTargetWay; // allocateWay result, 0..3
+  [[no_unique_address]] DCacheState<DCACHE_WAY_BITS> parkTargetWay;
   // self-answer / fill-serve load response (one-cycle pulse)
   Register<1> lbValid; // loadBuffer (Inner side renamed: Output uses loadResp*)
   Register<7> lbMemIndex;
@@ -108,7 +123,7 @@ struct DCacheInner {
   std::array<Register<8>, DCACHE_BLOCK_CAP> rqWriteLineData;
   // Line array inside Inner so Module::sync() commits the metadata
   // registers every cycle (路线 A); datas inside each line stays plain.
-  std::array<CacheSet, NUM_OF_SETS> cacheSets;
+  std::array<CacheSet, NUM_OF_DCACHE_SETS> cacheSets;
 };
 struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   DCache() { wire_output(); }

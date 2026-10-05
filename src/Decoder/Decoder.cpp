@@ -104,12 +104,12 @@ void DecodeUnit::work() {
     tail <= 0;
   } else {
     // stage 2 pop: release the head uop once the issue arbiter consumed it
-    if (static_cast<bool>(issueValid)) {
-      head <= ((static_cast<uint32_t>(head) + 1) & (IQ_CAP - 1));
+    if (static_cast<bool>(issueValid) && !isEmpty()) {
+      head <= ((static_cast<uint32_t>(head) + 1) & IQ_SEQ_MASK);
     }
     // stage 1 push: decode the InstructBuffer head when the queue can accept
     // it
-    if (!static_cast<bool>(fqEmpty) && !isFull()) {
+    if (!static_cast<bool>(fqEmpty) && canAccept(static_cast<bool>(issueValid))) {
       auto raw = static_cast<uint32_t>(fqHeadRaw);
       Uop uop = Decoder::decode(static_cast<int32_t>(raw));
       uop.pc = static_cast<uint32_t>(fqHeadPc);
@@ -117,7 +117,7 @@ void DecodeUnit::work() {
           static_cast<int32_t>(static_cast<uint32_t>(fqHeadPredictedPC));
       uop.ckptId = static_cast<uint8_t>(static_cast<uint32_t>(fqHeadCkptId));
       uop.isHalt = (raw == 0x0ff00513);
-      auto t = static_cast<uint32_t>(tail);
+      auto t = static_cast<uint32_t>(tail) & (IQ_CAP - 1);
       entries[t].type <= static_cast<uint32_t>(uop.type);
       entries[t].opcode <= static_cast<uint32_t>(uop.opcode);
       entries[t].funct3 <= static_cast<uint32_t>(uop.funct3);
@@ -131,7 +131,7 @@ void DecodeUnit::work() {
       entries[t].allocDest <= static_cast<uint32_t>(uop.allocDest);
       entries[t].predictedPC <= static_cast<uint32_t>(uop.predictedPC);
       entries[t].ckptId <= static_cast<uint32_t>(uop.ckptId);
-      tail <= ((t + 1) & (IQ_CAP - 1));
+      tail <= ((static_cast<uint32_t>(tail) + 1) & IQ_SEQ_MASK);
     }
   }
 }

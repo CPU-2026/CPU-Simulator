@@ -313,9 +313,9 @@ void BPU::work() {
   BTBWriteIntent fetchWriteIntent;
   if (static_cast<bool>(fetchInfo.FetchValid)) {
     const uint32_t ra = static_cast<uint32_t>(fetchInfo.FetchPC) + 4;
-    if (static_cast<bool>(fetchInfo.isFetchCall)) {
+    if (static_cast<bool>(fetchInfo.isFetchCall) && specTop < RAS_CAP) {
       specRAS[specTop++] = ra;
-    } else if (static_cast<bool>(fetchInfo.isFetchRet)) {
+    } else if (static_cast<bool>(fetchInfo.isFetchRet) && specTop > 0) {
       --specTop;
     }
     // Early training (BRU-port fetch side; same-line conflicts arbitrated at
@@ -347,9 +347,9 @@ void BPU::work() {
     const uint32_t headSlot = robSlot(headTag);
     if (headSlot < ROB_CAP &&
         static_cast<uint32_t>(rob.robTag[headSlot]) == headTag) {
-      if (static_cast<bool>(rob.robIsCall[headSlot]))
+      if (static_cast<bool>(rob.robIsCall[headSlot]) && archTop < RAS_CAP)
         archRAS[archTop++] = static_cast<uint32_t>(rob.robPC[headSlot]) + 4u;
-      else if (static_cast<bool>(rob.robIsRet[headSlot]))
+      else if (static_cast<bool>(rob.robIsRet[headSlot]) && archTop > 0)
         --archTop;
     }
   }
@@ -376,10 +376,10 @@ void BPU::work() {
         const uint32_t robIndex = robSlot(robTag);
         if (robIndex < ROB_CAP &&
             static_cast<uint32_t>(rob.robTag[robIndex]) == robTag) {
-          if (static_cast<bool>(rob.robIsCall[robIndex]))
+          if (static_cast<bool>(rob.robIsCall[robIndex]) && commitTOS < RAS_CAP)
             specRAS[commitTOS++] =
                 static_cast<uint32_t>(rob.robPC[robIndex]) + 4u;
-          else if (static_cast<bool>(rob.robIsRet[robIndex]))
+          else if (static_cast<bool>(rob.robIsRet[robIndex]) && commitTOS > 0)
             --commitTOS;
         }
         recovered = robTag == squashTag;

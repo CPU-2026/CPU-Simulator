@@ -8,7 +8,7 @@
 // Dual-port, line-granular data memory (2026-09-01).
 //
 // The DCache is DMEM's only client: it never issues Operation::Load/Store
-// sub-word accesses anymore, only whole 16B-line reads (fill) and whole 16B
+// sub-word accesses anymore, only whole cache-line reads (fill) and whole
 // line writes (dirty writeback). The two ports are fully independent -- a
 // writeback and a fill can be in flight simultaneously, which is what lets a
 // dirty-victim miss cost the same as a clean one.
@@ -20,9 +20,9 @@
 // DCache -> DMEM, one pulse per port per cycle (claimed on !busy).
 struct DMEMInput {
   Wire<1> readValid;
-  Wire<32> readAddress; // 16B-aligned block base
+  Wire<32> readAddress; // DCACHE_BLOCK_CAP-aligned block base
   Wire<1> writeValid;
-  Wire<32> writeAddress; // 16B-aligned victim base
+  Wire<32> writeAddress; // DCACHE_BLOCK_CAP-aligned victim base
   std::array<Wire<8>, DCACHE_BLOCK_CAP> writeLineData;
 };
 // Registered execution pipelines (one per port) + the reply buffer.

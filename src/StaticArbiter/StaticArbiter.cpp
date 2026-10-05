@@ -825,7 +825,7 @@ void IssueArbiter::wire_output() {
                : 0u;
   };
   loadP.memIndex = [this]() -> uint32_t {
-    return static_cast<uint32_t>(win) == 3u ? static_cast<uint32_t>(lsq.lqTail)
+    return static_cast<uint32_t>(win) == 3u ? (static_cast<uint32_t>(lsq.lqTail) & LQ_MASK)
                                             : 0u;
   };
 
@@ -859,7 +859,7 @@ void IssueArbiter::wire_output() {
   };
   saP.memIndex = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u
-               ? (static_cast<uint32_t>(lsq.sqTail) |
+               ? ((static_cast<uint32_t>(lsq.sqTail) & SQ_MASK) |
                   static_cast<uint32_t>(MEM_STORE_BIT))
                : 0u;
   };
@@ -880,7 +880,7 @@ void IssueArbiter::wire_output() {
   };
   svP.memIndex = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u
-               ? (static_cast<uint32_t>(lsq.sqTail) |
+               ? ((static_cast<uint32_t>(lsq.sqTail) & SQ_MASK) |
                   static_cast<uint32_t>(MEM_STORE_BIT))
                : 0u;
   };

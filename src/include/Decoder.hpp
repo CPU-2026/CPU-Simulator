@@ -42,8 +42,8 @@ struct UopEntry {
 };
 
 struct IQOutput {
-  Register<IQ_PTR_WIDTH> head;
-  Register<IQ_PTR_WIDTH> tail;
+  Register<IQ_SEQ_WIDTH> head;
+  Register<IQ_SEQ_WIDTH> tail;
 };
 
 struct IQInner {
@@ -59,56 +59,57 @@ struct DecodeUnit : dark::Module<DecodeInput, IQOutput, IQInner> {
     return static_cast<uint32_t>(head) == static_cast<uint32_t>(tail);
   }
   bool isFull() const {
-    return ((static_cast<uint32_t>(tail) + 1) & (IQ_CAP - 1)) ==
-           static_cast<uint32_t>(head);
+    return static_cast<uint32_t>(tail) ==
+           (static_cast<uint32_t>(head) ^ IQ_CAP);
   }
+  bool canAccept(bool willPop) const { return !isFull() || (willPop && !isEmpty()); }
   RISC_V headType() const {
     return static_cast<RISC_V>(
-        static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].type));
+        static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].type));
   }
   int headOpcode() const {
     return static_cast<int>(
-        static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].opcode));
+        static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].opcode));
   }
   int headFunct3() const {
     return static_cast<int>(
-        static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].funct3));
+        static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].funct3));
   }
   int headFunct7() const {
     return static_cast<int>(
-        static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].funct7));
+        static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].funct7));
   }
   int headRd() const {
     return static_cast<int>(
-        static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].rd));
+        static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].rd));
   }
   int headRs1() const {
     return static_cast<int>(
-        static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].rs1));
+        static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].rs1));
   }
   int headRs2() const {
     return static_cast<int>(
-        static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].rs2));
+        static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].rs2));
   }
   int32_t headImm() const {
     return static_cast<int32_t>(
-        static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].imm));
+        static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].imm));
   }
   uint32_t headPc() const {
-    return static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].pc);
+    return static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].pc);
   }
   bool headIsHalt() const {
-    return static_cast<bool>(entries[static_cast<uint32_t>(head)].isHalt);
+    return static_cast<bool>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].isHalt);
   }
   bool headAllocDest() const {
-    return static_cast<bool>(entries[static_cast<uint32_t>(head)].allocDest);
+    return static_cast<bool>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].allocDest);
   }
   int32_t headPredictedPC() const {
     return static_cast<int32_t>(static_cast<uint32_t>(
-        entries[static_cast<uint32_t>(head)].predictedPC));
+        entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].predictedPC));
   }
   uint8_t headCkptId() const {
     return static_cast<uint8_t>(static_cast<uint32_t>(
-        entries[static_cast<uint32_t>(head)].ckptId));
+        entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].ckptId));
   }
 };

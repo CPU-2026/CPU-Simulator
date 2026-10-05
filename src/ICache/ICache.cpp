@@ -1,76 +1,113 @@
 #include "../include/ICache.hpp"
+#include "common.h"
 #include <cassert>
 #include <cstdint>
 
-bool ICache::hit(uint32_t addr) const {
-  auto index = (addr >> 4) & (CACHE_CAP - 1);
-  return static_cast<bool>(blocks[index].valid) &&
-         static_cast<uint32_t>(blocks[index].tag) == (addr >> 13);
+ICache::ICache() {
+  fillFire = [this]() {
+    return !static_cast<bool>(needSquash) && refillValid();
+  };
+  readBlocked = [this]() {
+    return static_cast<bool>(fillFire) && hit(static_cast<uint32_t>(fetchPC));
+  };
+  // The nested SRAM owns its port. ICache::work() clocks it once; the parent
+  // Module::sync() commits readData and clears every input/output Wire cache.
+  ICacheData.enable = [this]() {
+    return !static_cast<bool>(needSquash) &&
+           (static_cast<bool>(fillFire) || static_cast<bool>(fetchValid));
+  };
+  ICacheData.writeEnable = [this]() { return static_cast<bool>(fillFire); };
+  ICacheData.addr = [this]() {
+    const uint32_t addr = static_cast<bool>(fillFire)
+                              ? static_cast<uint32_t>(lineReturn.lineAddr)
+                              : static_cast<uint32_t>(fetchPC);
+    return (addr >> ICACHE_OFFSET_BITS) & ICACHE_INDEX_MASK;
+  };
+  for (int w = 0; w < ICACHE_WORDS_PER_LINE; ++w) {
+    ICacheData.writeMask[w] = []() { return 1u; };
+    ICacheData.writeData[w] = [this, w]() {
+      return static_cast<uint32_t>(lineReturn.data[w]);
+    };
+  }
 }
 
 void ICache::work() {
   // stage 3 flush: clear the speculative request queue (cache lines kept)
   if (needSquash) {
-    for (int i = 0; i < REQUEST_CAP; ++i)
+    for (int i = 0; i < REQUEST_CAP; ++i) {
       requestBuffer[i].valid <= false;
-    head <= 0;
-  } else {
-  const bool popE = static_cast<bool>(popConsume);
-  const uint32_t oh = static_cast<uint32_t>(head);
-  const uint32_t occ = occupancy();
-  // post-pop view: the original tick read CPUstate.head/count AFTER its pop,
-  // so the backfill gate and slot must use these locals, never the registers
-  const uint32_t nh = popE ? ((oh + 1) & (REQUEST_CAP - 1)) : oh;
-  const uint32_t nc = occ - (popE ? 1u : 0u);
-  // stage 2 pop: self-release once FQ consumed the ICache head (write-own-only)
-  if (popE) {
-    requestBuffer[oh].valid <= false;
-    requestBuffer[oh].ready <= false;
-    head <= ((oh + 1) & (REQUEST_CAP - 1));
-  }
-  // stage 2 line refill: consume the IMEM line-return bus (word bundle,
-  // direct assignment -- no packing on the cold path), fill the cache line
-  // and backfill the placeholder entry
-  if (static_cast<bool>(lineReturn.valid)) {
-    const uint32_t la = static_cast<uint32_t>(lineReturn.lineAddr);
-    auto cachelineIndex = (la >> 4) & (CACHE_CAP - 1);
-    blocks[cachelineIndex].valid <= true;
-    blocks[cachelineIndex].tag <= la >> 13;
-    for (int k = 0; k < (CACHE_BLOCK_CAP >> 2); ++k)
-      blocks[cachelineIndex].Data[k] <= static_cast<uint32_t>(lineReturn.data[k]);
-    // backfill placeholder: only when the post-pop queue is non-empty and the
-    // new head is still an occupied-but-not-ready entry. The slot already has
-    // valid=1 from its push, so only raw_inst/ready flip here.
-    if (nc > 0 && !static_cast<bool>(requestBuffer[nh].ready)) {
-      uint32_t pc = static_cast<uint32_t>(requestBuffer[nh].PC);
-      requestBuffer[nh].raw_inst <=
-          static_cast<uint32_t>(lineReturn.data[(pc >> 2) & 3]);
-      requestBuffer[nh].ready <= true;
+      requestBuffer[i].ready <= false;
     }
-  }
-  // stage 1 push new request: enqueue on a valid fetchDecision (hit -> ready,
-  // miss -> placeholder); reads committed cache lines only (_M_old), so a
-  // line refilled in this same cycle is correctly seen as a miss
-  if (static_cast<bool>(fetchValid)) {
-    const uint32_t pc = static_cast<uint32_t>(fetchPC);
-    bool isHit = hit(pc);
-    uint32_t raw_inst = 0;
-    if (isHit)
-      raw_inst = lineWord((pc >> 4) & (CACHE_CAP - 1), (pc >> 2) & 3);
-    assert(occ < static_cast<uint32_t>(REQUEST_CAP));
-    auto index = (oh + occ) & (REQUEST_CAP - 1);
-    requestBuffer[index].raw_inst <= raw_inst;
-    requestBuffer[index].PC <= pc;
-    requestBuffer[index].predictPC <=
-        static_cast<uint32_t>(fetchPredictPC);
-    requestBuffer[index].ckptId <= static_cast<uint32_t>(fetchCkptId);
-    requestBuffer[index].valid <= true;
-    requestBuffer[index].ready <= isHit;
-    // host-only profile counters (never read by the datapath)
-    if (isHit)
-      ++statHits;
-    else
-      ++statMisses;
-  }
+    head <= 0;
+    readIndex <= 0;
+    readLaneIndex <= 0;
+    readValid <= 0;
+  } else {
+    const bool popE = static_cast<bool>(popConsume);
+    const bool readConsumed = popE && headReadReady();
+    const uint32_t oh = static_cast<uint32_t>(head);
+    const uint32_t occ = occupancy();
+    // stage 2 pop: self-release once FQ consumed the ICache head
+    // (write-own-only)
+    if (popE) {
+      assert(isReturnReady());
+      requestBuffer[oh].valid <= false;
+      requestBuffer[oh].ready <= false;
+      head <= ((oh + 1) & (REQUEST_CAP - 1));
+    }
+    // Complete exactly the live miss selected from old state. The same
+    // fillFire consumes IMEM's return and grants the SRAM write port.
+    if (static_cast<bool>(fillFire)) {
+      const uint32_t la = static_cast<uint32_t>(lineReturn.lineAddr);
+      auto cachelineIndex = (la >> ICACHE_OFFSET_BITS) & ICACHE_INDEX_MASK;
+      blocks[cachelineIndex].valid <= true;
+      blocks[cachelineIndex].tag <= la >> ICACHE_TAG_SHIFT;
+      const auto slot = refillSlot();
+      const uint32_t pc = static_cast<uint32_t>(requestBuffer[slot].PC);
+      requestBuffer[slot].raw_inst <= static_cast<uint32_t>(
+          lineReturn.data[(pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK]);
+      requestBuffer[slot].ready <= true;
+    }
+    // Both hits and misses occupy a placeholder. A hit can bypass at the
+    // head next cycle; otherwise the previous SRAM output lands in its slot.
+    if (static_cast<bool>(fetchValid)) {
+      const uint32_t pc = static_cast<uint32_t>(fetchPC);
+      bool isHit = hit(pc);
+      // host-only: accepted-fetch classification for cross-tree trace diagnosis.
+      if (debug::enabled(debug::TOPIC_MEM))
+        debug::print("IC_ACCEPT idx=%llu pc=%08x hit=%u\n",
+                     static_cast<unsigned long long>(statHits + statMisses), pc,
+                     static_cast<unsigned>(isHit));
+      if (isHit) {
+        readIndex <= static_cast<uint32_t>((head + occ) & (REQUEST_CAP - 1));
+        readLaneIndex <= static_cast<uint32_t>(
+            (fetchPC >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK);
+      }
+      assert(occ < static_cast<uint32_t>(REQUEST_CAP));
+      auto index = (oh + occ) & (REQUEST_CAP - 1);
+      requestBuffer[index].raw_inst <= 0;
+      requestBuffer[index].PC <= pc;
+      requestBuffer[index].predictPC <= static_cast<uint32_t>(fetchPredictPC);
+      requestBuffer[index].ckptId <= static_cast<uint32_t>(fetchCkptId);
+      requestBuffer[index].valid <= true;
+      requestBuffer[index].ready <= false;
+      // host-only profile counters (never read by the datapath)
+      if (isHit)
+        ++statHits;
+      else
+        ++statMisses;
+    }
+    // A bypassed head read is already popped. Skip its landing to avoid a
+    // second ready write; backpressured/younger reads still need preservation.
+    if (static_cast<bool>(readValid) && !readConsumed) {
+      requestBuffer[static_cast<uint32_t>(readIndex)].ready <= true;
+      requestBuffer[static_cast<uint32_t>(readIndex)].raw_inst <=
+          ICacheData.readLane(static_cast<uint32_t>(readLaneIndex));
+    }
+    readValid <= (static_cast<bool>(fetchValid) &&
+                  hit(static_cast<uint32_t>(fetchPC)) &&
+                  static_cast<bool>(ICacheData.enable) &&
+                  !static_cast<bool>(ICacheData.writeEnable));
+    ICacheData.work();
   }
 }
