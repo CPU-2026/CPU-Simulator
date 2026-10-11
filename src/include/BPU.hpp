@@ -28,10 +28,12 @@ struct BPUInputBRU {
   Wire<ROB_TAG_WIDTH> bruHeadRobTag;
   Wire<32> bruHeadPCResult;
   Wire<32> bruHeadPCFrom;
+  Wire<1> bruHeadActualTaken;
 };
 struct BPUInputROB {
   Wire<1> isROBEmpty;
   Wire<ROB_TAG_WIDTH> robHeadTag;
+  Wire<ROB_TAG_WIDTH> robNextTag;
   Wire<1> robWillCommit;
   std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> robTag;
   std::array<Wire<32>, ROB_CAP> robPredictPC;
@@ -46,11 +48,11 @@ struct BPUInputROB {
 // NPC/redirect combinational cloud inside the predictor unit (fetch context
 // in, prediction bundle out).
 struct BPUInputFetchCtx {
-  Wire<32> pc;         // FetchUnitModule.programCounter (_M_old)
-  Wire<1> squashNeed;  // flushArbiter.needSquash
-  Wire<1> haltFetched; // FetchUnitModule.haltFetched
-  Wire<1> fqFull;      // FQModule.isFull()
-  Wire<1> imemReqFull; // ICache.isRequestFull() || IMEM.isRequestFull()
+  Wire<32> pc;          // FetchUnitModule.programCounter (_M_old)
+  Wire<1> squashNeed;   // flushArbiter.needSquash
+  Wire<1> haltFetched;  // Latched halt or HALT accepted this cycle.
+  Wire<1> fqCanAccept;  // FQ admission including same-cycle dequeue.
+  Wire<1> memCanAccept; // Request capacity and SRAM port allow a new fetch.
 };
 struct BPUInputFetchTypeInfo {
   Wire<1> FetchValid;
@@ -135,8 +137,6 @@ struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   uint64_t getBranchCorrect() const { return branchCorrect; }
   PredictInfo predict(uint32_t pc) const;
   BPUSnapshot snapshotCheckPoint() const;
-  BPUSnapshot traceState() const;
-  BPUSnapshot traceCheckpoint(uint8_t id) const;
   uint8_t getNextCkptId() const { return static_cast<uint32_t>(nextCkptId); }
   void work() override;
 private:

@@ -61,11 +61,16 @@ static_assert((1u << FQ_PTR_WIDTH) == static_cast<uint32_t>(FQ_CAP));
 static_assert((1u << IQ_PTR_WIDTH) == static_cast<uint32_t>(IQ_CAP));
 constexpr int REGISTER_CAP = 32;
 constexpr int FLUSHARBITER_CAP = 4;
-constexpr int ALU_CAP = 4;
-constexpr int MUL_CAP = 4;
+// ALU result buffer: ONE slot.  It is a transparent stage -- a slot occupied
+// this cycle is released in the same cycle it is presented (the dedicated
+// aluCDB drains it, or the squash flush kills it) -- so the buffer can both
+// drain a result and accept a new op per cycle while holding a single slot.
+constexpr int ALU_CAP = 1;
+constexpr int MUL_CAP = 1; // Final register of the three-stage elastic MUL.
 constexpr int MULTIPLYRS_CAP = 2;
 constexpr int DIVIDERS_CAP = 1;
-constexpr int AGU_CAP = 4;
+// Dedicated LSQ address port consumes or cancels the old result every cycle.
+constexpr int AGU_CAP = 1;
 constexpr int BRU_CAP = 4;
 constexpr int BTB_CAP = 64;
 constexpr int BHT_CAP = 1 << 8;

@@ -4,6 +4,28 @@
 #include <stdexcept>
 #include <sys/types.h>
 
+SQ::SQ() { wire_output(); }
+
+void SQ::wire_output() {
+  completion.readyMask = [this]() { return completionBitmap().readyMask; };
+  completion.epochMask = [this]() { return completionBitmap().epochMask; };
+}
+
+StoreCompletion SQ::completionBitmap() const {
+  // Only committed registers participate, never same-edge AGU/data events.
+  StoreCompletion completion{};
+  for (int i = 0; i < SQ_CAP; ++i) {
+    if (isActive(i) && isReadyToCommit(i) && !isCommitted(i)) {
+      const RobTag tag = getRobTag(i);
+      const uint32_t oneHot = uint32_t{1} << robSlot(tag);
+      dark::debug::assert(!(completion.readyMask & oneHot), "eligible Stores share a ROB slot");
+      completion.readyMask |= oneHot;
+      if (tag >> (ROB_TAG_WIDTH - 1)) completion.epochMask |= oneHot;
+    }
+  }
+  return completion;
+}
+
 bool SQ::isEmpty() const {
   return static_cast<uint32_t>(tail) == static_cast<uint32_t>(head);
 }
@@ -44,7 +66,7 @@ auto SQ::getRobTag(int index) const -> RobTag {
 }
 
 auto SQ::getNBytes(int index) const -> int {
-  uint32_t enc = static_cast<uint32_t>(SQqueue[index].n_bytes);
+  uint32_t enc = static_cast<uint32_t>(SQqueue[index].nBytes);
   return 1 << enc; // 0->1B, 1->2B, 2->4B
 }
 
@@ -55,6 +77,7 @@ auto SQ::planDataForward(int index, int32_t value) const -> StoreNotify {
   notify.storeTag = static_cast<uint32_t>(SQqueue[index].robTag);
   notify.addr = static_cast<uint32_t>(SQqueue[index].address);
   notify.value = value;
+  notify.nBytes = getNBytes(index);
   RobTag knownSameAddressOldestTag =
       static_cast<uint32_t>(SQqueue[index].robTag);
   RobTag unknownOldestTag = static_cast<uint32_t>(SQqueue[index].robTag);
@@ -67,7 +90,8 @@ auto SQ::planDataForward(int index, int32_t value) const -> StoreNotify {
     if (((i - static_cast<uint32_t>(head)) & SQ_MASK) <=
         ((static_cast<uint32_t>(index) - static_cast<uint32_t>(head)) & SQ_MASK))
       continue;
-    if (SQqueue[i].address == SQqueue[index].address &&
+    if ((static_cast<uint32_t>(SQqueue[i].address) >> 2) ==
+            (static_cast<uint32_t>(SQqueue[index].address) >> 2) &&
         SQqueue[i].isAddressReady && !FoundKnownSameAddressOldest) {
       knownSameAddressOldestTag = static_cast<uint32_t>(SQqueue[i].robTag);
       FoundKnownSameAddressOldest = true;
@@ -84,13 +108,14 @@ auto SQ::planDataForward(int index, int32_t value) const -> StoreNotify {
   return notify;
 }
 
-auto SQ::planAddressForward(int index, uint32_t address) const -> StoreNotify {
+auto SQ::planAddressForward(int index, uint32_t address, RobTag producerTag) const -> StoreNotify {
   StoreNotify notify{};
-  if (SQqueue[index].isValueReady == 0)
+  if (!matchesAddress(index, producerTag) || SQqueue[index].isValueReady == 0)
     return notify;
   notify.storeTag = static_cast<uint32_t>(SQqueue[index].robTag);
   notify.addr = address;
   notify.value = static_cast<uint32_t>(SQqueue[index].value);
+  notify.nBytes = getNBytes(index);
   RobTag knownSameAddressOldestTag =
       static_cast<uint32_t>(SQqueue[index].robTag);
   RobTag unknownOldestTag = static_cast<uint32_t>(SQqueue[index].robTag);
@@ -103,7 +128,8 @@ auto SQ::planAddressForward(int index, uint32_t address) const -> StoreNotify {
     if (((i - static_cast<uint32_t>(head)) & SQ_MASK) <=
         ((static_cast<uint32_t>(index) - static_cast<uint32_t>(head)) & SQ_MASK))
       continue;
-    if (SQqueue[i].address == address && SQqueue[i].isAddressReady &&
+    if ((static_cast<uint32_t>(SQqueue[i].address) >> 2) == (address >> 2) &&
+        SQqueue[i].isAddressReady &&
         !FoundKnownSameAddressOldest) {
       knownSameAddressOldestTag = static_cast<uint32_t>(SQqueue[i].robTag);
       FoundKnownSameAddressOldest = true;
@@ -120,13 +146,13 @@ auto SQ::planAddressForward(int index, uint32_t address) const -> StoreNotify {
   return notify;
 }
 
-auto SQ::replyToLoadRequest(uint32_t addr,
+auto SQ::replyToLoadRequest(uint32_t addr, uint8_t nBytes,
                             RobTag loadTag) const -> StoreResponse {
   int youngestSameAddrOrder = -1;
   int youngestUnknownOrder = -1;
   int forwardValue = 0;
-  bool FoundSameAddr = false;
   bool SameAddrValueReady = false;
+  bool SameAddrCover = false;
   bool reachedYoungerStore = false;
   for (int k = 0; k < SQ_CAP; k++) {
     const auto index = static_cast<uint32_t>((head + k) & SQ_MASK);
@@ -140,27 +166,39 @@ auto SQ::replyToLoadRequest(uint32_t addr,
       continue;
     if (!static_cast<bool>(SQqueue[index].isAddressReady)) {
       youngestUnknownOrder = k;
-    } else if (SQqueue[index].address == addr) {
-      youngestSameAddrOrder = k;
-      FoundSameAddr = true;
-      SameAddrValueReady = static_cast<bool>(SQqueue[index].isValueReady);
-      if (SQqueue[index].isValueReady)
-        forwardValue =
-            static_cast<int32_t>(static_cast<uint32_t>(SQqueue[index].value));
+    } else {
+      // Candidate = any byte-overlapping older/committed Store, not merely a
+      // same-word one; the YOUNGEST candidate must cover the whole Load or
+      // nothing forwards (single source, full cover -- no byte stitching).
+      const uint32_t storeAddress = static_cast<uint32_t>(SQqueue[index].address);
+      const uint8_t storeNBytes = getNBytes(index);
+      const bool overlaps = addr >= storeAddress
+          ? addr - storeAddress < static_cast<uint32_t>(storeNBytes)
+          : storeAddress - addr < nBytes;
+      if (overlaps) {
+        youngestSameAddrOrder = k;
+        SameAddrValueReady = static_cast<bool>(SQqueue[index].isValueReady);
+        const uint32_t offset = addr - storeAddress;
+        SameAddrCover = storeAddress <= addr && storeNBytes >= offset + nBytes;
+        if (SameAddrValueReady && SameAddrCover)
+          forwardValue =
+              static_cast<int32_t>(static_cast<uint32_t>(SQqueue[index].value)) >> (offset << 3);
+      }
     }
   }
   StoreResponse reply{};
-  reply.valid = SameAddrValueReady && FoundSameAddr &&
+  reply.valid = SameAddrValueReady && SameAddrCover &&
                 youngestSameAddrOrder > youngestUnknownOrder;
   reply.value = forwardValue;
   return reply;
 }
 
-bool SQ::canDispatchLoad(uint32_t addr, RobTag loadTag) const {
-  bool hasSameAddressStore = false;
+bool SQ::canSendLoadToCache(uint32_t addr, uint8_t nBytes,
+                            RobTag loadTag) const {
+  bool hasOverlappingStore = false;
   bool hasUnknownAddressStore = false;
   for (int k = 0; k < SQ_CAP; k++) {
-    if (hasSameAddressStore)
+    if (hasOverlappingStore)
       continue;
     uint8_t cur = static_cast<uint32_t>((head + k) & SQ_MASK);
     if (!isActive(cur))
@@ -169,12 +207,18 @@ bool SQ::canDispatchLoad(uint32_t addr, RobTag loadTag) const {
       continue;
     if (!ROB::isOlder(static_cast<uint32_t>(SQqueue[cur].robTag), loadTag))
       continue;
-    if (SQqueue[cur].isAddressReady && SQqueue[cur].address == addr)
-      hasSameAddressStore = true;
-    if (!static_cast<bool>(SQqueue[cur].isAddressReady))
+    if (static_cast<bool>(SQqueue[cur].isAddressReady)) {
+      const uint32_t storeAddr = static_cast<uint32_t>(SQqueue[cur].address);
+      // Any byte overlap blocks an unforwarded Load, including partial
+      // coverage in either direction. Differences avoid overflowing end addresses.
+      hasOverlappingStore = addr >= storeAddr
+          ? addr - storeAddr < static_cast<uint32_t>(getNBytes(cur))
+          : storeAddr - addr < nBytes;
+    } else {
       hasUnknownAddressStore = true;
+    }
   }
-  return !hasSameAddressStore && !hasUnknownAddressStore;
+  return !hasOverlappingStore && !hasUnknownAddressStore;
 }
 
 bool SQ::isReadyToCommit(int index) const {
@@ -242,10 +286,10 @@ void SQ::work() {
   if (!static_cast<bool>(agu.isAGUEmpty) &&
       isStoreMem(static_cast<uint32_t>(agu.aguHeadMemIndex))) {
     RobTag aguRobTag = static_cast<uint32_t>(agu.aguHeadRobTag);
-    if (!static_cast<bool>(squash.needSquash) ||
-        ROB::isOlder(aguRobTag, static_cast<uint32_t>(squash.SquashTag))) {
-      const uint32_t q =
-          memSlot(static_cast<uint32_t>(agu.aguHeadMemIndex));
+    const uint32_t q = memSlot(static_cast<uint32_t>(agu.aguHeadMemIndex));
+    if (matchesAddress(q, aguRobTag) &&
+        (!static_cast<bool>(squash.needSquash) ||
+         ROB::isOlder(aguRobTag, static_cast<uint32_t>(squash.SquashTag)))) {
       intent[q].addressWrite = true;
       intent[q].address = static_cast<uint32_t>(agu.aguHeadValue);
       intent[q].addressReadyWrite = true;
@@ -286,7 +330,7 @@ void SQ::work() {
     if (intent[i].valueWrite)
       SQqueue[i].value <= intent[i].value;
     if (intent[i].bytesWrite)
-      SQqueue[i].n_bytes <= intent[i].bytes;
+      SQqueue[i].nBytes <= intent[i].bytes;
     if (intent[i].addressReadyWrite)
       SQqueue[i].isAddressReady <= intent[i].addressReady;
     if (intent[i].valueReadyWrite)

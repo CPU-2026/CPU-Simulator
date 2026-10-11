@@ -1,7 +1,141 @@
 # RISC-V Simulator Template 使用指南
 
-> 3B-1已完成：共同目录`python3 sync/run_iq.py`验证两树真实FQ/IQ与RTL/deque oracle，
-> 满IQ替换有效，18+6周期继续匹配golden；FQ上游/取指lookahead留下一小步。
+> **CPU顶层状态（SPEC §66）**：初始化与结束状态直接放CPU的initialized/finishPhase
+> Register，未单独注册模块。CPU::clock求旧态并单写后调用完整框架时钟序列，
+> 所有work完成后分别提交两个顶层Register。使用sync_member，不额外同步模块输出。
+> 当前build_software/regress_capacity strict四构建18＋6与全部旧统计保持。
+
+> **部分项/完整整核门禁（SPEC §63/64）**：根目录`run_partial_acceptance.py`与
+> `run_cpu_benchmarks.py`。前者15程序3835/2872及4源码负向，后者24镜像12667040
+> 拍无损pre/post/独立退休/最终128KiB全等。gzip非抽样；长pi须给足时间，实测RTL
+> 约900秒/单次本环境，分次报告可保留case_origin汇总。非法opcode取消/提交另用
+> `run_exception_cpu.py`，新exception Wire需接所有ROB夹具，入口sync/README §55/56。
+
+> **结束/计时门禁（SPEC §62）**：根目录`python3 -B sync/run_completion_cpu.py`。
+> boot1拍隔离、core在HALT提交冻结、全部dirty实际写完才DONE；16程序9629/2872、
+> 最终128KiB核验/DONE保持16拍/7负向通过。`build_software.py`生成/tmp四构建，
+> 两树Release/_DEBUG各18＋6 strict新total11973998/693042，core保持；README §54。
+
+> **恢复门禁（SPEC §61）**：根目录`ulimit -c 0 && python3 -B sync/run_recovery_cpu.py --quiet`，
+> 固定67程序9001/2872严格全等、覆盖齐全及11源码负向。`--no-negative`完整正向可
+> 用`--resume-negative <目录>`接续，要求源码摘要完全一致。子集/现有binary为诊断，
+> 默认退出码要求完整验收成功，断言失败本身不算负向有效。入口sync/README §53。
+
+> **BTB/参数门禁（SPEC §60）**：根目录运行`python3 -B sync/run_btb_acceptance.py`
+> 与`python3 -B sync/run_bpu_parameters.py`。前者26真实三CPU程序6690/1848全等、
+> 七实际源码负向；后者13合法/9非法RTL引脚cases与22软件header约束通过。软件
+> 算法/活动表保持，完整命令及诊断子集边界sync/README §52。
+
+> **用户RAS/checkpoint门禁（SPEC §59）**：`python3 -B sync/run_ras_cpu.py`运行完整
+> 三CPU：33程序13041拍1848字段严格同值，7实际源码功能负向有效。JALR双link含
+> 同寄存器先pop再push，checkpoint一条接受取指一次分配，恢复完整arch内容＋存活
+> ROB含边界。BPU输入robNextTag必须接真实尾；HALT PC元数据已补齐。strict-cycles
+> 现也核验IPC表，ISA11967396保持，六IPC新691640（+826）。入口README §51。
+
+> **前端门禁（SPEC §58）**：`python3 -B sync/run_icache_sync.py`（2324/160）与
+> `python3 -B sync/run_frontend_sync.py`（2259/216）驱动实际模块并严格比较四方。
+> 模板所有work后sync，pre/post换输入仅清Input Wire与fillFire/readBlocked/
+> SRAM Input缓存，不能对含请求Registers的ICacheOutput再次sync。两构建各18＋6
+> 严格golden保持，真实SRAM macro/tag结构和7实际负向通过，入口README §50。
+
+> **Store完成门禁（SPEC §57）**：`python3 -B sync/run_cache_chain.py`现比较全部764
+> 字段，取消Store ready屏蔽；当前SQ组合输出槽位/epoch两条Wire，ROB校验并单写Register（§67），
+> 无同拍新地址/数据完成旁路。Release/_DEBUG各18 ISA＋6 IPC strict-cycles通过；
+> 位图身份/高索引/恢复探针为`python3 -B sync/run_capacity.py tb_store_ready`。
+
+> **当前Cache门禁（SPEC §55）**：`python3 -B sync/run_dcache_sync.py`驱动实际两
+> 软件Cache/DMEM及寄存器RTL，6378/14全等，_DEBUG单写、全部128组、冷热/子字及
+> 并行脏请求通过；真实两个RTL负向有效。默认只做128×512bit时钟bank展开检查，
+> `--synth-check`是慢通用映射，曾300秒超时，不宣称技术综合完成。命令见README §47。
+
+> **最新接口/门禁（SPEC §52）**：Cache准入为canSendLoadToCache(addr,nBytes,tag)，
+> 实际Load宽度参与任意字节重叠检查，组合Wire为loadCanSendToCache。扩展转发链仍
+> 22 suite2443步323字段两软件全等；完整CPU两构建各19/19、RTL core12/12。
+> run_main_forward_assessment.py包含四个迟到数据偏移镜像、排空对照及实际旧相等
+> 条件重编负向。两软件Release/_DEBUG各18＋6严格回归保持golden；命令/报告见
+> sync/README §44。下面§51及更早章节为此前轮次记录。
+
+> **最新入口（SPEC §51）**：`python3 -B sync/run_store_forward.py --extended`，2443步
+> 323字段22 suite两软件逐拍一致、三端架构全正确；加`--main-core PATH --template-core PATH`
+> 验两完整CPU各11个镜像和RTL core8/8。7组正常策略周期差使`--require-equivalent`
+> 仍返回1；默认观察要求软件/RTL各端正确，不能靠两软件同错通过。模板完整Release与
+> _DEBUG均18＋6通过，Register单写无断言；活动golden保持。临时CMake输出、完整命令
+> 与报告见sync/README §43；下面§46的错值属于修复前记录。
+
+> **最新观察入口**：`python3 -B sync/run_store_forward.py`，1338步323字段，观察退出0、
+> `--require-equivalent`实际退出1。两软件全等，8个转发suite与RTL不同；加
+> `--main-core PATH --template-core PATH`验证正常DIVU/SB/Load镜像两软件错值及RTL
+> core3/3正确，排空控制正确。具体例子README §38/SPEC §46及sync差异文档；生产/golden保持。
+
+> **当前入口**：`python3 -B sync/run_lsq_lifecycle.py --require-equivalent`，LQ1432步
+> 816字段、SQ872步340字段四方一致，退出0；SQ按软件退休/缓冲/发送，旧耦合RTL实际
+> 重编负向有效。RTL14/14和两软件18＋6strict-cycles通过，活动golden保持；README
+> §37/SPEC §45记录完整协议及范围。下列§42～44退出码是历史阶段记录。
+
+> 当前LQ提交释放入口`python3 -B sync/run_lsq_lifecycle.py`要求lq_three_way_equivalent=true，
+> 1432步816字段全suite一致；模板新增robWillCommit实际提交Wire，RTL接robRetireInput。
+> SQ合同仍不同，整体严格模式仍返回1。18＋6新golden严格通过，README §36/SPEC §44。
+
+> 当前第一项修复：`python3 -B sync/run_lsq_lifecycle.py`要求lq_data_correct=true，
+> 主树/模板/RTL正确CDB及架构值通过，并实际编译旧顺序作负向（SPEC §43、README §35）。
+> 全部生命周期严格模式仍因后两项合同差异返回1，不再因主树错值失败。18＋6严格回归通过。
+
+> 第12步入口：`python3 -B sync/run_lsq_lifecycle.py`，定向加`--random-steps 0`，
+> `--require-equivalent`当前返回1。LQ1365步816字段/SQ565步272字段观察验证：生命周期
+> 合同不同，主树新分配/旧返回同拍错值，模板/RTL正确。退出0表示问题复现成功，
+> 不是整体等价；协议、范围及首次分歧见README §34、SPEC §42。
+
+> 第11步入口：共同目录`python3 -B sync/run_wb_chain.py`，定向加`--random-steps 0`。
+> 真实四生产者/CDB共享PRF/ROB，默认3648步590字段、定向2641步四方一致；16掩码、
+> 四WB/提交/issue、下拍依赖及给定真实JALR恢复通过。输入没有WB答案，内存按请求返回。
+> 真实单PRF口负向检出故障，生产及golden保持；完整scope/协议见README §33、SPEC §41。
+
+> 第10步定版：`python3 -B sync/run_div.py --require-equivalent`和
+> `python3 -B sync/run_div_chain.py`均返回0；纯定向分别加`--random-cases 0`/`--random-steps 0`。
+> 模块55256步28字段及真实返回链5000步500字段四方一致；消费同拍接收、严格年轻flush/
+> 边界保护已实施，outReady Wire正确接线，接收分支收敛resultValid单写。18 ISA clock
+> 新golden11,967,406，六IPC保持690,826。范围及协议见sync/README.md §32、SPEC §40。
+
+> 第10步现状入口：共同目录`python3 -B sync/run_div.py`，纯定向加`--random-cases 0`。
+> 默认55210步28字段，独立数值/自身控制参考通过，两软件相同；消费同拍准入和边界flush
+> 与RTL不同。`--require-equivalent`当前返回1，退出0的现状模式不表示三端整体等价。
+> 生产work未改，只加DIVTester只读友元；范围及协议见sync/README.md §31、SPEC §39。
+
+> 第9步定版入口：共同目录`python3 -B sync/run_mul.py`和`python3 -B sync/run_mul_chain.py`，
+> 纯定向均加`--random-steps 0`。模块2207步/4414点21字段所有suite四方一致，真实返回链
+> 2302步/4604点508字段四方一致；纯定向978/1292步通过。三级弹性/单槽结果、关闭级整体保持，
+> n+3 CDB/n+4依赖；模板正向mulCanAccept接partialCanAccept，各Register条件单写。
+> 背压是夹具合成输入，恢复为给定合法ADD边界；完整scope见sync/README.md §30、SPEC §38。
+
+> 第8步定版入口：共同目录`python3 sync/run_control_chain.py`，定向加`--random-instructions 0`；
+> 默认1518步/3036点2230字段真实RAT/PRF/RS/执行/BPU/提交/恢复四方一致。
+> `run_control_observe.py --aligned-only`2306步共同字段一致；BPU训练实际taken，misAlign排除。
+> 软件18+6总clock12,246,204，完整边界见sync/README.md §27和SPEC §35。
+
+> 第8步现状入口：共同目录`python3 sync/run_control_observe.py`（定向加`--random-steps 0`）。
+> 默认2374步/4748点56字段，各端符合各自现状参考；正常PC域一致，训练方向/未对齐差异保留。
+> 退出0为观察成功，不代表整体三端等价；完整scope及目标草案见sync/README.md §26、SPEC §34。
+
+> 第7步地址整链：共同目录`python3 sync/run_agu_chain.py`（纯定向加`--random-steps 0`），
+> 1195步/2390点200字段normal/identity四方一致；接收与Store地址广播匹配生产者tag。
+> WB/StoreValue是上游输入，consumer提交及Cache返回另验，详见sync/README.md §25。
+
+> 第7步入口：共同目录`python3 sync/run_agu.py`验证真实三端AGU单槽结果级，3182步/
+> 6364点与独立参考一致；`python3 sync/run_capacity.py tb_agu_lsu`验证RTL真实LSU接收。
+> 正向接口aguCanAccept，n拍计算/保存、n+1交付、n+2地址ready可见；详见sync/README.md §24。
+
+> 第6步整链入口：共同目录`python3 sync/run_alu_chain.py`（纯定向加
+> `--random-steps 0`）。当前普通整数2536步/5072点、474字段三端与独立参考全等，
+> CDB数据来自实际ALU，真实派发准入与PRF/ROB提交已串联。详见sync/README.md第23节。
+
+> 第4步`python3 sync/run_rename.py`验证真实ROB/RAT/PRF与独立oracle；软件
+> matchesTag存活窗口和RTL FIFO分配均已对齐，默认1293步/2586点、420字段四方
+> 完全相同，返回0；`--random-steps 0`纯定向293步/586点也通过。报告逐端列出结果。
+
+> 第3步3A+3B已完成：共同目录`python3 sync/run_iq.py`验证主树、模板、RTL
+> FQ/IQ/HALT与独立deque oracle；`sync/run_capacity.py`验证RTL取指预留及ICache
+> 预算；`sync/run_cache_lookahead.py`验证同行回填直接供数给新槽，模板Register单写。
+> 两树18+6与新活动golden匹配，总clock12,246,204。
 
 > **2026-10-05**：公共容量同步3A已落地（FQ/IQ4、LQ/SQ8 全容量 epoch，D$8 KB）；
 > 18+6例与主树完整结果/周期/统计一致。原16 KB基线留作历史，当前活动表已复核更新。
@@ -107,12 +241,13 @@ VERBOSE=clock ./code < data/testcases/gcd.data
 当前输出包含：
 
 ```text
-clock: 177
-ipc: 0.232955 retired=41 cycles=176
+clock: 327
+timing: init=1 core=173 drain=154 total=327
+ipc: 0.236994 retired=41 cycles=173
 178
 ```
 
-`clock` 是端到端仿真周期；IPC 的周期区间在 HALT 提交时冻结，所以示例中两者可以相差一拍。
+`clock` 是core＋drain周期；IPC区间在HALT提交时冻结。初始化单列，排空包括全部dirty写回。
 只提取标准错误统计时可用：
 
 ```bash
@@ -124,13 +259,10 @@ VERBOSE=clock ./code < data/testcases/gcd.data 2>&1 >/dev/null
 | 主题 | 用途 |
 | --- | --- |
 | `clock` | 结束时打印 clock、retired 和 IPC |
-| `branch` | 分支/squash 事件与结束汇总；长用例输出可能很大 |
+| `branch` | 结束时打印整体分支预测准确率 |
 | `icache`、`dcache` | 两个名字目前都打开同一组 ICache/DCache 汇总 |
-| `exec` | 当前用于 MUL/DIV 写回等执行事件 |
-| `prf` | 物理寄存器写入与链接值 |
-
-解析器还接受 `issue`、`wb`、`commit`、`lsq`、`mem`、`mdp`、`bpmiss`，但当前源码没有对应的
-有效打印点，可视为预留主题；设置它们不会自动产生诊断。
+生产代码只保留活动表所需汇总；逐指令轨迹、物理寄存器事件、PROFILE、RAS峰值、
+CDB争用和每PC错误定位已删除，旧诊断主题不再解析。
 
 例如：
 
@@ -138,7 +270,7 @@ VERBOSE=clock ./code < data/testcases/gcd.data 2>&1 >/dev/null
 VERBOSE=clock,branch,icache ./code < data/testcases/gcd.data
 ```
 
-只比较周期时应单独使用 `VERBOSE=clock`，不要在长用例上无意打开 `branch` 或 `all`。
+只比较周期时使用 `VERBOSE=clock`；`branch` 和 `all` 也只输出结束汇总。
 
 ## 4. 回归与性能脚本
 

@@ -7,7 +7,7 @@
 
 namespace {
 // Phase encoding for DCacheInner.phase (Register<1>): READY=0, WAIT=1.
-enum DCachePhase : uint32_t { DCACHE_READY = 0, DCACHE_WAIT = 1 };
+enum DCachePhase : uint32_t { DCACHE_READY = 0, DCACHE_WAIT = 1, FLUSH_SCAN = 2, FLUSH_WAIT = 3 };
 } // namespace
 
 void DCache::wire_output() {
@@ -72,12 +72,12 @@ int32_t DCache::extractValue(const uint8_t *datas, int off, int n,
   return static_cast<int32_t>(rawData);
 }
 
-DCache::Probe DCache::probe(uint32_t addr) const {
+DCache::LookupResult DCache::lookupLine(uint32_t addr) const {
   // pure read over the plain line array: set/tag decode + way scan
   const uint32_t blockNum = addr >> DCACHE_OFFSET_BITS;
   const uint32_t setIndex = blockNum & DCACHE_INDEX_MASK;
   const uint32_t tag = addr >> DCACHE_TAG_SHIFT;
-  Probe p{false, 0};
+  LookupResult p{false, 0};
   for (int i = 0; i < NUM_OF_DCACHE_WAYS; ++i) {
     if (cacheSets[setIndex].lines[i].valid &&
         cacheSets[setIndex].lines[i].tag == tag) {
@@ -119,6 +119,41 @@ uint32_t DCache::allocateWay(uint32_t set_index) const {
 }
 
 void DCache::work() {
+  const bool flush = bool(flushRequested);
+  const unsigned oldPhase = uint32_t(phase);
+  if (oldPhase == FLUSH_SCAN || oldPhase == FLUSH_WAIT ||
+      (oldPhase == DCACHE_READY && flush)) {
+    lbValid <= 0;rqReadValid <= 0;
+    bool write = false,advance = false;
+    unsigned set = uint32_t(flushSet),way = flushWay.get();
+    if (oldPhase == DCACHE_READY) {
+      if (!bool(flushDone)) { phase <= FLUSH_SCAN;busy <= 1;flushSet <= 0;flushWay.set(0); }
+    } else if (oldPhase == FLUSH_SCAN) {
+      const auto &line = cacheSets[set].lines[way];
+      write = bool(line.valid) && bool(line.dirty);
+      if (write) {
+        rqWriteAddr <= ((uint32_t(line.tag) << DCACHE_INDEX_BITS) | set) << DCACHE_OFFSET_BITS;
+        for (unsigned i=0;i<DCACHE_BLOCK_CAP;i++)rqWriteLineData[i] <= line.datas[i];
+        phase <= FLUSH_WAIT;flushWriteStarted <= 0;
+      } else advance = true;
+    } else {
+      if (bool(dmemWriteBusy)) flushWriteStarted <= 1;
+      if (bool(flushWriteStarted) && !bool(dmemWriteBusy)) {
+        cacheSets[set].lines[way].dirty <= 0;advance = true;
+      }
+    }
+    rqWriteValid <= unsigned(write);
+    if (advance) {
+      if (way == NUM_OF_DCACHE_WAYS-1 && set == NUM_OF_DCACHE_SETS-1) {
+        flushDone <= 1;phase <= DCACHE_READY;busy <= 0;
+      } else {
+        if (way == NUM_OF_DCACHE_WAYS-1) { flushWay.set(0);flushSet <= set+1; }
+        else flushWay.set(way+1);
+        phase <= FLUSH_SCAN;
+      }
+    }
+  } else {
+  if (!flush) flushDone <= 0;
   // ---- Phase READY: combinational accept of the dispatched decision ----
   if (static_cast<uint32_t>(phase) == DCACHE_READY) {
     const bool decValid = static_cast<bool>(decisionValid);
@@ -127,11 +162,11 @@ void DCache::work() {
     const uint32_t blockNum = addr >> DCACHE_OFFSET_BITS;
     const uint32_t setIndex = blockNum & DCACHE_INDEX_MASK;
     const int n = decodeNBytes(static_cast<uint32_t>(decisionNBytes));
-    const Probe p = probe(addr);
+    const LookupResult p = lookupLine(addr);
     const bool opIsLoad = decOp == static_cast<uint32_t>(Operation::Load);
 #ifdef _DEBUG
     const bool opIsStore = decOp == static_cast<uint32_t>(Operation::Store);
-    // A request must never straddle a cache line (mirrors main tree PrRd/PrWr).
+    // A request must never straddle a cache line.
     if (decValid && (opIsLoad || opIsStore))
       assert((addr & DCACHE_OFFSET_MASK) + n <= DCACHE_BLOCK_CAP);
     // Accepting a new decision requires both DMEM ports to be drained: the
@@ -162,7 +197,6 @@ void DCache::work() {
     rqReadAddr <= (miss ? (addr & ~DCACHE_OFFSET_MASK) : 0u);
     rqWriteValid <= (dirtyVictim ? 1u : 0u);
     if (dirtyVictim)
-      ++statWritebacks;
     // Victim base address must be rebuilt from the VICTIM line's own tag,
     // not the incoming request's tag -- otherwise the dirty data lands on
     // the wrong frame and the refetch below reads back stale memory.
@@ -213,7 +247,7 @@ void DCache::work() {
         }
       } else {
         // miss: park the whole decision (identity included) + go WAIT.
-        // PrRd/PrWr already pulsed the fill/ writeback request above.
+        // The accepted request already pulsed the refill/writeback above.
         ++statMisses;
         parkOp <= decOp;
         parkValue <= static_cast<uint32_t>(decisionValue);
@@ -306,5 +340,6 @@ void DCache::work() {
     lbValue <= lbValueNext;
     lbMemIndex <= (serveLoad ? static_cast<uint32_t>(parkMemIndex) : 0u);
     lbRobTag <= (serveLoad ? static_cast<uint32_t>(parkRobTag) : 0u);
+  }
   }
 }

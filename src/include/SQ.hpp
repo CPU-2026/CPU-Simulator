@@ -8,7 +8,7 @@ struct SQEntry {
   Register<ROB_TAG_WIDTH> robTag;
   Register<32> address;
   Register<32> value;
-  Register<2> n_bytes; // 0->1B, 1->2B, 2->4B (DMEM/LQ aligned)
+  Register<2> nBytes; // 0->1B, 1->2B, 2->4B (DMEM/LQ aligned)
   Register<1> isAddressReady;
   Register<1> isValueReady;
   Register<1> isCommitted;
@@ -62,6 +62,7 @@ struct SQOutputNotifyData {
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> storeTag;
   std::array<Wire<32>, STORERS_CAP> addr;
   std::array<Wire<32>, STORERS_CAP> value;
+  std::array<Wire<3>, STORERS_CAP> nBytes; // Actual byte count, not size encoding.
   std::array<Wire<1>, STORERS_CAP> foundKnownSame;
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> knownTag;
   std::array<Wire<1>, STORERS_CAP> foundUnknown;
@@ -72,6 +73,7 @@ struct SQOutputNotifyAddr {
   Wire<ROB_TAG_WIDTH> storeTag;
   Wire<32> addr;
   Wire<32> value;
+  Wire<3> nBytes;
   Wire<1> foundKnownSame;
   Wire<ROB_TAG_WIDTH> knownTag;
   Wire<1> foundUnknown;
@@ -82,10 +84,20 @@ struct SQOutputReply {
   Wire<1> valid;
   Wire<32> value;
 };
+static_assert(ROB_CAP <= 32, "Store completion bitmap fits its carrier");
+struct StoreCompletion {
+  uint32_t readyMask = 0;
+  uint32_t epochMask = 0;
+};
+struct SQOutputCompletion {
+  Wire<ROB_CAP> readyMask;
+  Wire<ROB_CAP> epochMask;
+};
 struct SQOutput {
   SQOutputNotifyData data;
   SQOutputNotifyAddr addr;
   SQOutputReply reply;
+  SQOutputCompletion completion;
 };
 
 struct SQInner {
@@ -99,6 +111,7 @@ struct StoreNotify {
   RobTag storeTag = 0; // robTag of the broadcasting source store
   uint32_t addr = 0;    // store address (ready)
   int value = 0;        // store data
+  uint8_t nBytes = 0;
   bool foundKnownSame =
       false; // a younger store with the same known address exists
   RobTag knownSameAddressOldestTag = 0; // robTag of the oldest of those
@@ -109,13 +122,21 @@ struct StoreNotify {
 struct StoreResponse {
   bool valid = false;
   int value = 0;
+  uint8_t startByte = 0;
 };
 
 struct SQ : public dark::Module<SQInput, SQOutput, SQInner> {
+private:
+  void wire_output();
 public:
+  SQ();
+  StoreCompletion completionBitmap() const;
   bool isEmpty() const;
   bool isFull() const;
   bool isActive(uint8_t index) const;
+  bool matchesAddress(uint8_t index, RobTag tag) const {
+    return isActive(index) && getRobTag(index) == tag;
+  }
   uint8_t getHead() const;
   uint8_t getTail() const; // Packed sequence, not a physical array index.
   // Occupancy boundary AFTER this cycle's own enqueue (see
@@ -139,9 +160,10 @@ public:
     return static_cast<bool>(SQqueue[index].isValueReady);
   }
   auto planDataForward(int index, int32_t value) const -> StoreNotify;
-  auto planAddressForward(int index, uint32_t address) const -> StoreNotify;
-  auto replyToLoadRequest(uint32_t addr, RobTag loadTag) const
+  auto planAddressForward(int index, uint32_t address, RobTag producerTag) const -> StoreNotify;
+  auto replyToLoadRequest(uint32_t addr, uint8_t nBytes, RobTag loadTag) const
       -> StoreResponse;
-  bool canDispatchLoad(uint32_t addr, RobTag loadTag) const;
+  // Called after forwarding fails; nBytes is the actual Load byte count.
+  bool canSendLoadToCache(uint32_t addr, uint8_t nBytes, RobTag loadTag) const;
   void work() override;
 };

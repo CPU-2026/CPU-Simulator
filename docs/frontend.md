@@ -1,9 +1,88 @@
 # 前端子系统：取指 · 预译码 · 译码 · 分支预测
 
-> **2026-10-05 3A+3B-1**：FQ/IQ使用3-bit epoch，各4项；IQ满时actualIssue
-> 可接收旧FQ队首，FQ pop与IQ push相同。decodeFull表示本拍阻塞，含IQ出队lookahead。
-> FQ上游/取指lookahead留3B-2，checkpoint预算28。
-> RAS32 的空 pop/满 push 保持。D$8 KB；18+6 例完整结果、周期和统计逐项与主树一致。
+> **完整活动整核（SPEC §63/64）**：24镜像三CPU12667040拍2872word无损逐拍与
+> 独立退休/最终128KiB全等，现有周期表保持。软件非法指令保真PC/CID并异常ready，
+> 真提交才trap，错误路径取消不trap；观察修LSU lane配对与不可变Load owner宽度。
+> 第5/12/13当前范围收口，课程AXI/STA及未纳入异常继续，入口sync/README §56。
+
+> **boot隔离（SPEC §62/66）**：CPU顶层initialized Register门控第一正常fetch；一拍
+> 非零PRF/RAT/BPU初始化不分配CID，随后PC0/CID0周期0。HALT冻结core/IPC，最终
+> DONE等所有dirty写回；16程序9629/2872、最终128KiB核验/7负向通过。全部Register
+> 单写sync保持，ISA/IPC total新11973998/693042，core保持；README §54。
+
+> **全流水恢复（SPEC §61）**：67真实三CPU程序9001/2872严格全等，11源码负向。
+> n+1实际检测/拍末请求入队，n+2旧队列最老广播；前端取消与BPU/GHR/CID/RAS内容
+> 恢复和全后端同链核验。全部work后sync保持，第18当前域完成；第19boot/HALT/
+> drain计时继续。命令/报告sync/README §53。
+
+> **BTB竞争/参数验收（SPEC §60）**：BTB行与target写意图分别fetch > CDB > taken BRU，
+> JALR/RET无静态target不能屏蔽同槽解析target，异槽独立、Register单写及查询读old。
+> 26真实三CPU程序6690/1848严格全等，三类fetch/三源五种槽分组和七实际功能负向通过。
+> 13合法/9非法RTL参数引脚与22软件编译约束通过，第17当前域完成；第18全流水恢复
+> 继续。默认参数/活动ISA11967396、IPC691640保持，入口sync/README §52。
+
+> **用户RAS策略（SPEC §59）**：JALR两个link标志独立，双link含同寄存器先pop再push，
+> JAL仅按rd。实际三CPU33程序13,041拍1848字段严格同值，独立ISA/预测器转移核验
+> 栈内容/GHR/CID，7真实软件/RTL负向有效。模板BPU活动ROB校验补robNextTag；所有
+> Register单写/统一sync。18 ISA11967396保持，六IPC新691640，入口README §51。
+
+> **前端当前验收（SPEC §58）**：实际FetchUnit/ICache/IMEM/FQ/Decoder/decoded IQ
+> 与主树/RTL/独立参考2259步216字段严格全等，给定JAL预测/恢复、HALT、三级满替换
+> 与checkpoint回绕通过。RTL data是真实SRAM、tag是寄存器；模板仅加只读友元，
+> 全部work后sync，换输入只清Wire缓存，Release/_DEBUG各18＋6/golden保持。
+> 命令README §50；预测器内部状态与检测/广播闭环继续第17/18步。
+
+> **当前后端边界（SPEC §57/67）**：SQ组合输出Store槽位图/epoch，ROB批量校验完成，历史实际Cache后端
+> 764字段严格门禁见sync/README §49。退休仍读旧ROB ready；本轮取指/译码周期保持，
+> 两软件Release/_DEBUG各18＋6严格golden一致，前端专项仍按第16步推进。
+
+> **当前存储结构区分（SPEC §55）**：RTL D$按用户决定改寄存器、数据缓存模块
+> 6378/14与两软件同步；I$同步SRAM及前端完整逐拍仍属第16步，模板取指/译码
+> work/sync边界保持。不要将D$验收写成取指验收，入口sync/README §47。
+
+> SQ软件合同已同步RTL（SPEC §45）：退休不释放SQ额度，下游接受拍末释放、下一拍
+> issue可用；RTL HALT提交停issue、SQ接受排空后输出halted，分支恢复保留已提交Store。
+> RTL14/14及两软件18＋6严格通过，模板work/sync边界和活动golden保持。
+
+> LQ实际提交拍末回收、下一拍受理已三端一致（SPEC §44），不提前派发新RS；18＋6
+> 严格新golden clock11,967,396/690,814，旧测量保留历史。
+
+> 主树LQ初始化后置对齐模板push排他结果（SPEC §43），新RS下拍派发和旧态读取边界
+> 保持；两软件18＋6严格结果/退休/周期/统计一致，golden保持。
+
+> 第10步DIV消费同拍接收/严格年轻flush及真实返回后端通过（SPEC §40）；18 ISA新clock
+> 总和11,967,406，六IPC仍690,826。解码后返回链5000步500字段一致，完整前端仍依第16步验收。
+
+> 第9步MUL解码后返回链已验收：三级弹性/单槽结果，n+3 CDB/n+4依赖派发；真实两池/
+> 重命名链2302步508字段四方一致。前端接收周期依第16步验证，详见SPEC §38。
+
+> **第8步已修正方向训练**：BRU→BPU携带真实actualTaken，条件真且offset=4训练1；
+> 方向预测错误与next-PC错误分开，后者才产生地址恢复。原准确率统计仍按nextPC，不改称方向正确率。
+> 真BPU控制链1518步/2230字段含全表/GHR/checkpoint一致；完整前端与RAS策略另验（SPEC §35）。
+
+> 第8步现状观察：条件真且目标为PC+4时，软件BPU训练taken=0，RTL真实条件taken=1；
+> nextPC相同仍不代表方向表/GHR训练语义相同。表状态尚未对拍，训练输入对齐目标见SPEC §34。
+
+> 第7步地址结果级已与RTL统一为单槽；AGU旧结果取消与更老新派发可同拍发生。
+> 前端交付的访存指令仍先分配LSQ再入RS；18+6严格回归总clock12,246,204保持。
+> 后续地址整链1195步四方一致，LSQ接收及Store广播已匹配生产者tag；实际decoder/BPU触发另验。
+
+> 第6步普通整数整链2536步/5072点与主树/RTL/独立参考一致，入口在decoder之后，
+> 前端及真实误预测触发的端到端周期仍由对应步骤验收。
+
+> 第5步flush时禁止新分配，但允许旧RS严格更老项在执行端ready时派发；Integer正常
+> 域三端1131步/2262点通过，真实执行接收测试通过。
+
+> 第4步后端FIFO基础域已与主树/RTL对齐，前端交付指令按一致的ROB/PRF准入处理。
+> 1293步/2586点模块对拍通过，18+6严格周期保持12,246,204。
+
+> **2026-10-06 第3步收官**：FQ/IQ使用3-bit epoch，各4项；IQ满时actualIssue
+> 可接收旧FQ队首，FQ满时真实弹出可同拍接收ICache返回。icacheReturnAccepted与
+> popConsume共享握手，组合haltSignal只在真实接收HALT时停取，BPU取指准入同时检查
+> 旧haltFetched和当拍haltSignal；ICache满时消费队首可同拍接受新请求。checkpoint预算28。
+> RAS32的空pop/满push保持。D$8 KB；18+6例完整结果、周期和统计逐项与主树一致。
+> 同行实际回填可给新ICache槽供数，拍末ready、下一拍按序返回；候选PC始终读未门控
+> FetchUnit.programCounter，避免BPU准入形成组合环。补正后总clock12,246,204。
 
 > 负责"把指令送进乱序核心"：预测下一个 PC、沿预测路径取指、按序预译码并排队。前端只产生**顺序的指令流**——乱序执行由后端处理。
 > 相关实现：
@@ -54,10 +133,22 @@
 
 ```
 fillFire = !needSquash && ICache.refillValid()
-readBlocked = fillFire && ICache.hit(PC)
-FetchDecision = build(BPU, PC, squashDetect, haltFetched, FQ.isFull(),
-                      ICache.isRequestFull() || IMEM.isRequestFull() || readBlocked)
+refillHit = fillFire && sameLine(PC, IMEM.return.lineAddr)
+readBlocked = fillFire && ICache.hit(PC) && !refillHit
+decodeCanAccept = IQ.canAccept(actualIssue)
+fqPop = !needSquash && !FQ.isEmpty() && decodeCanAccept
+fqCanAccept = !needSquash && FQ.canAccept(fqPop)
+popConsume = fqCanAccept && ICache.isReturnReady() && !haltFetched
+haltSignal = haltFetched || (popConsume && ICache.returnRaw() == HALT)
+memCanAccept = (!ICache.isRequestFull() || popConsume) &&
+               (!IMEM.isRequestFull() || refillHit) && !readBlocked
+fetchAllowed = !needSquash && !haltSignal && fqCanAccept && memCanAccept
 ```
+
+`isFull()/isRequestFull()` 表示拍初实际占用已满；`CanAccept` 表示考虑本拍真实出队、
+回填旁路和端口仲裁后的接收能力。模板使用正向 `fetchCtx.fqCanAccept`、
+`fetchCtx.memCanAccept` 与 FQ 输入 `decodeCanAccept`，主树 `build` 的两个准入参数
+同样为正向语义；最终取指授权为无 squash、无 halt 且两项准入均成立。
 
 `refillValid()` / `refillSlot()` 从旧存活窗口中匹配一个未就绪 miss。`fillFire/readBlocked`
 为 ICache Output Wire，所有取指消费者共享 BPU 的已准入 `outValid`。
@@ -66,10 +157,11 @@ FetchDecision = build(BPU, PC, squashDetect, haltFetched, FQ.isFull(),
 取指被**门控停止**当且仅当以下任一成立：
 
 - `squashDetect.needSquash`（有恢复在途，前端整窗清空后从目标 PC 重启）；
-- halt 已被闩锁（`haltFetched`，见 §2.2）；
-- FQ 满（背压）；
-- ICache/IMEM 请求队列满（回填在途）；
-- 同拍有获准回填写且当前 PC 命中 ICache，无法获得 SRAM 读口。
+- halt 已被闩锁或本拍真实接收 HALT（见 §2.2）；
+- FQ 满且本拍没有向 IQ 转移队首（背压）；
+- ICache 请求队列满且本拍没有向 FQ 交付队首；
+- IMEM 请求队列满且当前 PC 不能由本拍同行回填直接供数；
+- 同拍有获准回填写，当前 PC 命中 ICache 且不属于回填行，无法获得 SRAM 读口。
 
 这些条件只反压取指，后端和数据访存继续推进；新 miss 可与回填写同拍准入。
 
@@ -83,13 +175,13 @@ FetchDecision = build(BPU, PC, squashDetect, haltFetched, FQ.isFull(),
   年轻请求可先完成，交付保持队首顺序，待落槽 hit 不作为 miss 匹配。
 - **回填握手**：`fillFire` 同时确认 IMEM 返回消费、请求槽完成及 SRAM 行写入；无匹配时保持返回。
 
-ICache 结果进入 FQ 的握手是组合谓词：`ICache 行返回就绪 ∧ ¬haltFetched ∧ ¬FQ满`；
+ICache 结果进入 FQ 的握手是组合谓词：`¬needSquash ∧ ICache返回就绪 ∧ ¬haltFetched ∧ FQ.canAccept(fqPop)`；
 `popConsume` 表示该结果已被 FQ 接收，ICache 随后清除自己的持有状态。FQ 到 IQ
 是另一组握手：FQ非空且IQ未满或本拍实际Issue时，旧FQ队首译码入IQ，同时弹出FQ头。
 
 ### 2.2 halt 闩锁
 
-两树使用 `!FQ.full && ICache.isReturnReady() && returnRaw()==0x0ff00513` 生成
+两树使用 `popConsume && returnRaw()==0x0ff00513` 生成当拍 HALT 接收事件
 `haltSignal`。HALT 交付 FQ 与 `haltFetched` 锁存发生在同一拍；FQ 满时保持请求等待，
 不能先停取而把 HALT 自己挡在队列外。该标记在 ROB 提交并完成访存排空后停机
 （程序出口 = 停机时 `x10` 低 8 位）。
@@ -102,8 +194,8 @@ ICache 结果进入 FQ 的握手是组合谓词：`ICache 行返回就绪 ∧ ¬
 - RISC-V 非特权 ISA 通过 `jal`/`jalr` 的 `rd`、`rs1` 是否为链接寄存器
   `x1/ra` 或 `x5/t0` 隐式编码 RAS hint [[1]](#front-ref-1)；
 - `jal`：`rd∈{x1,x5}` ⇒ `isCall`，并静态解出 `jalTarget`；
-- `jalr`：`rd` 为链接寄存器 ⇒ `isCall`；`rs1` 为链接寄存器且 `rd` 非链接 ⇒
-  `isRet`（函数指针/PLT/vtable 调用因 `rd` 为链接寄存器而被归为调用）。
+- `jalr`（用户指定策略）：`rd` 为link ⇒ push/isCall，`rs1` 为link ⇒ pop/isRet，
+  标志独立；双link包括`rd==rs1`都先pop再push。非link/nonlink无动作，JAL只按rd。
 
 预译码的意义：**RAS 维护与 BTB 类型训练不再依赖预测表命中**——跳转指令即使
 从未被 BTB 记录，前端也能正确推送 call/ret 语义（修复了 RAS 冷启动漏栈问题）。
@@ -163,8 +255,8 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 ### 4.3 GHR 与 checkpoint
 
 - **GHR 移位**：8-bit GHR 在取指侧于 `btbHit ∨ condSeen` 时随预测结果移位（`FetchDecision`
-  携带 `shift/shiftValue`）；条件分支的解析结果也回填历史——历史成员资格不依赖
-  BTB 驻留。
+  携带 `shift/shiftValue`）；BRU训练condSeen影响后续移位资格，不直接追加actual到
+  live GHR；恢复使用取指前GHR快照。
 - **checkpoint**：每次获准取指消耗一个 `ckptId`。活动池 `CKPT_CAP=32`，大于
   `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ4 + IQ4 = 28`，由 `static_assert`
   守住不会在仍存活时复用 ID；逻辑 ID 与模板运输载体均按派生宽度收紧为 5 bit
@@ -197,12 +289,12 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 |----|------|
 | 取指带宽 | 每周期至多 1 条；请求队列与 FQ 有空间、无 squash/未闩锁 halt，且命中读获得 SRAM 端口 |
 | 两树 ICache | 1 KB · 16×64 B · 单端口同步 SRAM · 4 项请求队列；队首命中最早 n+1 拍进入 FQ |
-| FQ / IQ | 各4项，3-bit epoch；IQ满时actualIssue可替换，FQ上游暂按满停收 |
+| FQ / IQ | 各4项，3-bit epoch；IQ满时actualIssue可替换，FQ满时真实出队可补入 |
 | 方向预测 | Tournament：localPHT 256×2b · globalPHT 256×2b · selector 256×2b · GHR 8b |
 | 目标预测与身份状态 | BTB 64 · specRAS/archRAS 各 32 · condSeen 512b |
 | checkpoint | ckptId 池 32（存活上界 28；逻辑与模板运输载体均 5 bit） |
 | 预译码 | FQ 尾 jal/jalr 静态分类（call/ret/indirect + 静态 jal 目标） |
-| halt | ready 队首 = `0x0ff00513` 且 FQ 不满 ⇒ 交付并 latch haltFetched 停取 |
+| halt | 队首 = `0x0ff00513` 且实际交付 FQ ⇒ latch haltFetched 并当拍停取 |
 
 ## 相关文档
 

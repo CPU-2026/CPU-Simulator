@@ -36,7 +36,7 @@ struct MemArbInput {
   Wire<1> sqEmpty;            // SQModule.isEmpty()
   Wire<ROB_TAG_WIDTH> sqHeadRobTag; // SQModule.headRobTag()
   Wire<SQ_PTR_WIDTH> sqHead;  // SQModule.getHead() (SQ slot index)
-  Wire<2> sqHeadNEnc;         // head n_bytes 2b encoding (0->1B,1->2B,2->4B)
+  Wire<2> sqHeadNEnc;         // head nBytes 2b encoding (0->1B,1->2B,2->4B)
   Wire<32> sqHeadAddr;        // gated: !isEmpty && isAddressReady(head)
   Wire<32> sqHeadValue;       // gated: !isEmpty && isValueReady(head)
   // store commit permission (ROB view of the SQ head store)
@@ -51,7 +51,7 @@ struct MemArbInput {
   Wire<ROB_TAG_WIDTH> loadRobTag; // gated by loadValid
   Wire<1> loadIsSigned;       // gated: !LQModule.getIsUnsigned(idx)
   Wire<2> loadNEnc;           // gated, 2b encoding
-  Wire<1> loadCanDispatch;    // CPU-side SQModule.canDispatchLoad(addr, tag)
+  Wire<1> loadCanSendToCache; // SQModule.canSendLoadToCache(addr, nBytes, tag)
   // squash guard (load branch only)
   Wire<1> squashNeed;
   Wire<ROB_TAG_WIDTH> squashTag;
@@ -82,17 +82,19 @@ private:
 // in RTL style: ports are the RS slot-field buses plus the PRF ready bitmap
 // (prd_ready[127:0]); the arbiter indexes the bitmap with the per-slot source
 // tags itself. Four independent grants (ALU/MUL/AGU/BRU), each = oldest-ready
-// folded priority chain over its pool, gated by destination-isFull and the
+// folded priority chain over its pool, gated by destination admission and the
 // squash point (squash suppresses valid only -- the selected idx/tag stay
 // driven, consumers gate on valid). AGU pool = LoadRS ++ StoreAddrRS
-// concatenated into a single 12-entry selection tree (verbatim iteration
+// concatenated into a single 8-entry selection tree (verbatim iteration
 // order of the former software double loop). The MUL channel mirrors the ALU
 // channel over the dedicated multiplyRS pool.
 struct DispatchArbInput {
-  Wire<1> aluFull; // ALUModule.isFull()
-  Wire<1> aguFull; // AGUModule.isFull()
+  // ALU admission accounts for result slots freed by same-cycle drain or
+  // cancellation; the gate stays a Wire (see CPU.cpp wiring).
+  Wire<1> aluCanAccept; // ALU result slot reusable including drain/cancellation.
+  Wire<1> aguCanAccept; // Address result slot reusable including drain/cancellation.
   Wire<1> bruFull; // BRUModule.isFull()
-  Wire<1> mulFull; // MULModule.isFull()
+  Wire<1> mulCanAccept; // MULModule.partialCanAccept()
   // The divider is a single iterative unit with no output buffer, so its
   // dispatch gate is the unit's own canAccept() (all stage-valid bits and
   // resultValid low) rather than an isFull().
@@ -164,7 +166,7 @@ private:
   WinResult bruSelect() const;
   WinResult mulSelect() const; // multiplyRS pool, same shape as aluSelect
   WinResult divSelect() const; // divideRS pool, same shape as mulSelect
-  WinResult aguSelect() const; // load[0..3] ++ sa[0..7] single 12-slot pass
+  WinResult aguSelect() const; // load[0..3] ++ sa[0..3]: one 8-slot pass
 };
 // ---- width/encoding guards for the wire-ized issue packet ----
 static_assert(static_cast<uint32_t>(Operation::OP_INVALID) < 32,
@@ -341,7 +343,7 @@ struct IssueArbOutRobEntry {
   Wire<2> type;
   Wire<1> isCommitReady;
   Wire<5> dest;
-  Wire<1> halt, isCall, isRet;
+  Wire<1> halt, exception, isCall, isRet;
   Wire<CKPT_ID_WIDTH> ckptId;
   Wire<32> predictedPC;
   Wire<32> pc;

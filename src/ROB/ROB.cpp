@@ -100,7 +100,11 @@ bool ROB::isEmpty() const {
 }
 bool ROB::matchesTag(RobTag tag) const {
   const auto slot = robSlot(tag);
-  return !isEmpty() && slot < ROB_CAP &&
+  const uint32_t headTag = static_cast<uint32_t>(robHead);
+  const uint32_t span =
+      (static_cast<uint32_t>(next) - headTag) & ROB_TAG_MASK;
+  const uint32_t offset = (uint32_t(tag) - headTag) & ROB_TAG_MASK;
+  return slot < ROB_CAP && offset < span &&
          static_cast<uint32_t>(ROBqueue[slot].tag) == tag;
 }
 bool ROB::willCommit() const {
@@ -144,6 +148,7 @@ void ROB::work() {
     readyData[q] = static_cast<bool>(issue.entry.isCommitReady);
     ROBqueue[q].dest <= static_cast<uint32_t>(issue.entry.dest);
     ROBqueue[q].halt <= static_cast<uint32_t>(issue.entry.halt);
+    ROBqueue[q].exception <= static_cast<uint32_t>(issue.entry.exception);
     ROBqueue[q].isCall <= static_cast<uint32_t>(issue.entry.isCall);
     ROBqueue[q].isRet <= static_cast<uint32_t>(issue.entry.isRet);
     ROBqueue[q].ckptId <= static_cast<uint32_t>(issue.entry.ckptId);
@@ -181,19 +186,17 @@ void ROB::work() {
   if (!static_cast<bool>(bru.isBRUEmpty)) {
     markReady(static_cast<uint32_t>(bru.bruHeadRobTag));
   }
-  {
-    uint32_t sqHead = static_cast<uint32_t>(sq.sqHead);
-    for (int k = 0; k < MEMQ_SCAN_WINDOW; ++k) {
-      uint32_t i = (sqHead + k) & SQ_MASK;
-      if (!static_cast<bool>(sq.sqValid[i]))
-        continue;
-      if (!static_cast<bool>(sq.sqReadyToCommit[i]))
-        continue;
-      if (static_cast<bool>(sq.sqCommitted[i]))
-        continue;
-      RobTag sqTag = static_cast<uint32_t>(sq.sqRobTag[i]);
-      markReady(sqTag);
-    }
+  // SQ owns the old-state slot/epoch decode. ROB validates its own row before
+  // merging Store completion with the other ready sources.
+  const uint32_t storeReadyMask = static_cast<uint32_t>(sq.readyMask);
+  const uint32_t storeEpochMask = static_cast<uint32_t>(sq.epochMask);
+  for (int slot = 0; slot < ROB_CAP; ++slot) {
+    const uint32_t oneHot = uint32_t{1} << slot;
+    const RobTag tag = static_cast<uint32_t>(ROBqueue[slot].tag);
+    if ((storeReadyMask & oneHot) && matchesTag(tag) &&
+        static_cast<uint32_t>(ROBqueue[slot].type) == static_cast<uint32_t>(ROBType::STORE) &&
+        bool(storeEpochMask & oneHot) == bool(tag >> (ROB_TAG_WIDTH - 1)))
+      markReady(tag);
   }
   if (static_cast<bool>(cdbOfALU.cdbValid)) {
     markReady(static_cast<uint32_t>(cdbOfALU.cdbRobTag));
@@ -223,6 +226,7 @@ void ROB::work() {
 
   // A strictly older head commit coexists with a younger squash.
   if (willCommitNow) {
+    if (bool(ROBqueue[robSlot(curHead)].exception)) robTrapCommitted <= 1;
     const uint32_t oldIdx = robSlot(curHead);
     const bool oldHalt = static_cast<bool>(ROBqueue[oldIdx].halt);
     const uint32_t oldDest = static_cast<uint32_t>(ROBqueue[oldIdx].dest);

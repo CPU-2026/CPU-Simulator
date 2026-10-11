@@ -1,6 +1,5 @@
 #include "../include/DynamicArbiter.hpp"
 #include "../include/ROB.hpp"
-#include "../include/util.hpp"
 #include <cstdint>
 #include <stdexcept>
 
@@ -117,16 +116,12 @@ void FlushArbiter::work() {
   if (bru.isBRUEmpty == 0 && robTagMatches(rob, brRobTag)) {
     SquashInfo BranchSquash;
     auto pcResult = static_cast<uint32_t>(bru.bruHeadPCResult);
-    auto pcFrom = static_cast<uint32_t>(bru.bruHeadPCFrom);
     if (squash.needSquash == 0 ||
         (squash.needSquash &&
          ROB::isOlder(brRobTag, static_cast<uint32_t>(squash.SquashTag)))) {
       auto actualPC = pcResult;
       auto predPC = static_cast<uint32_t>(rob.robPredictPC[robSlot(brRobTag)]);
       if (actualPC != predPC) {
-        if (debug::enabled(debug::TOPIC_BRANCH))
-          debug::print("squash tag=%u pc=%u (from %u)\n", brRobTag, actualPC,
-                       pcFrom);
         BranchSquash.needSquash = true;
         BranchSquash.SquashPC = actualPC;
         BranchSquash.SquashTag = brRobTag;
@@ -153,9 +148,6 @@ void FlushArbiter::work() {
         const auto pc = static_cast<uint32_t>(cdb.cdbValue);
         if (pc !=
             rob.robPredictPC[robSlot(static_cast<uint32_t>(cdb.cdbRobTag))]) {
-          if (debug::enabled(debug::TOPIC_BRANCH))
-            debug::print("squash tag=%u pc=%u (jalr)\n",
-                         static_cast<uint32_t>(cdb.cdbRobTag), pc);
           JumpSquash.needSquash = true;
           JumpSquash.SquashPC = pc;
           JumpSquash.SquashTag = static_cast<uint32_t>(cdb.cdbRobTag);

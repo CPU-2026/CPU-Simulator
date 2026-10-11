@@ -53,8 +53,8 @@ PredictInfo BPU::predict(uint32_t pc) const {
 bool BPU::fetchAllowed() const {
   return !static_cast<bool>(fetchCtx.squashNeed) &&
          !static_cast<bool>(fetchCtx.haltFetched) &&
-         !static_cast<bool>(fetchCtx.fqFull) &&
-         !static_cast<bool>(fetchCtx.imemReqFull);
+         static_cast<bool>(fetchCtx.fqCanAccept) &&
+         static_cast<bool>(fetchCtx.memCanAccept);
 }
 
 // ---- fetch-stage prediction bundle (retired FetchDecision::build).
@@ -110,14 +110,6 @@ BPUSnapshot BPU::snapshotCheckPoint() const {
   return ckptSnap;
 }
 
-BPUSnapshot BPU::traceState() const { return snapshotCheckPoint(); }
-
-BPUSnapshot BPU::traceCheckpoint(uint8_t id) const {
-  const auto &checkpoint = bpCkpt[id & (CKPT_CAP - 1)];
-  BPUSnapshot snapshot;
-  snapshot.GHR_snapshot = static_cast<uint32_t>(checkpoint.GHR);
-  return snapshot;
-}
 // ---- training requests (decoded once at the top of work()) ----
 struct TrainReq {
   bool valid = false;
@@ -164,7 +156,11 @@ bool robTagMatches(const BPUInputROB &rob, RobTag tag) {
   if (static_cast<bool>(rob.isROBEmpty))
     return false;
   const uint32_t slot = robSlot(tag);
-  return slot < ROB_CAP && static_cast<uint32_t>(rob.robTag[slot]) == tag;
+  const uint32_t head = static_cast<uint32_t>(rob.robHeadTag);
+  const uint32_t span = (static_cast<uint32_t>(rob.robNextTag) - head) & ROB_TAG_MASK;
+  const uint32_t offset = (uint32_t(tag) - head) & ROB_TAG_MASK;
+  return slot < ROB_CAP && offset < span &&
+         static_cast<uint32_t>(rob.robTag[slot]) == tag;
 }
 void BPU::work() {
   // Cycle-0 boot: direction counters need non-zero init. Runs in parallel with
@@ -199,7 +195,7 @@ void BPU::work() {
       trBru.valid = true;
       trBru.isJump = false;
       trBru.pc = pcFrom;
-      trBru.taken = pcResult != pcFrom + 4;
+      trBru.taken = static_cast<bool>(bru.bruHeadActualTaken);
       trBru.target = pcResult;
       auto cid = static_cast<uint32_t>(rob.robCkptId[robSlot(brRobTag)]);
       // Checkpoints are written only by fetch allocation and read by squash;
@@ -313,10 +309,10 @@ void BPU::work() {
   BTBWriteIntent fetchWriteIntent;
   if (static_cast<bool>(fetchInfo.FetchValid)) {
     const uint32_t ra = static_cast<uint32_t>(fetchInfo.FetchPC) + 4;
+    if (static_cast<bool>(fetchInfo.isFetchRet) && specTop > 0)
+      --specTop;
     if (static_cast<bool>(fetchInfo.isFetchCall) && specTop < RAS_CAP) {
       specRAS[specTop++] = ra;
-    } else if (static_cast<bool>(fetchInfo.isFetchRet) && specTop > 0) {
-      --specTop;
     }
     // Early training (BRU-port fetch side; same-line conflicts arbitrated at
     // the write ports below, fetch highest).
@@ -347,10 +343,10 @@ void BPU::work() {
     const uint32_t headSlot = robSlot(headTag);
     if (headSlot < ROB_CAP &&
         static_cast<uint32_t>(rob.robTag[headSlot]) == headTag) {
+      if (static_cast<bool>(rob.robIsRet[headSlot]) && archTop > 0)
+        --archTop;
       if (static_cast<bool>(rob.robIsCall[headSlot]) && archTop < RAS_CAP)
         archRAS[archTop++] = static_cast<uint32_t>(rob.robPC[headSlot]) + 4u;
-      else if (static_cast<bool>(rob.robIsRet[headSlot]) && archTop > 0)
-        --archTop;
     }
   }
 
@@ -376,11 +372,11 @@ void BPU::work() {
         const uint32_t robIndex = robSlot(robTag);
         if (robIndex < ROB_CAP &&
             static_cast<uint32_t>(rob.robTag[robIndex]) == robTag) {
+          if (static_cast<bool>(rob.robIsRet[robIndex]) && commitTOS > 0)
+            --commitTOS;
           if (static_cast<bool>(rob.robIsCall[robIndex]) && commitTOS < RAS_CAP)
             specRAS[commitTOS++] =
                 static_cast<uint32_t>(rob.robPC[robIndex]) + 4u;
-          else if (static_cast<bool>(rob.robIsRet[robIndex]) && commitTOS > 0)
-            --commitTOS;
         }
         recovered = robTag == squashTag;
         robTag = robNextTag(robTag);

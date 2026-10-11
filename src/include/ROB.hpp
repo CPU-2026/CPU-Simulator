@@ -23,6 +23,7 @@ struct ROBInputEntry {
   Wire<1> isCommitReady;
   Wire<5> dest;
   Wire<1> halt;
+  Wire<1> exception;
   Wire<1> isCall;
   Wire<1> isRet;
   Wire<CKPT_ID_WIDTH> ckptId;
@@ -62,11 +63,8 @@ struct ROBInputBRU {
   Wire<ROB_TAG_WIDTH> bruHeadRobTag;
 };
 struct ROBInputSQ {
-  std::array<Wire<1>, SQ_CAP> sqValid;
-  std::array<Wire<1>, SQ_CAP> sqReadyToCommit;
-  std::array<Wire<1>, SQ_CAP> sqCommitted;
-  std::array<Wire<ROB_TAG_WIDTH>, SQ_CAP> sqRobTag;
-  Wire<SQ_PTR_WIDTH> sqHead;
+  Wire<ROB_CAP> readyMask;
+  Wire<ROB_CAP> epochMask;
 };
 struct ROBInput {
   ROBInputSquash squash;
@@ -115,6 +113,7 @@ struct ROBEntryReg {
   Register<1> isCommitReady;
   Register<5> dest;
   Register<1> halt;
+  Register<1> exception;
   Register<1> isCall;
   Register<1> isRet;
   Register<CKPT_ID_WIDTH> ckptId;
@@ -130,11 +129,11 @@ struct ROBInner {
   Register<ROB_TAG_WIDTH> robHead;
   Register<ROB_TAG_WIDTH> next;
   Register<1> robHaltCommitted;
+  Register<1> robTrapCommitted;
   Register<5> robHaltRd;
 };
 
 struct ROB : dark::Module<ROBInput, ROBOutput, ROBInner> {
-  friend struct ReorderTester;
 private:
   void wire_output();
 public:
@@ -147,6 +146,7 @@ public:
   bool willCommit() const;
   bool storeWillCommit() const;
   bool isHaltCommitted() const;
+  bool isTrapCommitted() const { return bool(robTrapCommitted); }
   uint32_t getHaltRd() const;
   RobTag getNextTag() const;
   void work() override;

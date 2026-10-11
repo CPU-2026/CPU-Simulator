@@ -18,7 +18,7 @@ bool MemArbiter::storeSelected() const {
 
 bool MemArbiter::loadSelected() const {
   if (storeSelected() || static_cast<bool>(dmemBusy) ||
-      !static_cast<bool>(loadValid) || !static_cast<bool>(loadCanDispatch))
+      !static_cast<bool>(loadValid) || !static_cast<bool>(loadCanSendToCache))
     return false;
   return !static_cast<bool>(squashNeed) ||
          ROB::isOlder(static_cast<uint32_t>(loadRobTag),
@@ -78,7 +78,7 @@ void MemArbiter::wire_output() {
 // ---- DispatchArbiter: stateless combinational dispatch (RTL style) ----
 // Ports are buses; the arbiter indexes the PRF ready bitmap with per-slot
 // source tags itself. Selection is a folded priority chain; a grant gates on
-// destination isFull and the squash point (squash suppresses valid only --
+// destination admission and the squash point (squash suppresses valid only --
 // the selected idx/tag stay driven, consumers gate on valid).
 bool DispatchArbiter::readyOf(uint32_t tag) const {
   return tag == InvalidPhy ? true : static_cast<bool>(prdReady[tag]);
@@ -118,7 +118,7 @@ DispatchArbiter::WinResult DispatchArbiter::divSelect() const {
   return selectOldest(divBusy, divSrc1Tag, divSrc2Tag, divRobTag);
 }
 
-// load[0..3] ++ sa[0..7] concatenated into a single 12-slot pass -- verbatim
+// load[0..3] ++ sa[0..3] concatenated into a single 8-slot pass -- verbatim
 // iteration order and fold condition of the former software double loop
 // (store-addr carries a single operand; equal tags keep the earlier slot).
 DispatchArbiter::WinResult DispatchArbiter::aguSelect() const {
@@ -144,12 +144,12 @@ DispatchArbiter::WinResult DispatchArbiter::aguSelect() const {
 }
 
 void DispatchArbiter::wire_output() {
-  // win = ~dest_full & selected; grant = win & ~squash_kill. Fields (idx/tag/
+  // win = dest_accept & selected; grant = win & ~squash_kill. Fields (idx/tag/
   // type) are driven by win (not grant) -- verbatim: the former code wrote
   // them before flipping valid off under squash.
   alu.valid = [this]() -> uint32_t {
     WinResult w = aluSelect();
-    return !static_cast<bool>(aluFull) && w.v &&
+    return static_cast<bool>(aluCanAccept) && w.v &&
                    (!static_cast<bool>(squashNeed) ||
                     ROB::isOlder(w.tag, static_cast<uint32_t>(squashTag)))
                ? 1u
@@ -157,15 +157,15 @@ void DispatchArbiter::wire_output() {
   };
   alu.rsIndex = [this]() -> uint32_t {
     WinResult w = aluSelect();
-    return !static_cast<bool>(aluFull) && w.v ? w.idx : 0u;
+    return static_cast<bool>(aluCanAccept) && w.v ? w.idx : 0u;
   };
   alu.robTag = [this]() -> uint32_t {
     WinResult w = aluSelect();
-    return !static_cast<bool>(aluFull) && w.v ? w.tag : 0u;
+    return static_cast<bool>(aluCanAccept) && w.v ? w.tag : 0u;
   };
   agu.valid = [this]() -> uint32_t {
     WinResult w = aguSelect();
-    return !static_cast<bool>(aguFull) && w.v &&
+    return static_cast<bool>(aguCanAccept) && w.v &&
                    (!static_cast<bool>(squashNeed) ||
                     ROB::isOlder(w.tag, static_cast<uint32_t>(squashTag)))
                ? 1u
@@ -173,17 +173,17 @@ void DispatchArbiter::wire_output() {
   };
   agu.rsIndex = [this]() -> uint32_t {
     WinResult w = aguSelect();
-    return !static_cast<bool>(aguFull) && w.v
+    return static_cast<bool>(aguCanAccept) && w.v
                ? (w.idx < LOADRS_CAP ? w.idx : w.idx - LOADRS_CAP)
                : 0u;
   };
   agu.robTag = [this]() -> uint32_t {
     WinResult w = aguSelect();
-    return !static_cast<bool>(aguFull) && w.v ? w.tag : 0u;
+    return static_cast<bool>(aguCanAccept) && w.v ? w.tag : 0u;
   };
   agu.rsType = [this]() -> uint32_t {
     WinResult w = aguSelect();
-    return !static_cast<bool>(aguFull) && w.v
+    return static_cast<bool>(aguCanAccept) && w.v
                ? (w.idx < LOADRS_CAP ? static_cast<uint32_t>(RSType::Load)
                                      : static_cast<uint32_t>(RSType::StoreAddr))
                : static_cast<uint32_t>(RSType::Integer);
@@ -206,7 +206,7 @@ void DispatchArbiter::wire_output() {
   };
   mul.valid = [this]() -> uint32_t {
     WinResult w = mulSelect();
-    return !static_cast<bool>(mulFull) && w.v &&
+    return static_cast<bool>(mulCanAccept) && w.v &&
                    (!static_cast<bool>(squashNeed) ||
                     ROB::isOlder(w.tag, static_cast<uint32_t>(squashTag)))
                ? 1u
@@ -214,11 +214,11 @@ void DispatchArbiter::wire_output() {
   };
   mul.rsIndex = [this]() -> uint32_t {
     WinResult w = mulSelect();
-    return !static_cast<bool>(mulFull) && w.v ? w.idx : 0u;
+    return static_cast<bool>(mulCanAccept) && w.v ? w.idx : 0u;
   };
   mul.robTag = [this]() -> uint32_t {
     WinResult w = mulSelect();
-    return !static_cast<bool>(mulFull) && w.v ? w.tag : 0u;
+    return static_cast<bool>(mulCanAccept) && w.v ? w.tag : 0u;
   };
   // DIV channel: same fold as the MUL channel over the divideRS pool, but the
   // destination gate is the unit's own canAccept() instead of an isFull -- the
@@ -1007,7 +1007,7 @@ void IssueArbiter::wire_output() {
     return static_cast<uint32_t>(ROBType::REGISTER); // 0/2/3/7/8/9 default
   };
   robEntry.isCommitReady = [this]() -> uint32_t {
-    return static_cast<uint32_t>(win) == 2u ? 1u : 0u;
+    return static_cast<uint32_t>(win) == 2u || static_cast<uint32_t>(win) == 7u ? 1u : 0u;
   };
   robEntry.dest = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
@@ -1018,6 +1018,7 @@ void IssueArbiter::wire_output() {
   robEntry.halt = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 2u ? 1u : 0u;
   };
+  robEntry.exception = [this]() -> uint32_t { return static_cast<uint32_t>(win) == 7u; };
   robEntry.isCall = [this]() -> uint32_t {
     // RISC-V RAS hints (mirrors the main tree): link registers x1/x5.
     // JALR call: rd is a link register; direct JAL call: rd is a link register.
@@ -1031,33 +1032,31 @@ void IssueArbiter::wire_output() {
     return (jalrCall || jalCall) ? 1u : 0u;
   };
   robEntry.isRet = [this]() -> uint32_t {
-    // JALR return: rs1 is a link register and rd is NOT.
+    // User JALR RAS contract: link rs1 pops independently of link rd push.
     const uint32_t rs1 = static_cast<uint32_t>(dec.rs1);
-    const uint32_t rd = static_cast<uint32_t>(dec.rd);
-    const bool rdLink = (rd == 1u || rd == 5u);
     const bool rs1Link = (rs1 == 1u || rs1 == 5u);
     return (static_cast<uint32_t>(win) == 1u &&
-            static_cast<bool>(intIsControl) && rs1Link && !rdLink)
+             static_cast<bool>(intIsControl) && rs1Link)
                ? 1u
                : 0u;
   };
   robEntry.ckptId = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
-    return ((w >= 1u && w <= 6u) || w == 8u || w == 9u)
+    return (w >= 1u && w <= 9u)
                ? static_cast<uint32_t>(dec.ckptId)
                : 0u;
   };
   robEntry.predictedPC = [this]() -> uint32_t {
-    // only INT / BR / UJ / MUL / DIV assign predictedPC (LOAD/STORE/HALT
+    // INT / HALT / BR / UJ / MUL / DIV retain predictedPC (LOAD/STORE
     // leave 0)
     const uint32_t w = static_cast<uint32_t>(win);
-    return (w == 1u || w == 5u || w == 6u || w == 8u || w == 9u)
+    return (w == 1u || w == 2u || w == 5u || w == 6u || w == 7u || w == 8u || w == 9u)
                ? static_cast<uint32_t>(dec.predictedPC)
                : 0u;
   };
   robEntry.pc = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
-    return (((w >= 1u && w <= 6u) || w == 8u || w == 9u) && w != 2u)
+    return (w >= 1u && w <= 9u)
                ? static_cast<uint32_t>(dec.pc)
                : 0u;
   };

@@ -164,10 +164,10 @@ golden 或零用例都会失败。历史扩展收益数据只保留在根级 ben
 `VERBOSE` 支持以下主题：
 
 ```text
-issue,exec,wb,commit,lsq,mem,clock,branch,prf,mdp,bpmiss,icache,dcache
+clock,branch,icache,dcache
 ```
 
-多个主题用逗号分隔，`VERBOSE=all` 启用全部输出。`branch` 会产生较多事件日志。
+多个主题用逗号分隔，`VERBOSE=all` 启用全部活动指标汇总。逐指令事件日志与额外画像已清理。
 
 ## 限制
 

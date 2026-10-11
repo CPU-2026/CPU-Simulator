@@ -8,7 +8,8 @@ ICache::ICache() {
     return !static_cast<bool>(needSquash) && refillValid();
   };
   readBlocked = [this]() {
-    return static_cast<bool>(fillFire) && hit(static_cast<uint32_t>(fetchPC));
+    const uint32_t pc = static_cast<uint32_t>(fetchPC);
+    return static_cast<bool>(fillFire) && hit(pc) && !refillHit(pc);
   };
   // The nested SRAM owns its port. ICache::work() clocks it once; the parent
   // Module::sync() commits readData and clears every input/output Wire cache.
@@ -49,10 +50,14 @@ void ICache::work() {
     const uint32_t occ = occupancy();
     // stage 2 pop: self-release once FQ consumed the ICache head
     // (write-own-only)
+    const bool replaceHead = popE && static_cast<bool>(fetchValid) &&
+                             occ == REQUEST_CAP;
     if (popE) {
       assert(isReturnReady());
-      requestBuffer[oh].valid <= false;
-      requestBuffer[oh].ready <= false;
+      if (!replaceHead) {
+        requestBuffer[oh].valid <= false;
+        requestBuffer[oh].ready <= false;
+      }
       head <= ((oh + 1) & (REQUEST_CAP - 1));
     }
     // Complete exactly the live miss selected from old state. The same
@@ -68,29 +73,26 @@ void ICache::work() {
           lineReturn.data[(pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK]);
       requestBuffer[slot].ready <= true;
     }
-    // Both hits and misses occupy a placeholder. A hit can bypass at the
-    // head next cycle; otherwise the previous SRAM output lands in its slot.
+    // Refill forwarding completes the new slot at the edge, without another
+    // SRAM access. Ordinary hits retain their synchronous-read boundary.
     if (static_cast<bool>(fetchValid)) {
       const uint32_t pc = static_cast<uint32_t>(fetchPC);
-      bool isHit = hit(pc);
-      // host-only: accepted-fetch classification for cross-tree trace diagnosis.
-      if (debug::enabled(debug::TOPIC_MEM))
-        debug::print("IC_ACCEPT idx=%llu pc=%08x hit=%u\n",
-                     static_cast<unsigned long long>(statHits + statMisses), pc,
-                     static_cast<unsigned>(isHit));
-      if (isHit) {
+      const bool forwarded = refillHit(pc);
+      const bool isHit = hit(pc) || forwarded;
+      if (isHit && !forwarded) {
         readIndex <= static_cast<uint32_t>((head + occ) & (REQUEST_CAP - 1));
         readLaneIndex <= static_cast<uint32_t>(
             (fetchPC >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK);
       }
-      assert(occ < static_cast<uint32_t>(REQUEST_CAP));
+      assert(occ < static_cast<uint32_t>(REQUEST_CAP) || replaceHead);
       auto index = (oh + occ) & (REQUEST_CAP - 1);
-      requestBuffer[index].raw_inst <= 0;
+      requestBuffer[index].raw_inst <= (forwarded ? static_cast<uint32_t>(
+          lineReturn.data[(pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK]) : 0u);
       requestBuffer[index].PC <= pc;
       requestBuffer[index].predictPC <= static_cast<uint32_t>(fetchPredictPC);
       requestBuffer[index].ckptId <= static_cast<uint32_t>(fetchCkptId);
       requestBuffer[index].valid <= true;
-      requestBuffer[index].ready <= false;
+      requestBuffer[index].ready <= forwarded;
       // host-only profile counters (never read by the datapath)
       if (isHit)
         ++statHits;

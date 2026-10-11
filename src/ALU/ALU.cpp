@@ -112,13 +112,17 @@ void ALU::work() {
   const bool grant = static_cast<bool>(cdbValid);
   const RobTag cdbTag = static_cast<uint32_t>(cdbRobTag);
 
-  // push target from the OLD validity bitmap only: the reference picked the
-  // free slot before remove/flush ran, so a slot freed this cycle stays
-  // unusable until the next cycle
+  // push target from the bitmap with this cycle's releases applied: a slot
+  // freed by this cycle's grant or flush is reusable in the SAME cycle, so a
+  // single result slot can both drain a result and accept a new op per cycle.
   bool found = false;
   uint32_t target = 0;
   for (uint32_t i = 0; i < ALU_CAP; ++i) {
-    if (!found && !static_cast<bool>(slotValid[i])) {
+    const bool old_valid = static_cast<bool>(slotValid[i]);
+    const RobTag tag_i = static_cast<uint32_t>(slots[i].robTag);
+    const bool removed = grant && old_valid && tag_i == cdbTag;
+    const bool flushed = squash && old_valid && !ROB::isOlder(tag_i, squashTag);
+    if (!found && (!old_valid || removed || flushed)) {
       target = i;
       found = true;
     }
@@ -132,7 +136,8 @@ void ALU::work() {
                               static_cast<uint32_t>(src2Value));
 
   // single-assignment convergence: push/remove/flush all land on one final
-  // value per slot; priority flush > remove > keep, push only into dead slots
+  // value per slot; priority push > flush > remove > keep, and a push may reuse
+  // a slot released this same cycle (the drain-and-refill on one result slot)
   for (uint32_t i = 0; i < ALU_CAP; ++i) {
     const bool old_v = static_cast<bool>(slotValid[i]);
     const RobTag tag_i = static_cast<uint32_t>(slots[i].robTag);

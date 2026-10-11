@@ -1,5 +1,4 @@
 #include "../include/PRF.hpp"
-#include "../include/util.hpp"
 #include "ROB.hpp"
 #include <cassert>
 #include <cstdint>
@@ -64,7 +63,6 @@ void PRF::work() {
   bool cdbWriteMul = false;
   uint32_t cdbPhyMul = 0;
   uint32_t cdbValMul = 0;
-  RobTag cdbTagMul = 0;
   if (static_cast<bool>(cdbOfMUL.cdbValid)) {
     RobTag cdbTag = static_cast<uint32_t>(cdbOfMUL.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
@@ -73,7 +71,6 @@ void PRF::work() {
         cdbWriteMul = true;
         cdbPhyMul = newPhy;
         cdbValMul = static_cast<uint32_t>(cdbOfMUL.cdbValue);
-        cdbTagMul = cdbTag;
       }
     }
   }
@@ -81,7 +78,6 @@ void PRF::work() {
   bool cdbWriteDiv = false;
   uint32_t cdbPhyDiv = 0;
   uint32_t cdbValDiv = 0;
-  RobTag cdbTagDiv = 0;
   if (static_cast<bool>(cdbOfDIV.cdbValid)) {
     RobTag cdbTag = static_cast<uint32_t>(cdbOfDIV.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
@@ -90,35 +86,24 @@ void PRF::work() {
         cdbWriteDiv = true;
         cdbPhyDiv = newPhy;
         cdbValDiv = static_cast<uint32_t>(cdbOfDIV.cdbValue);
-        cdbTagDiv = cdbTag;
       }
     }
   }
 
   if (cdbWriteAlu) {
-    if (debug::enabled(debug::TOPIC_PRF))
-      debug::print("PRF write P%d = %d (aluCDB)\n", cdbPhyAlu, cdbValAlu);
     PhysicalRegs[cdbPhyAlu].ready <= true;
     PhysicalRegs[cdbPhyAlu].value <= cdbValAlu;
   }
   if (cdbWriteLq) {
-    if (debug::enabled(debug::TOPIC_PRF))
-      debug::print("PRF write P%d = %d (lqCDB)\n", cdbPhyLq, cdbValLq);
     PhysicalRegs[cdbPhyLq].ready <= true;
     PhysicalRegs[cdbPhyLq].value <= cdbValLq;
   }
   if (cdbWriteMul) {
-    if (debug::enabled(debug::TOPIC_EXEC))
-      debug::print("prf mul-write rob=%u phy=%d val=%08x\n", cdbTagMul,
-                   cdbPhyMul, cdbValMul);
     PhysicalRegs[cdbPhyMul].ready <= true;
     PhysicalRegs[cdbPhyMul].value <= cdbValMul;
   }
 
   if (cdbWriteDiv) {
-    if (debug::enabled(debug::TOPIC_EXEC))
-      debug::print("prf div-write rob=%u phy=%d val=%08x\n", cdbTagDiv,
-                   cdbPhyDiv, cdbValDiv);
     PhysicalRegs[cdbPhyDiv].ready <= true;
     PhysicalRegs[cdbPhyDiv].value <= cdbValDiv;
   }
@@ -144,8 +129,6 @@ void PRF::work() {
   if (doPop) {
     headSeq <= nextHead;
     if (issueIsCtrl) {
-      if (debug::enabled(debug::TOPIC_PRF))
-        debug::print("PRF link P%d = %d (pc+4)\n", issuePhyVal, issuePCVal + 4);
       PhysicalRegs[issuePhyVal].ready <= true;
       PhysicalRegs[issuePhyVal].value <= issuePCVal + 4;
     } else {

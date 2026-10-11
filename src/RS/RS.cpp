@@ -12,6 +12,12 @@
 //              flushHit are mutually exclusive; merged anyway -- both write
 //              the same freed state)
 //   flushHit - squash retires this younger-than-squash-point entry
+//   payload  - release/flush write `busy` only; op/src*/robTag/memIndex/
+//              imm/pc keep their old values (RTL parity: rv32_rs.sv writes
+//              busyInner only). Liveness is `busy` alone and every reader
+//              gates on it, and a push rewrites every payload field, so
+//              released contents are dead data. Clearing is not a safety
+//              net -- InvalidPhy is 0 and isOperandReady(0) is true.
 // storeValueRS is the one true overlap: its ready-release has no tag guard,
 // so release and flush converge through the same else-if (both set free=1).
 
@@ -64,10 +70,6 @@ void RSUnit::work() {
       integerRS[i].robTag <= static_cast<uint32_t>(data.intP.robTag);
     } else if (relHit || flushHit) {
       integerRS[i].busy <= 0;
-      integerRS[i].src1.tag <= 0;
-      integerRS[i].src1.imm <= 0;
-      integerRS[i].src2.tag <= 0;
-      integerRS[i].src2.imm <= 0;
     }
   }
 
@@ -90,15 +92,11 @@ void RSUnit::work() {
       loadRS[i].memIndex <= static_cast<uint32_t>(data.loadP.memIndex);
     } else if (relHit || flushHit) {
       loadRS[i].busy <= 0;
-      loadRS[i].src1.tag <= 0;
-      loadRS[i].src1.imm <= 0;
-      loadRS[i].src2.tag <= 0;
-      loadRS[i].src2.imm <= 0;
     }
   }
 
-  // ---- storeAddressRS: push / release / flush (release/flush clear only
-  // src1 -- reference semantics; src2 is rewritten on the next push) ----
+  // ---- storeAddressRS: push / release / flush (payload retained on
+  // release; src2 is rewritten on the next push anyway) ----
   for (int i = 0; i < STORERS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(storeAddressRS[i].busy);
     const RobTag tagOld = static_cast<uint32_t>(storeAddressRS[i].robTag);
@@ -118,8 +116,6 @@ void RSUnit::work() {
       storeAddressRS[i].memIndex <= static_cast<uint32_t>(data.saP.memIndex);
     } else if (relHit || flushHit) {
       storeAddressRS[i].busy <= 0;
-      storeAddressRS[i].src1.tag <= 0;
-      storeAddressRS[i].src1.imm <= 0;
     }
   }
 
@@ -164,10 +160,6 @@ void RSUnit::work() {
       branchRS[i].pc <= static_cast<uint32_t>(data.brP.pc);
     } else if (relHit || flushHit) {
       branchRS[i].busy <= 0;
-      branchRS[i].src1.tag <= 0;
-      branchRS[i].src1.imm <= 0;
-      branchRS[i].src2.tag <= 0;
-      branchRS[i].src2.imm <= 0;
     }
   }
 
@@ -189,10 +181,6 @@ void RSUnit::work() {
       multiplyRS[i].robTag <= static_cast<uint32_t>(data.mulP.robTag);
     } else if (relHit || flushHit) {
       multiplyRS[i].busy <= 0;
-      multiplyRS[i].src1.tag <= 0;
-      multiplyRS[i].src1.imm <= 0;
-      multiplyRS[i].src2.tag <= 0;
-      multiplyRS[i].src2.imm <= 0;
     }
   }
 
@@ -216,10 +204,6 @@ void RSUnit::work() {
       divideRS[i].robTag <= static_cast<uint32_t>(data.divP.robTag);
     } else if (relHit || flushHit) {
       divideRS[i].busy <= 0;
-      divideRS[i].src1.tag <= 0;
-      divideRS[i].src1.imm <= 0;
-      divideRS[i].src2.tag <= 0;
-      divideRS[i].src2.imm <= 0;
     }
   }
 }

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 
 namespace {
 // Pre-decode scan of the last fetched word (see main tree CPU.cpp): classify
@@ -38,18 +39,12 @@ FetchTypeInfo scanJump(bool valid, uint32_t raw, uint32_t pc) {
     fi.valid = true;
   } else if (opcode == 0x67 && funct3 == 0) { // jalr
     fi.isCall = rdLink;                       // indirect call (push)
-    fi.isRet = rs1Link && !rdLink;            // return (pop)
+    fi.isRet = rs1Link;                       // independent pop; both => pop then push
     fi.valid = true;
   }
   return fi;
 }
 
-uint32_t instructionAt(const IMEM &imem, uint32_t pc) {
-  return static_cast<uint32_t>(imem.read_data(pc)) |
-         (static_cast<uint32_t>(imem.read_data(pc + 1)) << 8) |
-         (static_cast<uint32_t>(imem.read_data(pc + 2)) << 16) |
-         (static_cast<uint32_t>(imem.read_data(pc + 3)) << 24);
-}
 } // namespace
 
 CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
@@ -86,6 +81,9 @@ CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
 }
 
 void CPU::wire() {
+  DCacheModule.flushRequested = [this]() {
+    return static_cast<uint32_t>(finishPhase) == static_cast<uint32_t>(FinishPhase::WRITEBACK);
+  };
   // Wire FetchUnit's input wires once. needSquash/SquashPC come straight from
   // FlushArbiter (single producer, via its combinational member accessor);
   // haltSignal from ICache's combinational predicate; FetchValid/PredictPC
@@ -105,7 +103,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(BPUModule.outPredictedPC);
   };
   FetchUnitModule.haltSignal = [this]() {
-    return !FQModule.isFull() && ICacheModule.isHaltSignal();
+    return static_cast<bool>(ICacheModule.popConsume) && ICacheModule.isHaltSignal();
   };
 
   // Wire InstructBuffer's (FQ) input wires once. icacheReturn* sample the
@@ -113,11 +111,8 @@ void CPU::wire() {
   FQModule.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
-  FQModule.haltFetched = [this]() {
-    return static_cast<uint32_t>(FetchUnitModule.haltFetched);
-  };
-  FQModule.icacheReturnReady = [this]() {
-    return ICacheModule.isReturnReady();
+  FQModule.icacheReturnAccepted = [this]() {
+    return static_cast<bool>(ICacheModule.popConsume);
   };
   FQModule.icacheReturnRaw = [this]() { return ICacheModule.returnRaw(); };
   FQModule.icacheReturnPC = [this]() { return ICacheModule.returnPC(); };
@@ -127,8 +122,8 @@ void CPU::wire() {
   FQModule.icacheReturnCkptId = [this]() {
     return ICacheModule.returnCkptId();
   };
-  FQModule.decodeFull = [this]() {
-    return !DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid));
+  FQModule.decodeCanAccept = [this]() {
+    return DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid));
   };
 
   // Wire the DecodeUnit's input wires once. fq* sample the converted
@@ -155,7 +150,8 @@ void CPU::wire() {
   // NOT claim an IMEM line; accepted requests carry instruction-line bases.
   IMEMModule.fetchValid = [this]() {
     return static_cast<bool>(BPUModule.outValid) &&
-           !ICacheModule.hit(static_cast<uint32_t>(BPUModule.outPC));
+           !ICacheModule.hit(static_cast<uint32_t>(BPUModule.outPC)) &&
+           !ICacheModule.refillHit(static_cast<uint32_t>(FetchUnitModule.programCounter));
   };
   IMEMModule.fetchPC = [this]() {
     return static_cast<uint32_t>(BPUModule.outPC) & ~ICACHE_OFFSET_MASK;
@@ -187,9 +183,10 @@ void CPU::wire() {
     return static_cast<uint32_t>(BPUModule.outCkptId);
   };
   ICacheModule.popConsume = [this]() {
-    return ICacheModule.isReturnReady() &&
+    return !static_cast<bool>(flushArbiter.needSquash) && ICacheModule.isReturnReady() &&
            !static_cast<bool>(FetchUnitModule.haltFetched) &&
-           !FQModule.isFull();
+           FQModule.canAccept(!FQModule.isEmpty() &&
+               DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid)));
   };
   ICacheModule.lineReturn.valid = [this]() { return IMEMModule.retValid(); };
   ICacheModule.lineReturn.lineAddr = [this]() {
@@ -339,10 +336,10 @@ void CPU::wire() {
     int n = LQModule.getNBytes(d);
     return static_cast<uint32_t>(n == 1 ? 0 : (n == 2 ? 1 : 2));
   };
-  MemArbiterModule.loadCanDispatch = [this]() {
+  MemArbiterModule.loadCanSendToCache = [this]() {
     auto d = LQModule.LoadDetect();
-    return d != 0xFFFFFFFF && SQModule.canDispatchLoad(LQModule.getAddress(d),
-                                                       LQModule.getRobTag(d))
+    return d != 0xFFFFFFFF && SQModule.canSendLoadToCache(
+        LQModule.getAddress(d), LQModule.getNBytes(d), LQModule.getRobTag(d))
                ? 1u
                : 0u;
   };
@@ -356,11 +353,34 @@ void CPU::wire() {
   // ---- Wire DispatchArbiter's Input Wires (ports are buses: RS slot fields
   // + PRF ready bitmap; physical source tags remain Wire<7> for PRF indexing,
   // while the separate ROB identity fields use ROB_TAG_WIDTH) ----
-  DispatchArbiterModule.aluFull = [this]() {
-    return ALUModule.isFull() ? 1u : 0u;
+  // The ALU's single result slot is released in the same cycle it is presented
+  // (or cancelled by flush if it cannot broadcast), so the buffer can
+  // take a new op every cycle and the dispatch port is never capacity-blocked.
+  // aluCanAccept includes same-cycle result drain or cancellation.
+  DispatchArbiterModule.aluCanAccept = [this]() {
+    const bool drained =
+        !ALUModule.isEmpty() &&
+        (!static_cast<bool>(flushArbiter.needSquash) ||
+         ROB::isOlder(static_cast<uint32_t>(ALUModule.headRobTag()),
+                      static_cast<uint32_t>(flushArbiter.SquashTag)));
+    const bool cancelled = !ALUModule.isEmpty() &&
+        static_cast<bool>(flushArbiter.needSquash) &&
+        !ROB::isOlder(static_cast<uint32_t>(ALUModule.headRobTag()),
+                     static_cast<uint32_t>(flushArbiter.SquashTag));
+    return (!ALUModule.isFull() || drained || cancelled) ? 1u : 0u;
   };
-  DispatchArbiterModule.aguFull = [this]() {
-    return AGUModule.isFull() ? 1u : 0u;
+  // LSQ entries are reserved at issue; full LQ/SQ cannot backpressure an
+  // address update. The old result is delivered or cancelled this cycle.
+  DispatchArbiterModule.aguCanAccept = [this]() {
+    const bool drained = !AGUModule.isEmpty() &&
+        (!static_cast<bool>(flushArbiter.needSquash) ||
+         ROB::isOlder(AGUModule.headRobTag(),
+                      static_cast<uint32_t>(flushArbiter.SquashTag)));
+    const bool cancelled = !AGUModule.isEmpty() &&
+        static_cast<bool>(flushArbiter.needSquash) &&
+        !ROB::isOlder(AGUModule.headRobTag(),
+                      static_cast<uint32_t>(flushArbiter.SquashTag));
+    return (!AGUModule.isFull() || drained || cancelled) ? 1u : 0u;
   };
   DispatchArbiterModule.bruFull = [this]() {
     return BRUModule.isFull() ? 1u : 0u;
@@ -418,10 +438,10 @@ void CPU::wire() {
       return static_cast<uint32_t>(RSModule.getBrRobTag(i));
     };
   }
-  // MUL channel buses: multiplyRS slot fields + MUL isFull gate (mirrors the
-  // ALU channel over the dedicated multiply pool).
-  DispatchArbiterModule.mulFull = [this]() {
-    return MULModule.isFull() ? 1u : 0u;
+  // Admission propagates from the actual result grant/cancellation through
+  // CSA to the partial-product stage, rather than inspecting only occupancy.
+  DispatchArbiterModule.mulCanAccept = [this]() {
+    return MULModule.partialCanAccept() ? 1u : 0u;
   };
   for (int i = 0; i < MULTIPLYRS_CAP; ++i) {
     DispatchArbiterModule.mulBusy[i] = [this, i]() {
@@ -583,6 +603,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(DispatchArbiterModule.div.robTag);
   };
   DIVModule.cdbValid = [this]() { return DivCDBModule.valid ? 1u : 0u; };
+  DIVModule.outReady = []() { return 1u; }; // Dedicated DIV result channel.
   DIVModule.cdbRobTag = [this]() {
     return static_cast<uint32_t>(DivCDBModule.robTag);
   };
@@ -991,7 +1012,7 @@ void CPU::wire() {
     return RATModule.readRAT_PRF(DecodeUnitModule.headRd());
   };
   IssueArbiterModule.squashNeed = [this]() {
-    return static_cast<bool>(flushArbiter.needSquash);
+    return static_cast<bool>(flushArbiter.needSquash) || ROBModule.isTrapCommitted();
   };
   // Wire RS's Input Wires: issue selection + flattened push payloads sample
   // the IssueArbiter's Output groups; dispatch release reads the
@@ -1334,6 +1355,7 @@ void CPU::wire() {
   LQModule.rob.isROBEmpty = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.isEmpty);
   };
+  LQModule.rob.robWillCommit = [this]() { return ROBModule.willCommit() ? 1u : 0u; };
   LQModule.rob.robHeadTag = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.head);
   };
@@ -1387,6 +1409,9 @@ void CPU::wire() {
     LQModule.storeNotifies.snValue[i] = [this, i]() {
       return static_cast<uint32_t>(SQModule.data.value[i]);
     };
+    LQModule.storeNotifies.snNBytes[i] = [this, i]() {
+      return static_cast<uint32_t>(SQModule.data.nBytes[i]);
+    };
     LQModule.storeNotifies.snFoundKnownSame[i] = [this, i]() {
       return static_cast<uint32_t>(SQModule.data.foundKnownSame[i]);
     };
@@ -1411,6 +1436,9 @@ void CPU::wire() {
   };
   LQModule.storeNotifies.sanValue = [this]() {
     return static_cast<uint32_t>(SQModule.addr.value);
+  };
+  LQModule.storeNotifies.sanNBytes = [this]() {
+    return static_cast<uint32_t>(SQModule.addr.nBytes);
   };
   LQModule.storeNotifies.sanFoundKnownSame = [this]() {
     return static_cast<uint32_t>(SQModule.addr.foundKnownSame);
@@ -1534,22 +1562,11 @@ void CPU::wire() {
     return BRUModule.isEmpty() ? 0u
                                : static_cast<uint32_t>(BRUModule.headRobTag());
   };
-  for (int i = 0; i < SQ_CAP; ++i) {
-    ROBModule.sq.sqValid[i] = [this, i]() {
-      return SQModule.isActive(i) ? 1u : 0u;
-    };
-    ROBModule.sq.sqReadyToCommit[i] = [this, i]() {
-      return SQModule.isReadyToCommit(i) ? 1u : 0u;
-    };
-    ROBModule.sq.sqCommitted[i] = [this, i]() {
-      return SQModule.isCommitted(i) ? 1u : 0u;
-    };
-    ROBModule.sq.sqRobTag[i] = [this, i]() {
-      return static_cast<uint32_t>(SQModule.getRobTag(i));
-    };
-  }
-  ROBModule.sq.sqHead = [this]() {
-    return static_cast<uint32_t>(SQModule.getHead());
+  ROBModule.sq.readyMask = [this]() {
+    return static_cast<uint32_t>(SQModule.completion.readyMask);
+  };
+  ROBModule.sq.epochMask = [this]() {
+    return static_cast<uint32_t>(SQModule.completion.epochMask);
   };
   ROBModule.issue.issueValid = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.valid);
@@ -1566,6 +1583,7 @@ void CPU::wire() {
   ROBModule.issue.entry.halt = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.halt);
   };
+  ROBModule.issue.entry.exception = [this]() { return uint32_t(IssueArbiterModule.robEntry.exception); };
   ROBModule.issue.entry.isCall = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.isCall);
   };
@@ -1677,12 +1695,16 @@ void CPU::wire() {
     return static_cast<uint32_t>(BRUModule.headRobTag());
   };
   BPUModule.bru.bruHeadPCResult = [this]() { return BRUModule.headPCResult(); };
+  BPUModule.bru.bruHeadActualTaken = [this]() { return BRUModule.headActualTaken(); };
   BPUModule.bru.bruHeadPCFrom = [this]() { return BRUModule.headPCFrom(); };
   BPUModule.rob.isROBEmpty = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.isEmpty);
   };
   BPUModule.rob.robHeadTag = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.head);
+  };
+  BPUModule.rob.robNextTag = [this]() {
+    return static_cast<uint32_t>(ROBModule.getNextTag());
   };
   BPUModule.rob.robWillCommit = [this]() {
     return ROBModule.willCommit() ? 1u : 0u;
@@ -1717,12 +1739,18 @@ void CPU::wire() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
   BPUModule.fetchCtx.haltFetched = [this]() {
-    return static_cast<bool>(FetchUnitModule.haltFetched);
+    return static_cast<bool>(FetchUnitModule.haltFetched) ||
+           static_cast<bool>(FetchUnitModule.haltSignal);
   };
-  BPUModule.fetchCtx.fqFull = [this]() { return FQModule.isFull(); };
-  BPUModule.fetchCtx.imemReqFull = [this]() {
-    return ICacheModule.isRequestFull() || IMEMModule.isRequestFull() ||
-           static_cast<bool>(ICacheModule.readBlocked);
+  BPUModule.fetchCtx.fqCanAccept = [this]() {
+    return FQModule.canAccept(!FQModule.isEmpty() &&
+        DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid)));
+  };
+  BPUModule.fetchCtx.memCanAccept = [this]() {
+    return static_cast<bool>(initialized) && (!ICacheModule.isRequestFull() || static_cast<bool>(ICacheModule.popConsume)) &&
+           (!IMEMModule.isRequestFull() || ICacheModule.refillHit(
+               static_cast<uint32_t>(FetchUnitModule.programCounter))) &&
+           !static_cast<bool>(ICacheModule.readBlocked);
   };
   // fetchInfo: scan the FQ's registered last* (the push record of the
   // PREVIOUS cycle). Mirrors the main tree, which reads pushCache in comb()
@@ -1811,6 +1839,12 @@ void CPU::wire() {
                  ? 1u
                  : 0u;
     };
+    SQModule.data.nBytes[i] = [this, i]() {
+      return SQModule
+          .planDataForward(memSlot(RSModule.getSvMemIndex(i)),
+                           PRFModule.getOperandValue(RSModule.getSvData(i)))
+          .nBytes;
+    };
     SQModule.data.knownTag[i] = [this, i]() {
       return SQModule
           .planDataForward(memSlot(RSModule.getSvMemIndex(i)),
@@ -1840,7 +1874,7 @@ void CPU::wire() {
                       static_cast<uint32_t>(flushArbiter.SquashTag)))
       return 0u;
     return SQModule.planAddressForward(memSlot(AGUModule.headMemIndex()),
-                                       AGUModule.headValue())
+                                       AGUModule.headValue(), AGUModule.headRobTag())
                    .valid
                ? 1u
                : 0u;
@@ -1848,38 +1882,44 @@ void CPU::wire() {
   SQModule.addr.storeTag = [this]() {
     return SQModule
         .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            AGUModule.headValue())
+                            AGUModule.headValue(), AGUModule.headRobTag())
         .storeTag;
   };
   SQModule.addr.addr = [this]() {
     return SQModule
         .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            AGUModule.headValue())
+                            AGUModule.headValue(), AGUModule.headRobTag())
         .addr;
   };
   SQModule.addr.value = [this]() {
     return static_cast<uint32_t>(
         SQModule
             .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                                AGUModule.headValue())
+                                AGUModule.headValue(), AGUModule.headRobTag())
             .value);
   };
   SQModule.addr.foundKnownSame = [this]() {
     return SQModule.planAddressForward(memSlot(AGUModule.headMemIndex()),
-                                       AGUModule.headValue())
+                                       AGUModule.headValue(), AGUModule.headRobTag())
                    .foundKnownSame
                ? 1u
                : 0u;
   };
+  SQModule.addr.nBytes = [this]() {
+    return SQModule
+        .planAddressForward(memSlot(AGUModule.headMemIndex()),
+                            AGUModule.headValue(), AGUModule.headRobTag())
+        .nBytes;
+  };
   SQModule.addr.knownTag = [this]() {
     return SQModule
         .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            AGUModule.headValue())
+                            AGUModule.headValue(), AGUModule.headRobTag())
         .knownSameAddressOldestTag;
   };
   SQModule.addr.foundUnknown = [this]() {
     return SQModule.planAddressForward(memSlot(AGUModule.headMemIndex()),
-                                       AGUModule.headValue())
+                                       AGUModule.headValue(), AGUModule.headRobTag())
                    .foundUnknown
                ? 1u
                : 0u;
@@ -1887,25 +1927,55 @@ void CPU::wire() {
   SQModule.addr.unknownTag = [this]() {
     return SQModule
         .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            AGUModule.headValue())
+                            AGUModule.headValue(), AGUModule.headRobTag())
         .unknownOldestTag;
   };
   SQModule.reply.valid = [this]() {
     if (AGUModule.isEmpty() || isStoreMem(AGUModule.headMemIndex()))
       return 0u;
-    auto r = SQModule.replyToLoadRequest(AGUModule.headValue(),
-                                         AGUModule.headRobTag());
+    auto r = SQModule.replyToLoadRequest(
+        AGUModule.headValue(), LQModule.getNBytes(memSlot(AGUModule.headMemIndex())),
+        AGUModule.headRobTag());
     return r.valid ? 1u : 0u;
   };
   SQModule.reply.value = [this]() {
-    auto r = SQModule.replyToLoadRequest(AGUModule.headValue(),
-                                         AGUModule.headRobTag());
+    auto r = SQModule.replyToLoadRequest(
+        AGUModule.headValue(), LQModule.getNBytes(memSlot(AGUModule.headMemIndex())),
+        AGUModule.headRobTag());
     return r.valid ? static_cast<uint32_t>(r.value) : 0u;
   };
 }
 
+void CPU::clock(bool shuffle) {
+  // Read only committed registers/Wires before any module work or sync.
+  const auto phase = static_cast<FinishPhase>(static_cast<uint32_t>(finishPhase));
+  auto nextPhase = phase;
+  if (static_cast<bool>(initialized)) {
+    if (phase == FinishPhase::RUN && ROBModule.isHaltCommitted() && SQModule.isEmpty())
+      nextPhase = FinishPhase::WAIT_IDLE;
+    else if (phase == FinishPhase::WAIT_IDLE && DCacheModule.isIdle() &&
+             !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy() &&
+             !DCacheModule.hasLoadResponse() && !DMEMModule.isReplyReady())
+      nextPhase = FinishPhase::WRITEBACK;
+    else if (phase == FinishPhase::WRITEBACK && DCacheModule.isFlushDone())
+      nextPhase = FinishPhase::DONE;
+  }
+  initialized <= 1;
+  finishPhase <= static_cast<uint32_t>(nextPhase);
+  if (shuffle)
+    dcpu.run_once_shuffle();
+  else
+    dcpu.run_once();
+  // The CPU's own registers are not registered modules. Commit them exactly
+  // once at the same edge, after every module has completed work().
+  dark::sync_member(initialized);
+  dark::sync_member(finishPhase);
+}
+
 void CPU::run(bool shuffle) {
   bool finish = false;
+  uint64_t initCycles = 0;
+  while (!static_cast<bool>(initialized)) { clock();++initCycles; }
   // host-only: core IPC freezes on the HALT-marker commit. The marker itself
   // is not an executed architectural instruction, while its commit cycle is
   // part of the measured interval.
@@ -1913,129 +1983,24 @@ void CPU::run(bool shuffle) {
   uint64_t ipcRetired = 0;
   uint64_t ipcCycles = 0;
   bool ipcFrozen = false;
-  uint64_t mixAlu = 0, mixLoad = 0, mixStore = 0, mixBranch = 0;
-  uint64_t mixJal = 0, mixJalr = 0, mixMul = 0, mixDivRem = 0, mixOther = 0;
   while (!finish) {
-    // Snapshot semantics (mirrors main tree): finish samples the state as of
-    // the START of this cycle, not the post-sync state -- the sampling MUST
-    // precede run_once(), which advances and syncs the whole module set.
+    // Retirement samples OLD state. Final completion uses the registered
+    // CPU DONE state after the edge; no extra idle termination tick.
     bool s_halt = ROBModule.isHaltCommitted();
-    bool s_fqEmpty = FQModule.isEmpty();
-    bool s_decEmpty = DecodeUnitModule.isEmpty();
-    bool s_robEmpty = ROBModule.isEmpty();
-    bool s_sqEmpty = SQModule.isEmpty();
-    bool s_dmemFree = !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy();
-    bool s_dcacheFree = !DCacheModule.isBusy();
     const uint32_t headBefore = static_cast<uint32_t>(ROBModule.headView.head);
     const bool haltBefore = s_halt;
-    const uint32_t headPCBefore =
-        ROBModule.isEmpty()
-            ? 0
-            : static_cast<uint32_t>(
-                  ROBModule.entry.pc[headBefore & (ROB_CAP - 1)]);
-    const uint32_t headInsnBefore = instructionAt(IMEMModule, headPCBefore);
-    if (debug::enabled(debug::TOPIC_CFTRACE)) {
-      if (static_cast<bool>(BPUModule.outValid)) {
-        const uint32_t pc = static_cast<uint32_t>(BPUModule.outPC);
-        const auto prediction = BPUModule.predict(pc);
-        const auto snapshot = BPUModule.traceState();
-        debug::print(
-            "CF_FETCH t=%llu pc=%08x instr=%08x pred=%08x ptaken=%u btb=%u "
-            "ghr=%02x ckpt=%u\n",
-            dcpu.cycles, pc, instructionAt(IMEMModule, pc),
-            static_cast<uint32_t>(BPUModule.outPredictedPC), prediction.taken,
-            prediction.btbHit, snapshot.GHR_snapshot,
-            static_cast<uint32_t>(BPUModule.outCkptId));
-      }
-      const auto branchTag = BRUModule.headRobTag();
-      if (!BRUModule.isEmpty() && ROBModule.matchesTag(branchTag) &&
-          (!static_cast<bool>(flushArbiter.needSquash) ||
-           ROB::isOlder(branchTag,
-                        static_cast<uint32_t>(flushArbiter.SquashTag)))) {
-        const auto index = branchTag & (ROB_CAP - 1);
-        const auto pc = BRUModule.headPCFrom();
-        const auto actual = BRUModule.headPCResult();
-        const auto ckpt = static_cast<uint32_t>(ROBModule.entry.ckptId[index]);
-        const auto snapshot = BPUModule.traceCheckpoint(ckpt);
-        const auto predicted =
-            static_cast<uint32_t>(ROBModule.entry.predictedPC[index]);
-        debug::print("CF_EXEC t=%llu kind=BR pc=%08x instr=%08x tag=%u ckpt=%u "
-                     "pred=%08x "
-                     "actual=%08x taken=%u miss=%u recover=%u fghr=%02x\n",
-                     dcpu.cycles, pc, instructionAt(IMEMModule, pc), branchTag,
-                     ckpt, predicted, actual, actual != pc + 4u,
-                     actual != predicted, actual != predicted,
-                     snapshot.GHR_snapshot);
-      }
-      const auto cdbTag = static_cast<uint32_t>(AluCDBArbiterModule.robTag);
-      if (AluCDBArbiterModule.valid && AluCDBArbiterModule.isControl &&
-          ROBModule.matchesTag(cdbTag) &&
-          (!static_cast<bool>(flushArbiter.needSquash) ||
-           ROB::isOlder(cdbTag,
-                        static_cast<uint32_t>(flushArbiter.SquashTag)))) {
-        const auto index = cdbTag & (ROB_CAP - 1);
-        const auto pc = static_cast<uint32_t>(ROBModule.entry.pc[index]);
-        const auto ckpt = static_cast<uint32_t>(ROBModule.entry.ckptId[index]);
-        const auto snapshot = BPUModule.traceCheckpoint(ckpt);
-        const auto predicted =
-            static_cast<uint32_t>(ROBModule.entry.predictedPC[index]);
-        const auto actual = static_cast<uint32_t>(AluCDBArbiterModule.value);
-        const uint32_t raw = instructionAt(IMEMModule, pc);
-        debug::print("CF_EXEC t=%llu kind=%s pc=%08x instr=%08x tag=%u ckpt=%u "
-                     "pred=%08x "
-                     "actual=%08x taken=1 miss=%u recover=%u fghr=%02x\n",
-                     dcpu.cycles, ((raw & 0x7F) == 0x67) ? "JALR" : "JAL", pc,
-                     raw, cdbTag, ckpt, predicted, actual, actual != predicted,
-                     actual != predicted, snapshot.GHR_snapshot);
-      }
-    }
-    if (shuffle)
-      dcpu.run_once_shuffle();
-    else
-      dcpu.run_once();
+    clock(shuffle);
     const uint32_t headAfter = static_cast<uint32_t>(ROBModule.headView.head);
     const bool haltAfter = ROBModule.isHaltCommitted();
+    if (ROBModule.isTrapCommitted()) throw std::runtime_error("illegal instruction committed");
     const uint32_t committed = headAfter != headBefore;
     const bool haltCommitted = !haltBefore && haltAfter;
     assert(!haltCommitted || committed != 0);
     if (!ipcFrozen) {
       retired += committed - static_cast<uint32_t>(haltCommitted);
-      if (committed && !haltCommitted) {
-        const uint32_t opcode = headInsnBefore & 0x7F;
-        const uint32_t funct3 = (headInsnBefore >> 12) & 0x7;
-        const uint32_t funct7 = (headInsnBefore >> 25) & 0x7F;
-        if (opcode == 0x03)
-          ++mixLoad;
-        else if (opcode == 0x23)
-          ++mixStore;
-        else if (opcode == 0x63)
-          ++mixBranch;
-        else if (opcode == 0x6F)
-          ++mixJal;
-        else if (opcode == 0x67)
-          ++mixJalr;
-        else if (opcode == 0x33 && funct7 == 1 && funct3 < 4)
-          ++mixMul;
-        else if (opcode == 0x33 && funct7 == 1)
-          ++mixDivRem;
-        else if (opcode == 0x33 || opcode == 0x13 || opcode == 0x17 ||
-                 opcode == 0x37)
-          ++mixAlu;
-        else
-          ++mixOther;
-        if (debug::enabled(debug::TOPIC_CFTRACE) &&
-            (opcode == 0x63 || opcode == 0x6F || opcode == 0x67)) {
-          const auto index = headBefore & (ROB_CAP - 1);
-          debug::print(
-              "CF_COMMIT t=%llu pc=%08x instr=%08x tag=%u pred=%08x ckpt=%u\n",
-              dcpu.cycles, headPCBefore, headInsnBefore, headBefore,
-              static_cast<uint32_t>(ROBModule.entry.predictedPC[index]),
-              static_cast<uint32_t>(ROBModule.entry.ckptId[index]));
-        }
-      }
       if (haltCommitted) {
         ipcRetired = retired;
-        ipcCycles = dcpu.cycles;
+        ipcCycles = dcpu.cycles - initCycles;
         ipcFrozen = true;
       }
     }
@@ -2044,8 +2009,7 @@ void CPU::run(bool shuffle) {
     // in-flight cache refill/writeback finished (DCache idle + DMEM both
     // ports idle). Otherwise a store committed right before halt could be
     // truncated while its fill spans the halt window.
-    finish = s_halt && s_fqEmpty && s_decEmpty && s_robEmpty && s_sqEmpty &&
-             s_dmemFree && s_dcacheFree;
+    finish = static_cast<uint32_t>(finishPhase) == static_cast<uint32_t>(FinishPhase::DONE);
   }
   // host-only: the three debug::print blocks below are end-of-run reports for
   // the human (double percentage math + stdio formatting). They are not part
@@ -2061,27 +2025,20 @@ void CPU::run(bool shuffle) {
     uint64_t dh = DCacheModule.statHits;
     uint64_t dm = DCacheModule.statMisses;
     uint64_t dt = dh + dm;
-    debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%% "
-                 "writebacks=%llu\n",
+    debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%%\n",
                  dh, dm, dt,
                  dt ? 100.0 * static_cast<double>(dh) / static_cast<double>(dt)
-                    : 0.0,
-                 DCacheModule.statWritebacks);
+                    : 0.0);
   }
   if (debug::enabled(debug::TOPIC_CLOCK)) {
-    debug::print("clock: %llu\n", dcpu.cycles);
+    debug::print("clock: %llu\n", dcpu.cycles - initCycles);
+    debug::print("timing: init=%llu core=%llu drain=%llu total=%llu\n",
+                 initCycles, ipcCycles, dcpu.cycles - initCycles - ipcCycles, dcpu.cycles - initCycles);
     debug::print("ipc: %.6f retired=%llu cycles=%llu\n",
                  ipcCycles ? static_cast<double>(ipcRetired) /
                                  static_cast<double>(ipcCycles)
                            : 0.0,
                  ipcRetired, ipcCycles);
-  }
-  if (debug::enabled(debug::TOPIC_PROFILE)) {
-    debug::print("PROFILE retired=%llu alu=%llu load=%llu store=%llu "
-                 "branch=%llu jal=%llu "
-                 "jalr=%llu mul=%llu divrem=%llu other=%llu\n",
-                 ipcRetired, mixAlu, mixLoad, mixStore, mixBranch, mixJal,
-                 mixJalr, mixMul, mixDivRem, mixOther);
   }
   if (debug::enabled(debug::TOPIC_BRANCH))
     debug::print("branch: %llu/%llu correct (%.2f%%)\n",

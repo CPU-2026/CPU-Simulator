@@ -69,7 +69,7 @@ struct FlushArbiterOutput {
   Wire<CKPT_ID_WIDTH> CkptId;
 };
 struct FlushArbiter : dark::Module<FlushArbiterInput, FlushArbiterOutput,
-                                   FlushArbiterInner>{
+                                    FlushArbiterInner>{
 public:
   FlushArbiter() { wire_output(); }
   void work() override;

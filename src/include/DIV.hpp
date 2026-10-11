@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "ROB.hpp"
 #include <cstdint>
 constexpr int ulpExpWithShiftD = 28;
 constexpr int ulpExpNoShiftD = 27;
@@ -15,6 +16,7 @@ struct DIVInput {
   Wire<ROB_TAG_WIDTH> dispatchRobTag;
   Wire<1> cdbValid;
   Wire<ROB_TAG_WIDTH> cdbRobTag;
+  Wire<1> outReady;
 };
 struct DIVOutput {
   Register<1> resultValid;
@@ -62,9 +64,15 @@ struct DIV : dark::Module<DIVInput, DIVOutput, DIVInner> {
   void work() override;
   bool isReady() const { return static_cast<bool>(resultValid); }
   bool canAccept() const {
+    const bool consumed = static_cast<bool>(resultValid) &&
+        static_cast<bool>(cdbValid) && cdbRobTag == robTag;
+    const bool cancelled = static_cast<bool>(resultValid) &&
+        static_cast<bool>(needSquash) && ROB::isOlder(
+            static_cast<uint32_t>(SquashTag), static_cast<uint32_t>(robTag));
     return !static_cast<bool>(prepareValid) && !static_cast<bool>(loopValid) &&
-           !static_cast<bool>(fullAdderValid) &&
-           !static_cast<bool>(resultValid);
+            !static_cast<bool>(fullAdderValid) &&
+            (!static_cast<bool>(resultValid) || consumed ||
+             (cancelled && static_cast<bool>(outReady)));
   }
   RobTag getResultRobtag() const { return static_cast<uint32_t>(robTag); }
   uint32_t getValue() const {
