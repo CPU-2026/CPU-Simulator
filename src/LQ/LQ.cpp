@@ -63,7 +63,7 @@ auto LQ::getIsUnsigned(int index) const -> bool {
 }
 
 auto LQ::getNBytes(int index) const -> int {
-  uint32_t enc = static_cast<uint32_t>(LQqueue[index].n_bytes);
+  uint32_t enc = static_cast<uint32_t>(LQqueue[index].nBytes);
   return 1 << enc; // 0->1, 1->2, 2->4
 }
 
@@ -113,6 +113,16 @@ void LQ::work() {
   uint32_t tailData = 0;
 
   auto writeValueIntent = [&](int index, uint32_t value) {
+    const int nBytes = getNBytes(index);
+    if (nBytes == 1)
+      value &= 0xffu;
+    else if (nBytes == 2)
+      value &= 0xffffu;
+    if (!getIsUnsigned(index) && nBytes != 4) {
+      const unsigned width = 8u << (nBytes - 1);
+      if (value & (1u << (width - 1)))
+        value |= ~((1u << width) - 1u);
+    }
     intent[index].valWrite = true;
     intent[index].valData = value;
     intent[index].stateWrite = true;
@@ -120,8 +130,8 @@ void LQ::work() {
     intent[index].bcastWrite = true;
     intent[index].bcastData = false;
   };
-  // Effective state AFTER this cycle's earlier writes (main-tree tick() reads
-  // the live entry mid-cycle; a Register only exposes the cycle-start value).
+  // Earlier local intents exclude allocation/forwarding conflicts. Register
+  // reads remain cycle-start values; this is not a cross-module bypass.
   auto stateAfter = [&](int index) -> uint32_t {
     if (intent[index].stateWrite)
       return intent[index].stateData;
@@ -142,7 +152,7 @@ void LQ::work() {
   if (static_cast<bool>(issue.issueValid) && static_cast<bool>(issue.issueLoad)) {
     auto t = static_cast<uint32_t>(tail) & LQ_MASK;
     LQqueue[t].robTag <= static_cast<uint32_t>(issue.issueTag);
-    LQqueue[t].n_bytes <= static_cast<uint32_t>(issue.issueBytes);
+    LQqueue[t].nBytes <= static_cast<uint32_t>(issue.issueBytes);
     LQqueue[t].isUnsigned <= static_cast<uint32_t>(issue.issueIsUnsigned);
     LQqueue[t].isAddressReady <= false;
     setStateIntent(static_cast<int>(t), static_cast<uint32_t>(ValueState::NOTREADY));
@@ -161,19 +171,21 @@ void LQ::work() {
     n.storeTag = static_cast<uint32_t>(storeNotifies.snStoreTag[i]);
     n.addr = static_cast<uint32_t>(storeNotifies.snAddr[i]);
     n.value = static_cast<uint32_t>(storeNotifies.snValue[i]);
+    n.nBytes = static_cast<uint32_t>(storeNotifies.snNBytes[i]);
     n.foundKnownSame = static_cast<bool>(storeNotifies.snFoundKnownSame[i]);
     n.knownSameAddressOldestTag = static_cast<uint32_t>(storeNotifies.snKnownTag[i]);
     n.foundUnknown = static_cast<bool>(storeNotifies.snFoundUnknown[i]);
     n.unknownOldestTag = static_cast<uint32_t>(storeNotifies.snUnknownTag[i]);
     // applyStoreForward (intent version): conditions read cycle-start values,
-    // exactly as the main tree reads the live entry before any AGU writes.
+    // exactly as the main tree reads its snapshot before any AGU writes.
     for (int k = 0; k < LQ_CAP; ++k) {
       uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & LQ_MASK);
       if (!isActive(cur))
         break;
       if (LQqueue[cur].isAddressReady == 0)
         continue;
-      if (static_cast<uint32_t>(LQqueue[cur].address) != n.addr)
+      if (static_cast<uint32_t>(LQqueue[cur].address) != n.addr ||
+          getNBytes(cur) != n.nBytes)
         continue;
       if (!ROB::isOlder(n.storeTag, static_cast<uint32_t>(LQqueue[cur].robTag)))
         continue;
@@ -193,6 +205,7 @@ void LQ::work() {
     n.storeTag = static_cast<uint32_t>(storeNotifies.sanStoreTag);
     n.addr = static_cast<uint32_t>(storeNotifies.sanAddr);
     n.value = static_cast<uint32_t>(storeNotifies.sanValue);
+    n.nBytes = static_cast<uint32_t>(storeNotifies.sanNBytes);
     n.foundKnownSame = static_cast<bool>(storeNotifies.sanFoundKnownSame);
     n.knownSameAddressOldestTag = static_cast<uint32_t>(storeNotifies.sanKnownTag);
     n.foundUnknown = static_cast<bool>(storeNotifies.sanFoundUnknown);
@@ -203,7 +216,8 @@ void LQ::work() {
         break;
       if (LQqueue[cur].isAddressReady == 0)
         continue;
-      if (static_cast<uint32_t>(LQqueue[cur].address) != n.addr)
+      if (static_cast<uint32_t>(LQqueue[cur].address) != n.addr ||
+          getNBytes(cur) != n.nBytes)
         continue;
       if (!ROB::isOlder(n.storeTag, static_cast<uint32_t>(LQqueue[cur].robTag)))
         continue;
@@ -222,9 +236,10 @@ void LQ::work() {
   if (!static_cast<bool>(agu.isAGUEmpty) &&
       !isStoreMem(static_cast<uint32_t>(agu.aguHeadMemIndex))) {
     RobTag aguRobTag = static_cast<uint32_t>(agu.aguHeadRobTag);
-    if (!static_cast<bool>(squash.needSquash) ||
-        ROB::isOlder(aguRobTag, static_cast<uint32_t>(squash.SquashTag))) {
-      auto index = memSlot(static_cast<uint32_t>(agu.aguHeadMemIndex));
+    const auto index = memSlot(static_cast<uint32_t>(agu.aguHeadMemIndex));
+    if (matchesAddress(index, aguRobTag) &&
+        (!static_cast<bool>(squash.needSquash) ||
+         ROB::isOlder(aguRobTag, static_cast<uint32_t>(squash.SquashTag)))) {
       LQqueue[index].address <= static_cast<uint32_t>(agu.aguHeadValue);
       LQqueue[index].isAddressReady <= true;
       if (static_cast<bool>(agu.sqReplyValid)) {
@@ -240,9 +255,8 @@ void LQ::work() {
   }
 
   // 5. retire pop
-  bool retireLoad = !static_cast<bool>(squash.needSquash) && !isEmpty() &&
-                    (static_cast<bool>(rob.isROBEmpty) ||
-                     ROB::isOlder(headRobTag(), static_cast<uint32_t>(rob.robHeadTag)));
+  const bool retireLoad = !isEmpty() && static_cast<bool>(rob.robWillCommit) &&
+      headRobTag() == static_cast<uint32_t>(rob.robHeadTag);
   if (retireLoad) {
     head <= ((static_cast<uint32_t>(head) + 1) & LQ_SEQ_MASK);
   }

@@ -66,24 +66,27 @@ void AGU::work() {
   const bool dValid = static_cast<bool>(dispatchValid);
   const RobTag dTag = static_cast<uint32_t>(dispatchRobTag);
 
-  // the reference removes the oldest entry every cycle, judged over the
-  // cycle-start (committed) state -- before this cycle's push landed
+  // The reference removes/flushes OLD results before writing the new result.
   const bool oldAny = !isEmpty();
   const RobTag headTag = oldAny ? headRobTag() : 0;
 
-  // push target from the OLD validity bitmap only: the reference picked the
-  // free slot before remove/flush ran
+  // Reuse a slot released this cycle, deriving availability only from OLD
+  // state and the same removal/flush intents used by the final validity write.
   bool found = false;
   uint32_t target = 0;
   for (uint32_t i = 0; i < AGU_CAP; ++i) {
-    if (!found && !static_cast<bool>(slotValid[i])) {
+    const bool oldValid = static_cast<bool>(slotValid[i]);
+    const RobTag oldTag = static_cast<uint32_t>(slots[i].robTag);
+    const bool removed = oldAny && oldValid && oldTag == headTag;
+    const bool flushed = squash && oldValid && !ROB::isOlder(oldTag, squashTag);
+    if (!found && (!oldValid || removed || flushed)) {
       target = i;
       found = true;
     }
   }
   const bool pushHere = dValid && found;
-  // a freshly pushed entry is flushed by judging its NEW tag (the reference
-  // flushed after push had overwritten the payload)
+  // New validity depends on the NEW tag. An old younger result's cancellation
+  // must not clear a strictly older result refilling its slot in the same cycle.
   const bool pushFlushed = squash && !ROB::isOlder(dTag, squashTag);
 
   // The redundant int32_t adds above the outer cast used to be evaluated
@@ -93,9 +96,8 @@ void AGU::work() {
       static_cast<uint32_t>(src1Value) + static_cast<uint32_t>(src2Value);
   const uint32_t dMem = static_cast<uint32_t>(memIndex);
 
-  // single-assignment convergence: push/removeHead/flush all land on one
-  // final value per slot; priority flush > removeHead > keep, push only into
-  // dead slots
+  // Single assignment per Register: replacement wins old release; keep for
+  // the replacement is independently qualified by its own flush age.
   for (uint32_t i = 0; i < AGU_CAP; ++i) {
     const bool old_v = static_cast<bool>(slotValid[i]);
     const RobTag tag_i = static_cast<uint32_t>(slots[i].robTag);

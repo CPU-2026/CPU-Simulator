@@ -4,7 +4,7 @@
 #include <array>
 #include <cstdint>
 
-static_assert(AGU_CAP == 4); // slot scans are fixed-length over AGU_CAP
+static_assert(AGU_CAP == 1); // single address-result stage, drain-and-refill
 // memIndex = MEM_STORE_BIT | slot(6b) must fit Wire<7>
 static_assert(MEM_STORE_BIT == 0x40 && LQ_CAP <= 64 && SQ_CAP <= 64);
 

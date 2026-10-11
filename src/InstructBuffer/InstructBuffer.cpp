@@ -10,9 +10,8 @@ void InstructBuffer::work() {
     tail <= 0;
     lastValid <= 0;
   } else {
-    // stage 2 push: latch an ICache line return unless halted or full
-    if (static_cast<bool>(icacheReturnReady) &&
-        !static_cast<bool>(haltFetched) && !isFull()) {
+    // stage 2 push: exactly the ICache head-consumption handshake.
+    if (static_cast<bool>(icacheReturnAccepted)) {
       auto t = static_cast<uint32_t>(tail) & (FQ_CAP - 1);
       entries[t].raw <= static_cast<uint32_t>(icacheReturnRaw);
       entries[t].pc <= static_cast<uint32_t>(icacheReturnPC);
@@ -27,7 +26,7 @@ void InstructBuffer::work() {
       lastValid <= 0;
     }
     // stage 1 pop: hand the head entry to the decoder when it can accept it
-    if (!isEmpty() && !static_cast<bool>(decodeFull)) {
+    if (!isEmpty() && static_cast<bool>(decodeCanAccept)) {
       head <= ((static_cast<uint32_t>(head) + 1) & FQ_SEQ_MASK);
     }
   }

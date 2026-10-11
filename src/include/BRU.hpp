@@ -25,6 +25,7 @@ struct BRUEntry {
   Register<32> pcFrom;
   Register<32> pcResult;
   Register<ROB_TAG_WIDTH> robTag;
+  Register<1> actualTaken;
 };
 
 struct BRUOutput {
@@ -42,5 +43,6 @@ public:
   uint32_t headPCFrom() const;
   uint32_t headPCResult() const;
   RobTag headRobTag() const;
+  bool headActualTaken() const;
   void work() override;
 };

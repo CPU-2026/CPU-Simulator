@@ -80,6 +80,17 @@ RobTag BRU::headRobTag() const {
              static_cast<RobTag>(static_cast<uint32_t>(slots[best].robTag)) : 0;
 }
 
+bool BRU::headActualTaken() const {
+  int best = -1;
+  for (int i = 0; i < BRU_CAP; i++) {
+    if (static_cast<bool>(slotValid[i]) &&
+        (best == -1 || ROB::isOlder(static_cast<uint32_t>(slots[i].robTag),
+                                   static_cast<uint32_t>(slots[best].robTag))))
+      best = i;
+  }
+  return best >= 0 ? static_cast<bool>(slots[best].actualTaken) : false;
+}
+
 void BRU::work() {
   const bool squash = static_cast<bool>(needSquash);
   const RobTag squashTag = static_cast<uint32_t>(SquashTag);
@@ -114,7 +125,8 @@ void BRU::work() {
   const auto dOp = static_cast<Operation>(static_cast<uint32_t>(op));
 
   const uint32_t from = pcV;
-  const uint32_t to = branchTaken(dOp, s1, s2) ? pcV + immV : pcV + 4u;
+  const bool taken = branchTaken(dOp, s1, s2);
+  const uint32_t to = taken ? pcV + immV : pcV + 4u;
 
   // single-assignment convergence: push/removeHead/flush all land on one
   // final value per slot; priority flush > removeHead > keep, push only into
@@ -129,6 +141,7 @@ void BRU::work() {
       slots[i].pcFrom <= from;
       slots[i].pcResult <= to;
       slots[i].robTag <= dTag;
+      slots[i].actualTaken <= taken;
     }
     slotValid[i] <= (here ? !pushFlushed : (old_v && !removed && !flushed));
   }

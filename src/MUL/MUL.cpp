@@ -39,6 +39,29 @@ inline uint64_t signExtend32(uint32_t v) {
 // tail sections, so squash and dispatch on the same cycle never
 // double-write.
 // ---------------------------------------------------------------------------
+bool MUL::resultCanAccept() const {
+  const bool live = static_cast<bool>(slotValid[0]) &&
+      (!static_cast<bool>(needSquash) ||
+       ROB::isOlder(static_cast<uint32_t>(slots[0].robTag), static_cast<uint32_t>(SquashTag)));
+  const bool consumed = static_cast<bool>(cdbValid) && static_cast<bool>(slotValid[0]) &&
+      static_cast<uint32_t>(cdbRobTag) == static_cast<uint32_t>(slots[0].robTag);
+  return !live || consumed;
+}
+
+bool MUL::CSACanAccept() const {
+  const bool live = static_cast<bool>(scRes.valid) &&
+      (!static_cast<bool>(needSquash) ||
+       ROB::isOlder(static_cast<uint32_t>(scRes.robTag), static_cast<uint32_t>(SquashTag)));
+  return !live || resultCanAccept();
+}
+
+bool MUL::partialCanAccept() const {
+  const bool live = static_cast<bool>(partialRes.valid) &&
+      (!static_cast<bool>(needSquash) ||
+       ROB::isOlder(static_cast<uint32_t>(partialRes.robTag), static_cast<uint32_t>(SquashTag)));
+  return !live || CSACanAccept();
+}
+
 void MUL::work() {
   // ---- 0. sampling: input wires + committed (_M_old) stage state.
   // Register reads are cycle-stable, so helper-free ordering below is
@@ -48,8 +71,6 @@ void MUL::work() {
   const bool dValid = static_cast<bool>(dispatchValid);
   const RobTag dTag = static_cast<uint32_t>(dispatchRobTag);
   const Operation dOp = static_cast<Operation>(static_cast<uint32_t>(op));
-  const bool grant = static_cast<bool>(cdbValid);
-  const RobTag cdbTag = static_cast<uint32_t>(cdbRobTag);
 
   const bool boothOld = static_cast<bool>(partialRes.valid);
   const bool scOld = static_cast<bool>(scRes.valid);
@@ -60,44 +81,31 @@ void MUL::work() {
   const Operation scOp =
       static_cast<Operation>(static_cast<uint32_t>(scRes.op));
   const Operation partialOp =
-      static_cast<Operation>(static_cast<uint32_t>(partialRes.op));
+       static_cast<Operation>(static_cast<uint32_t>(partialRes.op));
+  const bool partialLive = boothOld && (!squash || ROB::isOlder(partialTag, squashTag));
+  const bool CSALive = scOld && (!squash || ROB::isOlder(scTag, squashTag));
+  const bool incomingLive = dValid && (!squash || ROB::isOlder(dTag, squashTag));
+  const bool resultOpen = resultCanAccept();
+  const bool CSAOpen = CSACanAccept();
+  const bool partialOpen = partialCanAccept();
 
   // ---- 1. stage 3 (MulRes): re-join the carry-save pair, final
   // carry-propagate add, half select, push the result into a free slot.
-  int filled = -1;
-  if (scOld) {
+  if (resultOpen && CSALive) {
     const uint64_t sOld = join64(static_cast<uint32_t>(scRes.S_hi),
                                  static_cast<uint32_t>(scRes.S_lo));
     const uint64_t cOld = join64(static_cast<uint32_t>(scRes.C_hi),
                                  static_cast<uint32_t>(scRes.C_lo));
     const uint64_t res = sOld + cOld; // full 64-bit product (mod 2^64)
-    // Free-slot scan mirroring the reference's live bitmap: its tick ran
-    // remove() before the scan, so a slot being drained this cycle
-    // (grant && tag match) is already reusable here.
-    bool found = false;
-    for (int i = 0; i < MUL_CAP; ++i) {
-      const bool old_v = static_cast<bool>(slotValid[i]);
-      const bool removed =
-          grant && old_v &&
-          static_cast<uint32_t>(slots[i].robTag) == cdbTag;
-      if (!found && (!old_v || removed)) {
-        filled = i;
-        found = true;
-      }
-    }
-    // Buffer-full invariant watchdog: MUL_CAP must exceed the in-flight stage
-    // count (3), since a full buffer here means dispatch was granted faster
-    // than the dedicated cdbOfMul bus drained it.
-    assert(filled != -1 && "MUL slot overflow: MUL_CAP must exceed in-flight stages");
-    slots[filled].robTag <= static_cast<uint32_t>(scTag);
-    slots[filled].value <= ((scOp == Operation::MUL)
+    slots[0].robTag <= static_cast<uint32_t>(scTag);
+    slots[0].value <= ((scOp == Operation::MUL)
                                 ? static_cast<uint32_t>(res)
                                 : static_cast<uint32_t>(res >> 32));
   }
 
   // ---- 2. stage 2 (SC): re-join the latched Booth rows, 3:2 compressor
   // tree, latch the carry-save pair.
-  if (boothOld) {
+  if (CSAOpen && partialLive) {
     uint64_t P[19];
     for (int i = 0; i < 19; ++i)
       P[i] = join64(static_cast<uint32_t>(partialRes.rows[i].hi),
@@ -130,7 +138,7 @@ void MUL::work() {
 
   // ---- 3. stage 1 (Booth): latch the newly dispatched op into rows.
   // radix-4 digit rows of the multiplier with unsigned-operand fixups.
-  if (dValid) {
+  if (partialOpen && incomingLive) {
     const uint32_t op1 = static_cast<uint32_t>(src1Value);
     const uint32_t op2 = static_cast<uint32_t>(src2Value);
     const uint64_t A = signExtend32(op1); // sign-extending: the
@@ -199,27 +207,11 @@ void MUL::work() {
     partialRes.robTag <= static_cast<uint32_t>(dTag);
   }
 
-  // ---- 4. stage valids: single write each. Squash kills a stage result
-  // by the tag it will carry out of this cycle (stage 1: the just-latched
-  // tag; stage 2: the tag handed over from partialRes) -- the reference's
-  // tick flushed after the payload had been overwritten.
-  const bool boothFlushed = squash && !ROB::isOlder(dTag, squashTag);
-  const bool scFlushed = squash && !ROB::isOlder(partialTag, squashTag);
-  partialRes.valid <= (dValid && !boothFlushed);
-  scRes.valid <= (boothOld && !scFlushed);
-
-  // ---- 5. output slots: flush > fill > remove > hold per slot. The
-  // fill's flush check uses the (old) sc tag written this cycle.
-  const bool fillFlushed = squash && !ROB::isOlder(scTag, squashTag);
-  for (uint32_t i = 0; i < MUL_CAP; ++i) {
-    const bool old_v = static_cast<bool>(slotValid[i]);
-    const RobTag tag_i = static_cast<uint32_t>(slots[i].robTag);
-    const bool removed = grant && old_v && tag_i == cdbTag;
-    const bool flushed =
-        squash && old_v && !ROB::isOlder(tag_i, squashTag);
-    const bool here = filled >= 0 && static_cast<uint32_t>(filled) == i;
-    slotValid[i] <= (here ? !fillFlushed : (old_v && !removed && !flushed));
-  }
+  // No write when closed: payload and valid hold. Cancelled stages are empty
+  // for availability, so cancellation/refill is resolved once per Register.
+  if (partialOpen) partialRes.valid <= incomingLive;
+  if (CSAOpen) scRes.valid <= partialLive;
+  if (resultOpen) slotValid[0] <= CSALive;
 }
 
 bool MUL::isFull() const {

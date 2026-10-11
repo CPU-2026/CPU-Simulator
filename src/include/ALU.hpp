@@ -4,7 +4,7 @@
 #include <array>
 #include <cstdint>
 
-static_assert(ALU_CAP == 4); // slot scans are fixed-length over ALU_CAP
+static_assert(ALU_CAP == 1); // one transparent result slot (see common.h)
 static_assert(static_cast<uint32_t>(Operation::OP_INVALID) < 32); // op fits Wire<5>
 
 struct ALUInput {

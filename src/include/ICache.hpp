@@ -90,6 +90,10 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
            static_cast<uint32_t>(blocks[index].tag) ==
                 (addr >> ICACHE_TAG_SHIFT);
   }
+  bool refillHit(uint32_t pc) const {
+    return static_cast<bool>(fillFire) &&
+           (pc & ~ICACHE_OFFSET_MASK) == static_cast<uint32_t>(lineReturn.lineAddr);
+  }
   auto returnRaw() const {
     return headReadReady()
                ? ICacheData.readLane(static_cast<uint32_t>(readLaneIndex))

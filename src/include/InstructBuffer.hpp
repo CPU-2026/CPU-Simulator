@@ -16,13 +16,12 @@ struct InstructBufferEntry {
 
 struct FQInput {
   Wire<1> needSquash;
-  Wire<1> haltFetched;
-  Wire<1> icacheReturnReady;
+  Wire<1> icacheReturnAccepted; // Same handshake as ICache.popConsume.
   Wire<32> icacheReturnRaw;
   Wire<32> icacheReturnPC;
   Wire<32> icacheReturnPredictedPC;
   Wire<CKPT_ID_WIDTH> icacheReturnCkptId;
-  Wire<1> decodeFull; // IQ blocks this cycle, including dequeue lookahead.
+  Wire<1> decodeCanAccept; // IQ admission including same-cycle actual issue.
 };
 
 struct FQOutput {
@@ -50,6 +49,9 @@ struct InstructBuffer : dark::Module<FQInput, FQOutput, FQInner> {
   }
   bool isEmpty() const {
     return static_cast<uint32_t>(head) == static_cast<uint32_t>(tail);
+  }
+  bool canAccept(bool willPop) const {
+    return !isFull() || (willPop && !isEmpty());
   }
   uint32_t getLastRaw() const {
     return static_cast<uint32_t>(lastRaw);

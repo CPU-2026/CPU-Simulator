@@ -13,7 +13,7 @@ struct LQEntry {
   Register<ROB_TAG_WIDTH> robTag;
   Register<32> address;
   Register<32> value;
-  Register<2> n_bytes;
+  Register<2> nBytes;
   Register<1> isAddressReady;
   Register<2> valueState;
   Register<1> isUnsigned;
@@ -44,6 +44,7 @@ struct LQInputAGU {
 };
 struct LQInputROB {
   Wire<1> isROBEmpty;
+  Wire<1> robWillCommit;
   Wire<ROB_TAG_WIDTH> robHeadTag;
   Wire<LQ_SEQ_WIDTH> squashLQTailSnapshot;
   Wire<1> squashTagMatch;
@@ -65,6 +66,7 @@ struct LQInputStoreNotifies {
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> snStoreTag;
   std::array<Wire<32>, STORERS_CAP> snAddr;
   std::array<Wire<32>, STORERS_CAP> snValue;
+  std::array<Wire<3>, STORERS_CAP> snNBytes;
   std::array<Wire<1>, STORERS_CAP> snFoundKnownSame;
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> snKnownTag;
   std::array<Wire<1>, STORERS_CAP> snFoundUnknown;
@@ -74,6 +76,7 @@ struct LQInputStoreNotifies {
   Wire<ROB_TAG_WIDTH> sanStoreTag;
   Wire<32> sanAddr;
   Wire<32> sanValue;
+  Wire<3> sanNBytes;
   Wire<1> sanFoundKnownSame;
   Wire<ROB_TAG_WIDTH> sanKnownTag;
   Wire<1> sanFoundUnknown;
@@ -105,6 +108,9 @@ public:
   bool isEmpty() const;
   bool isFull() const;
   bool isActive(uint8_t index) const;
+  bool matchesAddress(uint8_t index, RobTag tag) const {
+    return isActive(index) && getRobTag(index) == tag;
+  }
   uint8_t getHead() const;
   uint8_t getTail() const; // Packed sequence, not a physical array index.
   // Occupancy boundary AFTER this cycle's own enqueue (the caller pushes

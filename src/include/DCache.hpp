@@ -23,6 +23,7 @@
 //    immediately visible. Cacheline::sync() short-circuits the sync walker
 //    so it never recurses into the uint8_t bytes (uint8_t is not syncable).
 struct DCacheInput {
+  Wire<1> flushRequested;
   // squash guard for load responses (only needSquash/SquashTag are used by
   // the logic; PC/CkptId ride along for plan fidelity)
   Wire<1> squashNeed;
@@ -99,7 +100,11 @@ struct CacheSet {
 };
 struct DCacheInner {
   Register<1> busy;
-  Register<1> phase; // READY=0, WAIT=1
+  Register<2> phase; // READY/WAIT/FLUSH_SCAN/FLUSH_WAIT
+  Register<DCACHE_INDEX_BITS> flushSet;
+  [[no_unique_address]] DCacheState<DCACHE_WAY_BITS> flushWay;
+  Register<1> flushDone;
+  Register<1> flushWriteStarted;
   // parked decision (the miss that waits for its fill); "a request is
   // parked" == phase==WAIT, no separate valid bit is needed
   Register<5> parkOp;
@@ -129,20 +134,22 @@ struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   DCache() { wire_output(); }
   void work() override;
   bool isBusy() const { return static_cast<bool>(busy); }
+  bool isIdle() const { return uint32_t(phase) == 0 && !bool(rqReadValid) && !bool(rqWriteValid); }
+  bool isFlushDone() const { return bool(flushDone); }
+  bool hasLoadResponse() const { return bool(lbValid); }
   // Hit/miss/writeback accumulators (VERBOSE=dcache summary). Software
   // counters: plain members, never visited by Module::sync().
   uint64_t statHits = 0;
   uint64_t statMisses = 0;
-  uint64_t statWritebacks = 0;
 
 private:
   void wire_output();
   // combinational helpers (pure reads over cacheSets / _M_old registers)
-  struct Probe {
+  struct LookupResult {
     bool hit;
     uint32_t way;
   };
-  Probe probe(uint32_t addr) const;
+  LookupResult lookupLine(uint32_t addr) const;
   uint32_t allocateWay(uint32_t set_index) const; // victim assert in _DEBUG
   static int decodeNBytes(uint32_t enc);
   // Sign-extended sub-word load.

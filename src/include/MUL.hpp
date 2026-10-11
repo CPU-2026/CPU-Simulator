@@ -39,9 +39,13 @@ struct MulInner {
   } scRes;
 };
 struct MUL : dark::Module<MulInput, MulOutput, MulInner> {
+  bool resultCanAccept() const;
+  bool CSACanAccept() const;
+  bool partialCanAccept() const;
   bool isFull() const;
   bool isEmpty() const;
   uint32_t headValue() const;
   RobTag headRobTag() const;
   void work() override;
 };
+static_assert(MUL_CAP == 1);

@@ -110,8 +110,7 @@ void DIV::receive(uint32_t op1, uint32_t op2, RobTag tag, Operation op) {
   unsignedDivisorHi <= 0;
   isResultNegative <= ((rawIsDivisorNegative ^ rawIsDividendNegative) ? 1 : 0);
   prepareValid <= true;
-} // Dispatch is admitted only when canAccept() sees all stage flags and
-  // resultValid low.
+} // Dispatch uses idle computing stages and same-cycle result reuse.
 void DIV::prepare() {
   // Sampling: receive() wrote raw |x|/|d| last cycle (prepareValid is hot).
   // All same-cycle forwarding goes through raw* locals -- a Register read
@@ -350,9 +349,11 @@ void DIV::work() {
   // ---- 0. sampling: cycle-stable input wires + committed state ----
   const bool squash = static_cast<bool>(needSquash);
   const RobTag squashTag = static_cast<uint32_t>(SquashTag);
-  const bool dValid = static_cast<bool>(dispatchValid);
+  const bool dValid = static_cast<bool>(dispatchValid) && canAccept() &&
+      (!squash || ROB::isOlder(static_cast<uint32_t>(dispatchRobTag), squashTag));
   const RobTag dTag = static_cast<uint32_t>(dispatchRobTag);
-  const bool drain = static_cast<bool>(cdbValid);
+  const bool drain = static_cast<bool>(resultValid) &&
+      static_cast<bool>(cdbValid) && cdbRobTag == robTag;
   const RobTag robTagOld = static_cast<uint32_t>(robTag);
 
   // The reference tick ran receive() before flush(), so a same-cycle dispatch
@@ -363,24 +364,22 @@ void DIV::work() {
   const RobTag effTag = dValid ? dTag : robTagOld;
   const bool flushFires = squash && ROB::isOlder(squashTag, effTag);
 
-  // ---- single-writer priority chain. The branches are mutually exclusive by
-  // construction: dispatch is granted only when canAccept() holds (idle, so
-  // no stage flag is hot); drain implies resultValid, which excludes every
-  // stage flag and dispatch; flush's write set is a superset of every other
-  // branch's, so taking it alone matches the reference's last-write-wins. ----
+  // Receive owns the result-valid write when drain and refill coincide.
+  // Every branch samples only committed registers and each register is written
+  // at most once. The effective tag protects new older work from an old flush.
   if (flushFires) {
     flush();
-  } else if (drain) { // consume the result via the dedicated DivCDB bus
-    resultValid <= false;
+  } else if (dValid) {
+    receive(static_cast<uint32_t>(src1Value),
+            static_cast<uint32_t>(src2Value), dTag,
+            static_cast<Operation>(static_cast<uint32_t>(op)));
   } else if (static_cast<bool>(fullAdderValid)) {
     calculateResult();
   } else if (static_cast<bool>(loopValid)) {
     loop();
   } else if (static_cast<bool>(prepareValid)) {
     prepare();
-  } else if (dValid) {
-    receive(static_cast<uint32_t>(src1Value),
-            static_cast<uint32_t>(src2Value), dTag,
-            static_cast<Operation>(static_cast<uint32_t>(op)));
+  } else if (drain) {
+    resultValid <= false;
   }
 }
