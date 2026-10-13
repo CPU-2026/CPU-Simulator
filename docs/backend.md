@@ -1,5 +1,10 @@
 # 后端子系统：发射 · 乱序执行 · 写回 · 提交 · squash 恢复
 
+> **2026-10-13 valid寄存器同步**：D$ tag/dirty SRAM为20bit，valid为Register<1>数组；查询采样对齐、8拍回填保持。ROB/LSQ/恢复/立即HALT不变，结构及最新验证见[cache.md](cache.md)。
+
+> **2026-10-13 D$8拍回填**：每拍写两个32bit bank，第8拍才形成缺失Load响应。
+> 命中时序、DMEM协议及后端发射/写回/退休/恢复合同不变；活动周期按双树实测更新。
+
 > **2026-10-13双树同步完成**：删除finishPhase，HALT提交立即结束、不排空。
 > D$保存跨拍Load取消标记，拒绝取消后因ROB/LQ身份复用而误接收的迟到响应。
 > 模板Release/`_DEBUG`各18＋6与主树及共同golden严格一致；RTL未同步此次时序。

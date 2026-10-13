@@ -78,12 +78,15 @@ struct DCacheInner {
   Register<DCACHE_OFFSET_BITS> readLaneIndex;
   Register<2> readNEnc;
   Register<1> readValid;
+  Register<1> readLineValid;
   Register<1> memReadSent;
   Register<1> memWriteSent;
+  Register<DCACHE_WORD_INDEX_BITS> fillWord;
   std::array<DCacheEntry, REQUEST_CAP> requestBuffer;
   std::array<Register<8>, DCACHE_BLOCK_CAP> victimLine;
-  SRAM<NUM_OF_DCACHE_SETS, DCACHE_LINE_BITS, 8> dataSram;
+  std::array<SRAM<NUM_OF_DCACHE_SETS, 32, 8>, DCACHE_WORDS_PER_LINE> dataSrams;
   SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS> metaSram;
+  std::array<Register<1>, NUM_OF_DCACHE_SETS> validBits;
 };
 struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   DCache() { wire_output(); }
@@ -109,10 +112,18 @@ struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   bool needsMemRead() const;
   bool needsMemWrite() const;
   bool canFill() const;
+  uint32_t fillWordIndex() const;
+  bool fillIsLast() const;
+  bool fillActive() const;
+  bool fillDone() const;
+  bool storeHit() const;
+  bool storeTouchesBank(uint32_t bank) const;
   uint32_t victimAddr() const;
   bool hitLoadReady() const;
   bool fillLoadReady() const;
   bool sramWantWrite() const;
+  bool dataBankWantWrite(uint32_t bank) const;
+  bool metaWantWrite() const;
   bool sramWantRead() const;
   uint32_t readRaw() const;
   uint32_t hitRaw() const;

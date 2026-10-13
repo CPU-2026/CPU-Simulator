@@ -1,5 +1,9 @@
 # RISC-V Simulator Template 使用指南
 
+> **2026-10-13 valid寄存器更新**：D$ valid为128项Register<1>，metadata SRAM仅tag19+dirty1；
+> 查询沿采样readLineValid，不提前sync，不从新写SRAM读取。第8拍填完并置valid，各Register
+> 每拍单写。无SRAM初始化扫描；最新对拍/回归入口为共同父目录sync/README.md，下面为历史阶段验收。
+
 > **当前同步/结束规则（2026-10-13）**：D$采用4项请求队列和嵌套data/metadata SRAM，
 > HALT提交立即结束、无SQ/Cache/DMEM排空。Release/`_DEBUG`各18 ISA＋6 IPC严格匹配
 > 根级golden及主树结果/周期/退休数/保留统计；clock总计12,987,988/759,991，drain=0。

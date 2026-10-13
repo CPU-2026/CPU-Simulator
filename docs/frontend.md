@@ -1,5 +1,10 @@
 # 前端子系统：取指 · 预译码 · 译码 · 分支预测
 
+> **2026-10-13 valid寄存器同步**：D$ tag/dirty SRAM为20bit，valid为Register<1>数组；查询采样对齐、8拍回填和boot1拍保持。I$/预测/取指不变，结构及最新验证见[cache.md](cache.md)。
+
+> **2026-10-13 D$8拍回填**：仅调整数据缓存及其接线，16个32bit bank每拍写一对。
+> I$/IMEM、取指/预测、boot及HALT规则不变；整核周期受数据缺失延迟影响，见活动表。
+
 > **2026-10-13双树同步完成**：取指停取和boot保持，HALT提交立即结束、不排空，
 > clock=core、drain=0。模板D$ data/metadata SRAM已同步，Release/`_DEBUG`各18＋6
 > 与主树结果/周期/退休数/保留统计及根级golden严格一致；RTL未同步此次时序。
