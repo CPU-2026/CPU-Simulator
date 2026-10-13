@@ -231,6 +231,20 @@ constexpr int NUM_OF_DCACHE_SETS = 128;
 constexpr int NUM_OF_DCACHE_WAYS = 1;
 constexpr int MEM_LATENCY = 20;
 constexpr int DCACHE_LINE_BITS = DCACHE_BLOCK_CAP << 3;
+// Data array is banked by RV32 word. A refill beat writes two adjacent
+// 32-bit banks (64 bits); lookup still reads all banks in parallel.
+constexpr int DCACHE_WORDS_PER_LINE =
+    DCACHE_BLOCK_CAP >> RV32_WORD_BYTE_BITS;
+constexpr int DCACHE_WORD_INDEX_BITS =
+    DCACHE_WORDS_PER_LINE > 1
+        ? std::bit_width(static_cast<uint32_t>(DCACHE_WORDS_PER_LINE - 1)) : 1;
+constexpr int DCACHE_FILL_WORDS_PER_BEAT = DCACHE_WORDS_PER_LINE > 1 ? 2 : 1;
+static_assert(DCACHE_WORDS_PER_LINE > 0 &&
+                  std::has_single_bit(static_cast<uint32_t>(DCACHE_WORDS_PER_LINE)),
+              "DCache line size must hold a whole number of RV32 words");
+static_assert(DCACHE_WORDS_PER_LINE == 1 ||
+                  (1 << DCACHE_WORD_INDEX_BITS) == DCACHE_WORDS_PER_LINE,
+              "DCache word cursor must cover the line exactly");
 static_assert(DCACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
                   std::has_single_bit(static_cast<uint32_t>(DCACHE_BLOCK_CAP)),
               "DCache line size must be a power of two holding an RV32 word");
@@ -253,13 +267,12 @@ constexpr int DCACHE_WAY_BITS =
 constexpr int DCACHE_PLRU_BITS = NUM_OF_DCACHE_WAYS - 1;
 static_assert(DCACHE_TAG_WIDTH > 0 && DCACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "DCache address split must leave a valid tag width");
-// Metadata SRAM word: low tag bits, followed by valid and dirty.
-constexpr int DCACHE_META_BITS = DCACHE_TAG_WIDTH + 2;
+// Metadata SRAM holds tag+dirty only; line validity is a register array.
+constexpr int DCACHE_META_BITS = DCACHE_TAG_WIDTH + 1;
 static_assert(DCACHE_META_BITS <= RV32_WORD_BITS,
               "DCache metadata must fit one SRAM lane");
-constexpr uint32_t DCACHE_META_VALID = 1u << DCACHE_TAG_WIDTH;
-constexpr uint32_t DCACHE_META_DIRTY = 1u << (DCACHE_TAG_WIDTH + 1);
-constexpr uint32_t DCACHE_META_TAG_MASK = DCACHE_META_VALID - 1u;
+constexpr uint32_t DCACHE_META_DIRTY = 1u << DCACHE_TAG_WIDTH;
+constexpr uint32_t DCACHE_META_TAG_MASK = DCACHE_META_DIRTY - 1u;
 enum class ValueState : uint32_t{
   NOTREADY,
   FETCHING,
