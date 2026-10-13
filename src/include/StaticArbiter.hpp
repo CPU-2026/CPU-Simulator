@@ -26,11 +26,9 @@
 // store branch carries no squash guard, verbatim from the inlined
 // MemRequestArbiter).
 struct MemArbInput {
-  Wire<1> dmemBusy; // DCache busy (DCacheModule.isBusy(), busy._M_old): the
-                    // arbiter never issues while the DCache has a request in
-                    // flight (DCache is the arbiter's single mem client; it
-                    // only accepts a decision at READY with both DMEM ports
-                    // drained, so DCache idle implies DMEM idle)
+  Wire<1> dmemBusy; // DCache queue-full (DCacheModule.isRequestFull()):
+                    // the arbiter issues while the queue has room; head-only
+                    // lookup + DMEM dual-port drain in the background.
   // store side (SQ head payload; addr/value gated at the wiring site so the
   // un-ready throw paths are never reached)
   Wire<1> sqEmpty;            // SQModule.isEmpty()

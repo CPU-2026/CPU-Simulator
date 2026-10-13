@@ -16,7 +16,8 @@ void DMEM::work() {
   const bool replyValidOld = static_cast<bool>(replyValid);
 
   // ---- claim: one pulse per port, only when that port is drained ----
-  if (static_cast<bool>(readValid) && !readBusyOld) {
+  // A held reply blocks a new read so the fill identity cannot be lost.
+  if (static_cast<bool>(readValid) && !readBusyOld && !replyValidOld) {
     execReadAddress <= static_cast<uint32_t>(readAddress);
     execReadRemainCycle <= MEM_LATENCY;
     readBusy <= true;
@@ -56,12 +57,12 @@ void DMEM::work() {
     execWriteRemainCycle <= static_cast<uint32_t>(execWriteRemainCycle) - 1;
   }
 
-  // ---- reply pull: the consumer took it last cycle, drop it now ----
+  // ---- reply hold: keep until the DCache fill consumes it ----
   // (readDone wins over the pull: a freshly produced reply is never pulled in
   // the same cycle it appears -- that is the main tree's write order too.)
   if (readDone) {
     replyValid <= true;
-  } else if (replyValidOld) {
+  } else if (replyValidOld && static_cast<bool>(replyConsumed)) {
     replyValid <= false;
   }
 }

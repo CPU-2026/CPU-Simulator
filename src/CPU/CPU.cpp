@@ -81,9 +81,6 @@ CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
 }
 
 void CPU::wire() {
-  DCacheModule.flushRequested = [this]() {
-    return static_cast<uint32_t>(finishPhase) == static_cast<uint32_t>(FinishPhase::WRITEBACK);
-  };
   // Wire FetchUnit's input wires once. needSquash/SquashPC come straight from
   // FlushArbiter (single producer, via its combinational member accessor);
   // haltSignal from ICache's combinational predicate; FetchValid/PredictPC
@@ -277,7 +274,7 @@ void CPU::wire() {
   // flag gate is a superset-safe call of the original storeSelected-only
   // call sites, pure reads with no side effects) ----
   MemArbiterModule.dmemBusy = [this]() {
-    return static_cast<uint32_t>(DCacheModule.isBusy());
+    return static_cast<uint32_t>(DCacheModule.isRequestFull());
   };
   MemArbiterModule.sqEmpty = [this]() { return SQModule.isEmpty() ? 1u : 0u; };
   MemArbiterModule.sqHeadRobTag = [this]() {
@@ -1307,6 +1304,9 @@ void CPU::wire() {
       return static_cast<uint32_t>(DCacheModule.reqWriteLineData[i]);
     };
   }
+  DMEMModule.DMEMInput::replyConsumed = [this]() {
+    return static_cast<uint32_t>(DCacheModule.fillFire);
+  };
 
   LQModule.squash.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
@@ -1947,21 +1947,7 @@ void CPU::wire() {
 }
 
 void CPU::clock(bool shuffle) {
-  // Read only committed registers/Wires before any module work or sync.
-  const auto phase = static_cast<FinishPhase>(static_cast<uint32_t>(finishPhase));
-  auto nextPhase = phase;
-  if (static_cast<bool>(initialized)) {
-    if (phase == FinishPhase::RUN && ROBModule.isHaltCommitted() && SQModule.isEmpty())
-      nextPhase = FinishPhase::WAIT_IDLE;
-    else if (phase == FinishPhase::WAIT_IDLE && DCacheModule.isIdle() &&
-             !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy() &&
-             !DCacheModule.hasLoadResponse() && !DMEMModule.isReplyReady())
-      nextPhase = FinishPhase::WRITEBACK;
-    else if (phase == FinishPhase::WRITEBACK && DCacheModule.isFlushDone())
-      nextPhase = FinishPhase::DONE;
-  }
   initialized <= 1;
-  finishPhase <= static_cast<uint32_t>(nextPhase);
   if (shuffle)
     dcpu.run_once_shuffle();
   else
@@ -1969,7 +1955,6 @@ void CPU::clock(bool shuffle) {
   // The CPU's own registers are not registered modules. Commit them exactly
   // once at the same edge, after every module has completed work().
   dark::sync_member(initialized);
-  dark::sync_member(finishPhase);
 }
 
 void CPU::run(bool shuffle) {
@@ -1984,8 +1969,8 @@ void CPU::run(bool shuffle) {
   uint64_t ipcCycles = 0;
   bool ipcFrozen = false;
   while (!finish) {
-    // Retirement samples OLD state. Final completion uses the registered
-    // CPU DONE state after the edge; no extra idle termination tick.
+    // Retirement samples OLD state. Stop on the HALT commit edge, with no
+    // SQ/cache/DMEM drain or extra idle termination tick.
     bool s_halt = ROBModule.isHaltCommitted();
     const uint32_t headBefore = static_cast<uint32_t>(ROBModule.headView.head);
     const bool haltBefore = s_halt;
@@ -2004,12 +1989,8 @@ void CPU::run(bool shuffle) {
         ipcFrozen = true;
       }
     }
-    // Halt drain (mirrors main tree): stop only after every committed store
-    // has left the SQ and reached the DCache (SQ empty), and after any
-    // in-flight cache refill/writeback finished (DCache idle + DMEM both
-    // ports idle). Otherwise a store committed right before halt could be
-    // truncated while its fill spans the halt window.
-    finish = static_cast<uint32_t>(finishPhase) == static_cast<uint32_t>(FinishPhase::DONE);
+    // User contract: stop at HALT commit, without SQ/cache/DMEM drain.
+    finish = haltAfter;
   }
   // host-only: the three debug::print blocks below are end-of-run reports for
   // the human (double percentage math + stdio formatting). They are not part

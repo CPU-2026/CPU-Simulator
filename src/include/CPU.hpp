@@ -29,8 +29,7 @@
 #include <cstring>
 
 class CPU {
-private:
-  enum class FinishPhase : uint8_t { RUN, WAIT_IDLE, WRITEBACK, DONE };
+ private:
   void clock(bool shuffle = false);
   // Framework runner: run_once() = ++cycles -> registered work() sequence ->
   // sync_all(); run_once_shuffle() randomizes the work order (order
@@ -67,7 +66,6 @@ private:
   FetchUnit FetchUnitModule;
   // Top-level state is written once before work(), committed after all work().
   Register<1> initialized;
-  Register<2> finishPhase;
 public:
   CPU(Memory mem);
   void wire();
