@@ -1,5 +1,10 @@
 # RV32IM 乱序处理器模拟器
 
+> **2026-10-13 D$同步完成**：4项请求队列、队首串行查询，data为128×512bit字节写
+> SRAM，metadata为128×21bit SRAM；DMEM回复保持至回填消费。HALT提交立即结束，
+> 不排空。Release/`_DEBUG`各18 ISA＋6 IPC与主树结果/周期/退休数/保留统计一致，
+> 严格匹配共同golden；总clock分别12,987,988/759,991。RTL尚未同步此次时序。
+
 这是一个 C++20 编写的周期级 RV32IM 处理器模型。核心采用 Tomasulo 风格设计：
 按序取指和发射、乱序执行、按序提交。
 
@@ -29,15 +34,15 @@ cmake --build build --parallel
 VERBOSE=clock,icache ./code < data/testcases/gcd.data
 ```
 
-`0x0ff00513` 被用作 HALT 标记。HALT 提交后，CPU 会先排空 SQ、DCache 和 DMEM
-中的在途请求再结束。内存大小为 128 KiB。
+`0x0ff00513` 被用作 HALT 标记。HALT 提交后立即结束，不排空 SQ、DCache 和 DMEM。
+内存大小为 128 KiB；停机时可能仍有已提交但未写入缓存的 Store。
 
 ## 核心结构
 
 ```text
  Tournament / BTB / RAS
          |
- Fetch -> ICache -> FQ(4) -> Decode / IQ(4)
+ Fetch -> ICache -> FQ(2) -> Decode / IQ(2)
    |                                  |
  IMEM                           Issue + Rename
                                RAT / PRF / ROB
@@ -56,18 +61,18 @@ VERBOSE=clock,icache ./code < data/testcases/gcd.data
 | ISA | RV32I 整数核心指令 + RV32M |
 | 取指 / 发射 / 提交宽度 | 1 / 1 / 1 |
 | ROB / PRF / RAT | 16 / 48 / 32 |
-| FQ / IQ | 4 / 4 |
-| Integer RS | 4 |
-| MUL / DIV / Load / Branch RS | 2 / 1 / 4 / 4 |
-| Store Address / Store Value RS | 各 4 |
+| FQ / IQ | 2 / 2 |
+| Integer RS | 2 |
+| MUL / DIV / Load / Branch RS | 1 / 1 / 2 / 2 |
+| Store Address / Store Value RS | 各 2 |
 | LQ / SQ | 8 / 8 |
 | 结果总线 | ALU、Load、MUL、DIV 四路独立 CDB |
 | ICache | 1 KiB，16×64 B，单端口同步 SRAM；4 项请求队列，队首命中最早 n+1 拍旁路交付 FQ |
-| DCache | 8 KiB，直接映射，64 B line，write-back + write-allocate |
+| DCache | 8 KiB，128×64 B，data/metadata 同步 SRAM，4 项请求队列，write-back + write-allocate |
 | 主存延迟 | 20 周期 |
 
 分支预测器的方向侧由 local/global/selector 各 256×2-bit 的 Tournament 表和 8-bit GHR
-组成；目标侧保留 BTB64、specRAS/archRAS 各 32（按提交基线与 ROB 重放恢复）。分支误预测与 JALR 目标错误统一
+组成；目标侧保留 BTB64、specRAS/archRAS 各 16（按提交基线与 ROB 重放恢复）。分支误预测与 JALR 目标错误统一
 交给 `FlushArbiter` 恢复；load 采用保守准入，更老未提交 store 地址未知或同址时停发
 cache 请求，不再依赖 store-load 顺序违例恢复。
 
@@ -150,10 +155,9 @@ golden 或零用例都会失败。历史扩展收益数据只保留在根级 ben
 对应的可运行资产。`test_IPC.sh` 要求每个 IPC 镜像的自校验结果 `x10 == 0`，任一失败
 都不会覆盖根级 `../docs/ipc_benchmarks.md`。
 
-**当前基线状态（2026-10-01）**：两树 1 KB、64 B 行同步 SRAM ICache 的队首 n+1 旁路已对齐；
-数据侧采用 **16 KiB、64 B 行、直接映射 DCache**；主树、本树 Release 与 `_DEBUG` 各
-18/18 x10+clock 对活动 golden，总 clock 均为 **12,209,929**（相对原 64 KiB 四路 D$
-**−0.150397%**）。独立六例几何 IPC **0.720539**。本树保留 `refillValid/refillSlot`，接线与验收见
+**历史容量基线（2026-10-01）**：两树当时使用 1 KB ICache 与 **16 KiB、64 B 行、直接映射 DCache**；
+对应18/18总clock为12,209,929，独立六例几何IPC为0.720539。该组数字不是当前容量结果。
+本树保留 `refillValid/refillSlot`，接线与验收见
 [`docs/cache.md`](docs/cache.md)、[`docs/progress.md`](docs/progress.md) 和
 [`../docs/process.md`](../docs/process.md)。
 
@@ -176,8 +180,11 @@ clock,branch,icache,dcache
 - `0x0ff00513` 不能作为普通 `addi` 使用。
 - 顶层没有最大周期限制，缺少 HALT 的程序不会自动结束。
 - 模型使用 lambda、虚函数和动态对象，不能直接综合。
-## 公共容量同步 3A（2026-10-05）
+## 当前紧凑容量配置（2026-10-11）
 
-当前FQ/IQ使用3-bit、LQ/SQ使用4-bit epoch指针，4/4/8/8项全部可用；D$8 KiB/64 B直映。
-七池RS与原ALU时序保持，满时停收规则保持，3B未实施。Release+`_DEBUG`的18+6例与主树
-完整结果、退休数、周期和统计逐项一致。下方带日期的旧配置为历史，活动基线见根级docs。
+主树、模板树及 RTL 同步采用 ROB16 / PRF48 / FQ2 / IQ2 / LQ8 / SQ8，七池 RS
+（Integer/Multiply/Divide/Branch/Load/StoreAddr/StoreValue）=2/1/1/2/2/2/2，共12槽，
+RAS16；D$为8 KiB/64 B直映。Release与`_DEBUG`两树18 ISA＋6 IPC严格回归通过，六项IPC
+几何平均 **0.612677678542**。活动逐例结果与周期见根级 [`../docs/benchmarks.md`](../docs/benchmarks.md)
+和 [`../docs/ipc_benchmarks.md`](../docs/ipc_benchmarks.md)。对应 RTL 当前容量综合/STA 汇总见
+[`../../RISC-V-CPU-2026/README.md`](../../RISC-V-CPU-2026/README.md)。

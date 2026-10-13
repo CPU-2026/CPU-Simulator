@@ -1,5 +1,13 @@
 # 前端子系统：取指 · 预译码 · 译码 · 分支预测
 
+> **2026-10-13双树同步完成**：取指停取和boot保持，HALT提交立即结束、不排空，
+> clock=core、drain=0。模板D$ data/metadata SRAM已同步，Release/`_DEBUG`各18＋6
+> 与主树结果/周期/退休数/保留统计及根级golden严格一致；RTL未同步此次时序。
+
+> **历史HALT边界（2026-10-12）**：取指停取、HALT提交冻结core/IPC及boot保持；
+> DONE只等待已提交SQ和在途Cache/DMEM事务排空，不再发起全D$扫描写回。
+> 下面SPEC §62的全dirty完成与总周期记录为删除前历史。
+
 > **完整活动整核（SPEC §63/64）**：24镜像三CPU12667040拍2872word无损逐拍与
 > 独立退休/最终128KiB全等，现有周期表保持。软件非法指令保真PC/CID并异常ready，
 > 真提交才trap，错误路径取消不trap；观察修LSU lane配对与不可变Load owner宽度。
@@ -240,7 +248,7 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 | 部件 | 配置 | 说明 |
 |------|------|------|
 | BTB | 64 条目 | 经典 Branch Target Buffer 的项目实现 [[5]](#front-ref-5)；语义项为 `{PC[31:8], target[31:2], state}`，`state` 编码 invalid/conditional/unconditional/return（后两者必 taken）；命中且无条件 ⇒ 必 taken |
-| RAS | 32 条目返回地址；`specRAS` 与 `archRAS` 各一份 | call 压入返回地址、return 弹栈并预测目标 [[7]](#front-ref-7)；恢复从提交基线重放存活 ROB，处理投机错位 [[8]](#front-ref-8) |
+| RAS | 16 条目返回地址；`specRAS` 与 `archRAS` 各一份 | call 压入返回地址、return 弹栈并预测目标 [[7]](#front-ref-7)；恢复从提交基线重放存活 ROB，处理投机错位 [[8]](#front-ref-8) |
 
 当前源码不使用 `times` 去重或 SARAS 日志；旧方案的面积与实验数据保存在根级 benchmark 历史记录中。
 
@@ -258,7 +266,7 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
   携带 `shift/shiftValue`）；BRU训练condSeen影响后续移位资格，不直接追加actual到
   live GHR；恢复使用取指前GHR快照。
 - **checkpoint**：每次获准取指消耗一个 `ckptId`。活动池 `CKPT_CAP=32`，大于
-  `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ4 + IQ4 = 28`，由 `static_assert`
+  `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ2 + IQ2 = 24`，由 `static_assert`
   守住不会在仍存活时复用 ID；逻辑 ID 与模板运输载体均按派生宽度收紧为 5 bit
   （`CKPT_ID_WIDTH`）。
   当前 `BPUSnapshot` 仅保存 **8-bit GHR**。RAS 从旧 `archRAS` 提交基线恢复，按 ROB
@@ -289,10 +297,10 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 |----|------|
 | 取指带宽 | 每周期至多 1 条；请求队列与 FQ 有空间、无 squash/未闩锁 halt，且命中读获得 SRAM 端口 |
 | 两树 ICache | 1 KB · 16×64 B · 单端口同步 SRAM · 4 项请求队列；队首命中最早 n+1 拍进入 FQ |
-| FQ / IQ | 各4项，3-bit epoch；IQ满时actualIssue可替换，FQ满时真实出队可补入 |
+| FQ / IQ | 各2项，epoch指针；IQ满时actualIssue可替换，FQ满时真实出队可补入 |
 | 方向预测 | Tournament：localPHT 256×2b · globalPHT 256×2b · selector 256×2b · GHR 8b |
-| 目标预测与身份状态 | BTB 64 · specRAS/archRAS 各 32 · condSeen 512b |
-| checkpoint | ckptId 池 32（存活上界 28；逻辑与模板运输载体均 5 bit） |
+| 目标预测与身份状态 | BTB 64 · specRAS/archRAS 各 16 · condSeen 512b |
+| checkpoint | ckptId 池 32（存活上界 24；逻辑与模板运输载体均 5 bit） |
 | 预译码 | FQ 尾 jal/jalr 静态分类（call/ret/indirect + 静态 jal 目标） |
 | halt | 队首 = `0x0ff00513` 且实际交付 FQ ⇒ latch haltFetched 并当拍停取 |
 

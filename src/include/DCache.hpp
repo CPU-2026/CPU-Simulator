@@ -2,157 +2,120 @@
 #include "common.h"
 #include "module.h"
 #include "tools.h"
+#include "SRAM.hpp"
 #include <array>
 #include <cstdint>
 
-// Parameterized data cache: direct-mapped or four-way tree-PLRU / write-back +
-// write-allocate / parked-request FSM / dual-port line-granular DMEM behind it
-// (the DCache is DMEM's only client; DMEM never sees sub-word accesses
-// anymore).
-//
-// Hard constraints (mirror main tree):
-//  * isBusy == "a request is in flight" -- MemArbiter never issues while busy.
-//  * When !isBusy() the DCache must UNCONDITIONALLY accept the decision: the
-//    store was already popped from the SQ in this cycle.
-//  * Line metadata (valid/dirty/tag/PLRU_bit) lives in DCacheInner, so
-//    Module::sync() commits it at the clock edge (Register semantics: a `<=`
-//    write becomes visible to the next cycle's reads). The FSM only ever
-//    reads metadata written in EARLIER cycles -- probe() runs before every
-//    write in READY, and fill (WAIT) and probe (READY) never share a cycle.
-//  * datas is hardware SRAM: a plain array written directly by work(),
-//    immediately visible. Cacheline::sync() short-circuits the sync walker
-//    so it never recurses into the uint8_t bytes (uint8_t is not syncable).
+// Direct-mapped, write-back/write-allocate DCache mirroring the main tree:
+// 4-entry RequestBuffer, head-only SRAM lookup, DMEM dual-port refill.
+// SRAMs are nested and clocked once per work(); outputs are combinational
+// Wires over _M_old so no extra pipeline stage is added.
 struct DCacheInput {
-  Wire<1> flushRequested;
-  // squash guard for load responses (only needSquash/SquashTag are used by
-  // the logic; PC/CkptId ride along for plan fidelity)
   Wire<1> squashNeed;
   Wire<ROB_TAG_WIDTH> squashTag;
-  // MemDispatchDecision, split field-by-field (MemArbiter Output wires)
   Wire<1> decisionValid;
-  Wire<5> decisionOp; // Operation encoding (Load/Store)
+  Wire<5> decisionOp;
   Wire<32> decisionValue;
   Wire<32> decisionAddr;
   Wire<1> decisionIsSigned;
-  Wire<2> decisionNBytes; // 2b encoding: 0->1B, 1->2B, 2->4B (nEnc)
+  Wire<2> decisionNBytes;
   Wire<ROB_TAG_WIDTH> decisionRobTag;
   Wire<7> decisionMemIndex;
-  // DMEM completion observation (_M_old view through the bridge accessors)
   Wire<1> dmemReadBusy;
   Wire<1> dmemWriteBusy;
   Wire<1> dmemReplyReady;
   std::array<Wire<8>, DCACHE_BLOCK_CAP> dmemLineData;
 };
 struct DCacheOutput {
-  Wire<1> busyOut; // -> MemArbiter (busy._M_old); named busyOut so the
-                   // bridge method DCache::isBusy() does not shadow it
-  // loadResp -> LQ (squash guard inlined: valid && (!needSquash || isOlder))
+  Wire<1> busyOut;
   Wire<1> loadRespValid;
   Wire<7> loadRespMemIndex;
   Wire<ROB_TAG_WIDTH> loadRespRobTag;
   Wire<32> loadRespValue;
-  // forwardRequest -> DMEM dual-port pulses (registered, one-cycle visible)
   Wire<1> reqReadValid;
   Wire<32> reqReadAddr;
   Wire<1> reqWriteValid;
   Wire<32> reqWriteAddr;
   std::array<Wire<8>, DCACHE_BLOCK_CAP> reqWriteLineData;
+  Wire<1> fillFire;
 };
-// Cacheline/CacheSet must precede DCacheInner (the Inner embeds the array).
-// Register::sync() is private (friend Visitor only), so the custom sync()
-// methods route through the public dark::Visitor::sync; defining sync() on
-// Cacheline also short-circuits the aggregate walk past the plain datas
-// bytes (sync_member's is_syncable branch fires before the tuplify walk).
-struct Cacheline {
-  Register<1> valid;
-  Register<1> dirty;
-  std::array<uint8_t, DCACHE_BLOCK_CAP> datas{}; // plain SRAM: never synced
+struct DCacheEntry {
+  Register<5> op;
+  Register<32> value;
+  Register<32> addr;
+  Register<1> isSigned;
+  Register<2> nEnc;
+  Register<ROB_TAG_WIDTH> robTag;
+  Register<7> memIndex;
+  Register<32> raw;
   Register<DCACHE_TAG_WIDTH> tag;
+  Register<1> lineValid;
+  Register<1> lineDirty;
+  Register<1> needReadMemory;
+  Register<1> cancelled;
+  Register<1> valid;
   void sync() {
-    dark::Visitor::sync(valid);
-    dark::Visitor::sync(dirty);
+    dark::Visitor::sync(op);
+    dark::Visitor::sync(value);
+    dark::Visitor::sync(addr);
+    dark::Visitor::sync(isSigned);
+    dark::Visitor::sync(nEnc);
+    dark::Visitor::sync(robTag);
+    dark::Visitor::sync(memIndex);
+    dark::Visitor::sync(raw);
     dark::Visitor::sync(tag);
-  }
-};
-// Optional replacement/way state: direct mapping has zero logical bits and
-// no Register. The four-way specialization retains the original registers.
-template <int Bits> struct DCacheState {
-  static constexpr int _Bit_Len = Bits;
-  Register<Bits> value;
-  uint32_t get() const { return static_cast<uint32_t>(value); }
-  void set(uint32_t next) { value <= next; }
-  void sync() { dark::Visitor::sync(value); }
-};
-template <> struct DCacheState<0> {
-  static constexpr int _Bit_Len = 0;
-  uint32_t get() const { return 0; }
-  void set(uint32_t) {}
-  void sync() {}
-};
-struct CacheSet {
-  std::array<Cacheline, NUM_OF_DCACHE_WAYS> lines;
-  [[no_unique_address]] DCacheState<DCACHE_PLRU_BITS> PLRU_bit;
-  void sync() {
-    for (auto &l : lines)
-      dark::Visitor::sync(l);
-    dark::Visitor::sync(PLRU_bit);
+    dark::Visitor::sync(lineValid);
+    dark::Visitor::sync(lineDirty);
+    dark::Visitor::sync(needReadMemory);
+    dark::Visitor::sync(cancelled);
+    dark::Visitor::sync(valid);
   }
 };
 struct DCacheInner {
-  Register<1> busy;
-  Register<2> phase; // READY/WAIT/FLUSH_SCAN/FLUSH_WAIT
-  Register<DCACHE_INDEX_BITS> flushSet;
-  [[no_unique_address]] DCacheState<DCACHE_WAY_BITS> flushWay;
-  Register<1> flushDone;
-  Register<1> flushWriteStarted;
-  // parked decision (the miss that waits for its fill); "a request is
-  // parked" == phase==WAIT, no separate valid bit is needed
-  Register<5> parkOp;
-  Register<32> parkValue;
-  Register<32> parkAddr;
-  Register<1> parkIsSigned;
-  Register<2> parkNBytes; // nEnc encoding (see decisionNBytes)
-  Register<ROB_TAG_WIDTH> parkRobTag;
-  Register<7> parkMemIndex;
-  [[no_unique_address]] DCacheState<DCACHE_WAY_BITS> parkTargetWay;
-  // self-answer / fill-serve load response (one-cycle pulse)
-  Register<1> lbValid; // loadBuffer (Inner side renamed: Output uses loadResp*)
-  Register<7> lbMemIndex;
-  Register<ROB_TAG_WIDTH> lbRobTag;
-  Register<32> lbValue;
-  // forwarded request pulses (cleared each cycle, claimed by DMEM next)
-  Register<1> rqReadValid; // Output side keeps the reqRead* names
-  Register<32> rqReadAddr;
-  Register<1> rqWriteValid;
-  Register<32> rqWriteAddr;
-  std::array<Register<8>, DCACHE_BLOCK_CAP> rqWriteLineData;
-  // Line array inside Inner so Module::sync() commits the metadata
-  // registers every cycle (路线 A); datas inside each line stays plain.
-  std::array<CacheSet, NUM_OF_DCACHE_SETS> cacheSets;
+  Register<DCACHE_REQUEST_BITS> head;
+  Register<DCACHE_COUNT_BITS> count;
+  Register<DCACHE_REQUEST_BITS> readIndex;
+  Register<DCACHE_OFFSET_BITS> readLaneIndex;
+  Register<2> readNEnc;
+  Register<1> readValid;
+  Register<1> memReadSent;
+  Register<1> memWriteSent;
+  std::array<DCacheEntry, REQUEST_CAP> requestBuffer;
+  std::array<Register<8>, DCACHE_BLOCK_CAP> victimLine;
+  SRAM<NUM_OF_DCACHE_SETS, DCACHE_LINE_BITS, 8> dataSram;
+  SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS> metaSram;
 };
 struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   DCache() { wire_output(); }
   void work() override;
-  bool isBusy() const { return static_cast<bool>(busy); }
-  bool isIdle() const { return uint32_t(phase) == 0 && !bool(rqReadValid) && !bool(rqWriteValid); }
-  bool isFlushDone() const { return bool(flushDone); }
-  bool hasLoadResponse() const { return bool(lbValid); }
-  // Hit/miss/writeback accumulators (VERBOSE=dcache summary). Software
-  // counters: plain members, never visited by Module::sync().
+  bool isEmpty() const { return static_cast<uint32_t>(count) == 0; }
+  bool isRequestFull() const { return static_cast<uint32_t>(count) == REQUEST_CAP; }
+  // host-only: reporting counters, never consumed by datapath logic.
   uint64_t statHits = 0;
   uint64_t statMisses = 0;
 
-private:
+ private:
   void wire_output();
-  // combinational helpers (pure reads over cacheSets / _M_old registers)
-  struct LookupResult {
-    bool hit;
-    uint32_t way;
-  };
-  LookupResult lookupLine(uint32_t addr) const;
-  uint32_t allocateWay(uint32_t set_index) const; // victim assert in _DEBUG
   static int decodeNBytes(uint32_t enc);
-  // Sign-extended sub-word load.
-  static int32_t extractValue(const uint8_t *datas, int off, int n,
-                              bool isSigned);
+  uint32_t headAddr() const;
+  uint32_t headSet() const;
+  bool needsLookup() const;
+  bool readHit() const;
+  bool headReadReady() const;
+  bool isReturnReady() const;
+  bool headIsStore() const;
+  bool headNeedMemory() const;
+  bool headDirty() const;
+  bool needsMemRead() const;
+  bool needsMemWrite() const;
+  bool canFill() const;
+  uint32_t victimAddr() const;
+  bool hitLoadReady() const;
+  bool fillLoadReady() const;
+  bool sramWantWrite() const;
+  bool sramWantRead() const;
+  uint32_t readRaw() const;
+  uint32_t hitRaw() const;
+  uint32_t fillRaw() const;
+  bool loadSquashGuard(uint32_t rob) const;
 };

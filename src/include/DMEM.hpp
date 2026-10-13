@@ -24,6 +24,7 @@ struct DMEMInput {
   Wire<1> writeValid;
   Wire<32> writeAddress; // DCACHE_BLOCK_CAP-aligned victim base
   std::array<Wire<8>, DCACHE_BLOCK_CAP> writeLineData;
+  Wire<1> replyConsumed; // DCache fill consumed the reply this cycle.
 };
 // Registered execution pipelines (one per port) + the reply buffer.
 struct DMEMInner {
@@ -35,8 +36,8 @@ struct DMEMInner {
   Register<32> execWriteAddress;
   std::array<Register<8>, DCACHE_BLOCK_CAP> execWriteLineData;
 };
-// DMEM -> DCache: the completed line read (one-cycle valid, pulled by the
-// consumer the cycle after it is produced).
+// DMEM -> DCache: the completed line read, held until replyConsumed.
+// A held reply blocks new reads but not the independent write port.
 struct DMEMOutput {
   Register<1> replyValid;
   std::array<Register<8>, DCACHE_BLOCK_CAP> replyLineData;

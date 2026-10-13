@@ -1,9 +1,20 @@
 # RISC-V Simulator Template 使用指南
 
-> **CPU顶层状态（SPEC §66）**：初始化与结束状态直接放CPU的initialized/finishPhase
-> Register，未单独注册模块。CPU::clock求旧态并单写后调用完整框架时钟序列，
-> 所有work完成后分别提交两个顶层Register。使用sync_member，不额外同步模块输出。
-> 当前build_software/regress_capacity strict四构建18＋6与全部旧统计保持。
+> **当前同步/结束规则（2026-10-13）**：D$采用4项请求队列和嵌套data/metadata SRAM，
+> HALT提交立即结束、无SQ/Cache/DMEM排空。Release/`_DEBUG`各18 ISA＋6 IPC严格匹配
+> 根级golden及主树结果/周期/退休数/保留统计；clock总计12,987,988/759,991，drain=0。
+> 本轮报告位于`/tmp/opencode/tpl-dcache-regression.json`及`tpl-dcache-directed.json`。
+> RTL尚未同步；下面全dirty/排空/三端门禁属于历史，不证明此次SRAM时序。
+
+> **模板同步要点**：Load响应和DMEM请求保持组合Wire，不能恢复旧lb/rq输出寄存级。
+> 请求n拍入队、n+1拍由旧队首查询SRAM、命中n+2拍服务；旧full时即使完成也不补入。
+> Store缺失回填要合并Store字节，取消Load需保存跨拍cancelled而非仅查当拍squash。
+> 两SRAM各work一次，由DCache父模块正常sync提交，不独立注册、不提前sync。
+> 七组真实程序通过全128组/子字/回绕/延迟写/保持回复/恢复/HALT，且普通、无效输出
+> poison、乱序work及二者组合均与主树和独立退休参考一致；IPC qsort另验139893条退休。
+
+> **CPU顶层状态**：仅保留initialized Register，CPU::clock在work前单写、全部work后
+> sync_member一次；finishPhase及结束FSM已删除。仍为27个注册模块，不额外同步模块输出。
 
 > **部分项/完整整核门禁（SPEC §63/64）**：根目录`run_partial_acceptance.py`与
 > `run_cpu_benchmarks.py`。前者15程序3835/2872及4源码负向，后者24镜像12667040
@@ -241,13 +252,13 @@ VERBOSE=clock ./code < data/testcases/gcd.data
 当前输出包含：
 
 ```text
-clock: 327
-timing: init=1 core=173 drain=154 total=327
-ipc: 0.236994 retired=41 cycles=173
+clock: 186
+timing: init=1 core=186 drain=0 total=186
+ipc: 0.220430 retired=41 cycles=186
 178
 ```
 
-`clock` 是core＋drain周期；IPC区间在HALT提交时冻结。初始化单列，排空包括全部dirty写回。
+`clock` 与core/IPC周期相同，均截止HALT提交拍；初始化单列，drain恒为0。
 只提取标准错误统计时可用：
 
 ```bash
@@ -297,11 +308,11 @@ BP_BIN=./build-release/code ./test_IPC.sh
 缺失 golden 与零用例。`test_IPC.sh` 在任一自校验失败时保持原报告不变；运行前应确认
 确实要改写根级 IPC 报告。
 
-**2026-10-01 基线说明**：两树 1 KB/64 B 行同步 SRAM ICache 的队首 n+1 旁路已对齐；主树、本树 Release
-与 `_DEBUG` 各 18/18 x10+cycles 对根级活动表。数据侧现为 **16 KB/64 B 行直接映射 DCache**，
-总 clock 均为 **12,209,929**；独立六例几何 IPC **0.720539**。
+**2026-10-13 基线说明**：两树1 KB/64 B SRAM ICache及8 KB/64 B data/metadata SRAM DCache
+已对齐；Release与`_DEBUG`各18＋6匹配共同活动表，ISA总clock **12,987,988**，
+六IPC总clock **759,991**，精确几何IPC **0.576544287649**。
 `test.sh` 始终严格检查 result 与 cycles。同步范围和当前 n+1 队首交付时序见
-[cache.md](cache.md)、[progress.md](progress.md) 与 [根级 process.md](../../docs/process.md)。
+[cache.md](cache.md) 与本页开头的同步说明。
 
 ## 5. 文档地图
 
@@ -525,7 +536,7 @@ cpu.add_module(owned);    // 当前 API 会 move，调用后 owned 为空
   `max_cycles == 0` 表示不设上限。
 
 通用 `dark::CPU::run()` 没有 finish predicate，也不会识别 HALT。当前模拟器外层的 `::CPU::run(bool)`
-自行在每拍开始采样 HALT/排空状态，再调用 `dcpu.run_once()` 或 `run_once_shuffle()`；这是应用逻辑，
+自行在每拍开始采样退休状态，调用 `dcpu.run_once()` 或 `run_once_shuffle()` 后检查HALT；这是应用逻辑，
 不是框架 `run()` 的隐藏功能。
 
 正确设计中，所有跨模块读都来自 Register old view 或当拍组合 Wire，模块 `work()` 顺序不应影响

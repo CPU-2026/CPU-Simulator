@@ -4,10 +4,10 @@
 #include <cstdint>
 #include "tools.h"
 using RobTag = uint8_t;
-constexpr int INTEGERRS_CAP = 4;
-constexpr int STORERS_CAP = 4;
-constexpr int LOADRS_CAP = 4;
-constexpr int BRANCHRS_CAP = 4;
+constexpr int INTEGERRS_CAP = 2;
+constexpr int STORERS_CAP = 2;
+constexpr int LOADRS_CAP = 2;
+constexpr int BRANCHRS_CAP = 2;
 constexpr int LQ_CAP = 8;
 constexpr int SQ_CAP = 8;
 constexpr int LQ_MASK = LQ_CAP - 1;
@@ -49,8 +49,8 @@ inline constexpr RobTag robNextTag(RobTag tag) {
 static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
 static_assert(ROB_TAG_WIDTH <= 8,
                "RobTag is uint8_t: packed tag must fit in 8 bits");
-constexpr int FQ_CAP = 4;
-constexpr int IQ_CAP = 4;
+constexpr int FQ_CAP = 2;
+constexpr int IQ_CAP = 2;
 constexpr int FQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(FQ_CAP - 1));
 constexpr int IQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(IQ_CAP - 1));
 constexpr int FQ_SEQ_WIDTH = FQ_PTR_WIDTH + 1;
@@ -67,7 +67,7 @@ constexpr int FLUSHARBITER_CAP = 4;
 // drain a result and accept a new op per cycle while holding a single slot.
 constexpr int ALU_CAP = 1;
 constexpr int MUL_CAP = 1; // Final register of the three-stage elastic MUL.
-constexpr int MULTIPLYRS_CAP = 2;
+constexpr int MULTIPLYRS_CAP = 1;
 constexpr int DIVIDERS_CAP = 1;
 // Dedicated LSQ address port consumes or cancels the old result every cycle.
 constexpr int AGU_CAP = 1;
@@ -89,7 +89,7 @@ constexpr uint16_t HISTORY_MASK = (1u << GHR_WIDTH) - 1;
 // Arch + speculative RAS pair (mirrors the main tree): the tops are
 // non-wrapping depths in [0, RAS_CAP]. Recovery restores the committed
 // baseline and replays the surviving ROB prefix through the squash tag.
-constexpr int RAS_CAP = 32;
+constexpr int RAS_CAP = 16;
 static_assert(RAS_CAP > 0 && RAS_CAP <= 0xFF,
               "RAS top is an 8-bit non-wrapping depth");
 constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
@@ -209,6 +209,13 @@ constexpr int ICACHE_WORD_BITS = ICACHE_WORDS_PER_LINE > 1
 static_assert(ICACHE_TAG_WIDTH > 0 && ICACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "ICache address split must leave a valid tag width");
 constexpr int REQUEST_CAP = 4;
+static_assert(REQUEST_CAP > 0 && REQUEST_CAP <= 128 &&
+                  std::has_single_bit(static_cast<uint32_t>(REQUEST_CAP)),
+              "DCache request queue must use power-of-two wrapping");
+constexpr int DCACHE_REQUEST_BITS = REQUEST_CAP > 1
+    ? std::bit_width(static_cast<uint32_t>(REQUEST_CAP - 1)) : 1;
+constexpr int DCACHE_COUNT_BITS =
+    std::bit_width(static_cast<uint32_t>(REQUEST_CAP));
 constexpr int CKPT_LIVE_MAX =
     ROB_CAP + REQUEST_CAP + FQ_CAP + IQ_CAP;
 static_assert(CKPT_CAP > 0 && (CKPT_CAP & (CKPT_CAP - 1)) == 0,
@@ -223,6 +230,7 @@ constexpr int DCACHE_BLOCK_CAP = 64;
 constexpr int NUM_OF_DCACHE_SETS = 128;
 constexpr int NUM_OF_DCACHE_WAYS = 1;
 constexpr int MEM_LATENCY = 20;
+constexpr int DCACHE_LINE_BITS = DCACHE_BLOCK_CAP << 3;
 static_assert(DCACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
                   std::has_single_bit(static_cast<uint32_t>(DCACHE_BLOCK_CAP)),
               "DCache line size must be a power of two holding an RV32 word");
@@ -237,6 +245,7 @@ constexpr uint32_t DCACHE_OFFSET_MASK = DCACHE_BLOCK_CAP - 1u;
 constexpr int DCACHE_INDEX_BITS =
     std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_SETS - 1));
 constexpr uint32_t DCACHE_INDEX_MASK = NUM_OF_DCACHE_SETS - 1u;
+constexpr int DCACHE_CAPACITY_BYTES = DCACHE_BLOCK_CAP << DCACHE_INDEX_BITS;
 constexpr int DCACHE_TAG_SHIFT = DCACHE_OFFSET_BITS + DCACHE_INDEX_BITS;
 constexpr int DCACHE_TAG_WIDTH = RV32_WORD_BITS - DCACHE_TAG_SHIFT;
 constexpr int DCACHE_WAY_BITS =
@@ -244,6 +253,13 @@ constexpr int DCACHE_WAY_BITS =
 constexpr int DCACHE_PLRU_BITS = NUM_OF_DCACHE_WAYS - 1;
 static_assert(DCACHE_TAG_WIDTH > 0 && DCACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "DCache address split must leave a valid tag width");
+// Metadata SRAM word: low tag bits, followed by valid and dirty.
+constexpr int DCACHE_META_BITS = DCACHE_TAG_WIDTH + 2;
+static_assert(DCACHE_META_BITS <= RV32_WORD_BITS,
+              "DCache metadata must fit one SRAM lane");
+constexpr uint32_t DCACHE_META_VALID = 1u << DCACHE_TAG_WIDTH;
+constexpr uint32_t DCACHE_META_DIRTY = 1u << (DCACHE_TAG_WIDTH + 1);
+constexpr uint32_t DCACHE_META_TAG_MASK = DCACHE_META_VALID - 1u;
 enum class ValueState : uint32_t{
   NOTREADY,
   FETCHING,
