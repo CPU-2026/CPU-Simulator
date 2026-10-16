@@ -95,6 +95,20 @@ void Slave::work() {
   const uint32_t bFree = bN - (bFire ? 1u : 0u);
   const bool svcRead = arN != 0 && rFree < AXI_DEPTH;
   const bool svcWrite = awN != 0 && wN != 0 && bFree < AXI_DEPTH;
+  uint32_t rng = cyc == 0 ? 1u : static_cast<uint32_t>(random);
+  if (svcRead && svcWrite) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; }
+  const bool writeFirst = svcRead && svcWrite && (rng & 1u);
+  if (cyc == 0 || (svcRead && svcWrite)) random <= rng;
+
+  // Capture the old read before applying the write; the course model chooses
+  // the read/write service order with its deterministic xorshift sequence.
+  uint32_t rdData = 0;
+  uint32_t rdResp = AXI_OKAY;
+  if (svcRead) {
+    const uint32_t addr = static_cast<uint32_t>(arQueue[arH]);
+    rdResp = response(addr);
+    if (rdResp == AXI_OKAY) rdData = loadWord(addr);
+  }
 
   // The write is applied before the read service (deterministic order).
   uint32_t wrResp = AXI_OKAY;
@@ -111,9 +125,7 @@ void Slave::work() {
     if (wrResp == AXI_OKAY && !wrExit)
       storeBytes(addr, data, strb);
   }
-  uint32_t rdData = 0;
-  uint32_t rdResp = AXI_OKAY;
-  if (svcRead) {
+  if (svcRead && writeFirst) {
     const uint32_t addr = static_cast<uint32_t>(arQueue[arH]);
     rdResp = response(addr);
     if (rdResp == AXI_OKAY)
@@ -138,12 +150,12 @@ void Slave::work() {
   if (svcRead) {
     rQueue[rTail].data <= rdData;
     rQueue[rTail].resp <= rdResp;
-    rQueue[rTail].due <= cyc + AXI_LATENCY;
+    rQueue[rTail].due <= cyc + 1 + AXI_LATENCY;
   }
   if (svcWrite) {
     bQueue[bTail].resp <= wrResp;
     bQueue[bTail].result <= wrResult;
-    bQueue[bTail].due <= cyc + AXI_LATENCY;
+    bQueue[bTail].due <= cyc + 1 + AXI_LATENCY;
     bQueue[bTail].exit <= wrExit;
   }
 

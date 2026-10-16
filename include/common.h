@@ -5,6 +5,7 @@
 #include <cstdint>
 #include "tools.h"
 using RobTag = uint8_t;
+inline bool legacyHaltEnabled = false; // Host configuration for archived images only.
 constexpr int INTEGERRS_CAP = 2;
 constexpr int STORERS_CAP = 2;
 constexpr int LOADRS_CAP = 2;
@@ -209,7 +210,7 @@ constexpr int ICACHE_WORD_BITS = ICACHE_WORDS_PER_LINE > 1
     ? std::bit_width(static_cast<uint32_t>(ICACHE_WORDS_PER_LINE - 1)) : 1;
 static_assert(ICACHE_TAG_WIDTH > 0 && ICACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "ICache address split must leave a valid tag width");
-constexpr int REQUEST_CAP = 4;
+constexpr int REQUEST_CAP = 8;
 static_assert(REQUEST_CAP > 0 && REQUEST_CAP <= 128 &&
                   std::has_single_bit(static_cast<uint32_t>(REQUEST_CAP)),
               "DCache request queue must use power-of-two wrapping");
@@ -227,9 +228,11 @@ static_assert(CKPT_CAP <= (1 << 6),
               "checkpoint IDs must fit the retained 6-bit carrier");
 // DCache geometry (mirrors main tree common.hpp). Address fields and masks
 // are derived from the line size and set count.
-constexpr int DCACHE_BLOCK_CAP = 32; // bytes per line; 128 sets gives 4 KiB total
-constexpr int NUM_OF_DCACHE_SETS = 128;
-constexpr int NUM_OF_DCACHE_WAYS = 1;
+constexpr int DCACHE_BLOCK_CAP = 32; // 64 sets x 2 ways = 4 KiB
+constexpr int NUM_OF_DCACHE_SETS = 64;
+constexpr int NUM_OF_DCACHE_WAYS = 2;
+constexpr int DCACHE_MSHR_CAP = 4;
+static_assert(REQUEST_CAP <= 8 && DCACHE_MSHR_CAP <= 8);
 constexpr int MEM_LATENCY = 20;
 constexpr int DCACHE_LINE_BITS = DCACHE_BLOCK_CAP << 3;
 // Data array is banked by RV32 word. A refill beat writes two adjacent

@@ -47,7 +47,7 @@ FetchTypeInfo scanJump(bool valid, uint32_t raw, uint32_t pc) {
 
 } // namespace
 
-CPU::CPU(Memory mem) : SlaveModule(mem) {
+CPU::CPU(const Memory &mem) : SlaveModule(mem) {
   wire();
   // Non-owning registration in the exact work() order of the former
   // hand-written run loop (module members outlive dark::CPU's pointers).
@@ -156,7 +156,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(BPUModule.outPC) & ~ICACHE_OFFSET_MASK;
   };
   AXIFetchModule.lineConsumed = [this]() {
-    return static_cast<bool>(ICacheModule.fillFire);
+    return !static_cast<bool>(exitCommitted) && static_cast<bool>(ICacheModule.fillFire);
   };
 
   // Wire the ICache's input wires once. fetch* sample the BPU-owned
@@ -1248,7 +1248,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
   DCacheModule.decisionValid = [this]() {
-    return MemArbiterModule.valid ? 1u : 0u;
+    return memoryDispatchValid() ? 1u : 0u;
   };
   DCacheModule.decisionOp = [this]() {
     return static_cast<uint32_t>(MemArbiterModule.op);
@@ -1271,15 +1271,21 @@ void CPU::wire() {
   DCacheModule.decisionMemIndex = [this]() {
     return static_cast<uint32_t>(MemArbiterModule.memIndex);
   };
-  DCacheModule.dmemReadBusy = [this]() {
-    return AXIDataModule.isReadBusy() ? 1u : 0u;
+  DCacheModule.dmemCredits = [this]() {
+    return AXIDataModule.freeCredits();
   };
-  DCacheModule.dmemWriteBusy = [this]() {
-    return AXIDataModule.isWriteBusy() ? 1u : 0u;
+  DCacheModule.dmemWriteReady = [this]() {
+    return AXIDataModule.freeCredits() != 0;
   };
   DCacheModule.dmemReplyReady = [this]() {
     return AXIDataModule.isReplyReady() ? 1u : 0u;
   };
+  DCacheModule.dmemWriteReplyReady = [this]() { return AXIDataModule.isWriteReplyReady(); };
+  DCacheModule.replyAddress = [this]() { return AXIDataModule.replyAddress(); };
+  DCacheModule.replyTransaction = [this]() { return AXIDataModule.replyTransaction(); };
+  DCacheModule.writeAddress = [this]() { return AXIDataModule.writeReplyAddress(); };
+  DCacheModule.writeTransaction = [this]() { return AXIDataModule.writeReplyTransaction(); };
+  DCacheModule.exitReady = [this]() { return AXIDataModule.exitReady(); };
   for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) {
     DCacheModule.dmemLineData[i] = [this, i]() {
       return AXIDataModule.lineByte(i);
@@ -1295,6 +1301,13 @@ void CPU::wire() {
   AXIDataModule.readAddress = [this]() {
     return static_cast<uint32_t>(DCacheModule.reqReadAddr);
   };
+  AXIDataModule.readTransaction = [this]() { return static_cast<uint32_t>(DCacheModule.reqReadTransaction); };
+  AXIDataModule.writeTransaction = [this]() { return static_cast<uint32_t>(DCacheModule.reqWriteTransaction); };
+  AXIDataModule.writeConsumed = [this]() { return static_cast<bool>(DCacheModule.writeConsumed); };
+  AXIDataModule.exitValid = [this]() { return static_cast<bool>(DCacheModule.exitValid); };
+  AXIDataModule.exitValue = [this]() { return static_cast<uint32_t>(DCacheModule.exitValue); };
+  AXIDataModule.rResp = [this]() { return static_cast<uint32_t>(AXIBusModule.dataRResp); };
+  AXIDataModule.bResp = [this]() { return static_cast<uint32_t>(AXIBusModule.dataBResp); };
   AXIDataModule.writeValid = [this]() {
     return static_cast<uint32_t>(DCacheModule.reqWriteValid);
   };
@@ -1582,7 +1595,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
   SQModule.issue.issueValid = [this]() {
-    return (static_cast<bool>(IssueArbiterModule.core.valid) &&
+    return (!static_cast<bool>(exitCommitted) && static_cast<bool>(IssueArbiterModule.core.valid) &&
             static_cast<bool>(IssueArbiterModule.core.isStore))
                ? 1u
                : 0u;
@@ -1598,7 +1611,7 @@ void CPU::wire() {
     return (n == 1 ? 0u : (n == 2 ? 1u : 2u));
   };
   SQModule.memDispatch.memDispatchValid = [this]() {
-    return MemArbiterModule.valid ? 1u : 0u;
+    return memoryDispatchValid() ? 1u : 0u;
   };
   SQModule.memDispatch.memDispatchIsStore = [this]() {
     return static_cast<bool>(MemArbiterModule.valid) &&
@@ -1620,7 +1633,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(ROBModule.headView.head);
   };
   SQModule.rob.storeWillCommit = [this]() {
-    return ROBModule.storeWillCommit() ? 1u : 0u;
+    return !static_cast<bool>(exitCommitted) && ROBModule.storeWillCommit() ? 1u : 0u;
   };
   SQModule.agu.isAGUEmpty = [this]() { return AGUModule.isEmpty(); };
   SQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };
@@ -1868,7 +1881,7 @@ void CPU::wire() {
         DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid)));
   };
   BPUModule.fetchCtx.memCanAccept = [this]() {
-    return static_cast<bool>(initialized) && (!ICacheModule.isRequestFull() || static_cast<bool>(ICacheModule.popConsume)) &&
+    return !static_cast<bool>(exitCommitted) && static_cast<bool>(initialized) && (!ICacheModule.isRequestFull() || static_cast<bool>(ICacheModule.popConsume)) &&
            (!AXIFetchModule.isRequestFull() || ICacheModule.refillHit(
                static_cast<uint32_t>(FetchUnitModule.programCounter))) &&
            !static_cast<bool>(ICacheModule.readBlocked);
@@ -2067,15 +2080,46 @@ void CPU::wire() {
   };
 }
 
+bool CPU::exitRetiring() const {
+  bool retiring = false;
+  for (int i = 0; i < SQ_CAP; ++i)
+    if (!static_cast<bool>(exitCommitted) && SQModule.isActive(i) && SQModule.isAddressReady(i) &&
+        SQModule.getAddress(i) == AXI_EXIT_ADDR && SQModule.getRobTag(i) == static_cast<uint32_t>(ROBModule.headView.head) &&
+        ROBModule.willCommit()) retiring = true;
+  return retiring;
+}
+
+bool CPU::memoryDispatchValid() const {
+  return static_cast<bool>(MemArbiterModule.valid) && (!static_cast<bool>(exitCommitted) ||
+      (static_cast<Operation>(static_cast<uint32_t>(MemArbiterModule.op)) == Operation::Store &&
+       !SQModule.isEmpty() && SQModule.isCommitted(SQModule.getHead() & SQ_MASK)));
+}
+
 void CPU::clock(bool shuffle) {
   initialized <= 1;
-  if (shuffle)
+  const bool frozen = static_cast<bool>(exitCommitted);
+  if (exitRetiring()) exitCommitted <= 1;
+  if (frozen) {
+    ++dcpu.cycles;
+    AXIFetchModule.work(); SQModule.work(); DCacheModule.work();
+    AXIDataModule.work(); AXIBusModule.work(); SlaveModule.work();
+    // Frozen sequential state holds, but ALL Wire caches still invalidate at
+    // this edge. No transport/SRAM response is allowed to bypass sync().
+    dark::ModuleBase *modules[] = {&FetchUnitModule, &AXIFetchModule, &ICacheModule, &FQModule,
+        &LQModule, &SQModule, &ROBModule, &PRFModule, &ALUModule, &MULModule, &DIVModule,
+        &AGUModule, &BRUModule, &BPUModule, &DCacheModule, &AXIDataModule, &AXIBusModule,
+        &SlaveModule, &RSModule, &RATModule, &AluCDBArbiterModule, &LqCDBArbiterModule,
+        &MulCDBModule, &DivCDBModule, &MemArbiterModule, &DispatchArbiterModule,
+        &IssueArbiterModule, &flushArbiter, &DecodeUnitModule};
+    for (auto *module : modules) module->sync();
+  } else if (shuffle)
     dcpu.run_once_shuffle();
   else
     dcpu.run_once();
   // The CPU's own registers are not registered modules. Commit them exactly
   // once at the same edge, after every module has completed work().
   dark::sync_member(initialized);
+  dark::sync_member(exitCommitted);
 }
 
 void CPU::run(bool shuffle) {
@@ -2095,6 +2139,7 @@ void CPU::run(bool shuffle) {
     bool s_halt = ROBModule.isHaltCommitted();
     const uint32_t headBefore = static_cast<uint32_t>(ROBModule.headView.head);
     const bool haltBefore = s_halt;
+    const bool exitNow = exitRetiring();
     clock(shuffle);
     const uint32_t headAfter = static_cast<uint32_t>(ROBModule.headView.head);
     const bool haltAfter = ROBModule.isHaltCommitted();
@@ -2104,14 +2149,14 @@ void CPU::run(bool shuffle) {
     assert(!haltCommitted || committed != 0);
     if (!ipcFrozen) {
       retired += committed - static_cast<uint32_t>(haltCommitted);
-      if (haltCommitted) {
+      if (haltCommitted || exitNow) {
         ipcRetired = retired;
         ipcCycles = dcpu.cycles - initCycles;
         ipcFrozen = true;
       }
     }
     // User contract: stop at HALT commit, without SQ/cache/DMEM drain.
-    finish = haltAfter;
+    finish = haltAfter || SlaveModule.isDone();
   }
   // host-only: the three debug::print blocks below are end-of-run reports for
   // the human (double percentage math + stdio formatting). They are not part
@@ -2149,9 +2194,9 @@ void CPU::run(bool shuffle) {
                      ? 100.0 * BPUModule.getBranchCorrect() /
                            BPUModule.getBranchTotal()
                      : 0.0);
-  const uint32_t halt_x10 = static_cast<uint32_t>(
+  const uint32_t halt_x10 = SlaveModule.isDone() ? SlaveModule.exitResult() : static_cast<uint32_t>(
       PRFModule.getValue(RATModule.readRAT_PRF(ROBModule.getHaltRd())));
   const bool print_full_x10 = std::getenv("RESULT_FULL") != nullptr;
-  std::cout << std::dec << (print_full_x10 ? halt_x10 : (halt_x10 & 0xFF))
+  std::cout << std::dec << ((print_full_x10 || SlaveModule.isDone()) ? halt_x10 : (halt_x10 & 0xFF))
             << std::endl;
 }

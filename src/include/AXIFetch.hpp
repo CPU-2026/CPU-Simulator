@@ -35,8 +35,8 @@ struct AXIFetchLine {
 struct AXIFetchInner {
   std::array<AXIFetchLine, IMEM_CAP> lines;
   Register<4> head;
-  Register<6> inflight; // issued beats not yet received
-  Register<6> discard;  // squashed beats still to drop
+  Register<9> inflight; // issued beats not yet received
+  Register<9> discard;  // squashed beats still to drop
   // An AR beat asserted but not yet accepted when squash hits: it must stay
   // on the bus until handshake (VALID cannot be withdrawn) and its data is
   // then dropped like any other squashed beat.

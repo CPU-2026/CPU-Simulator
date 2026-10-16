@@ -1,61 +1,61 @@
 #pragma once
-#include "common.h"
+#include "MemoryBus.hpp"
 #include "module.h"
 #include "tools.h"
-#include <array>
-#include <cstdint>
 
-// Data-side AXI4-Lite adapter. Keeps DMEM's upstream contract -- one line
-// fill read port and one line writeback port, run in parallel -- but the
-// 64-byte line is moved as DCACHE_WORDS_PER_LINE single-beat AXI transfers
-// (reads on AR/R, writebacks on AW/W/B with full byte strobes).
 struct AXIDataInput {
   Wire<1> readValid;
   Wire<32> readAddress;
+  Wire<3> readTransaction;
   Wire<1> writeValid;
   Wire<32> writeAddress;
+  Wire<3> writeTransaction;
   std::array<Wire<8>, DCACHE_BLOCK_CAP> writeLineData;
-  Wire<1> replyConsumed;
-  Wire<1> arReady;
-  Wire<1> rValid;
+  Wire<1> replyConsumed, writeConsumed, exitValid;
+  Wire<32> exitValue;
+  Wire<1> arReady, rValid;
   Wire<32> rData;
-  Wire<1> awReady;
-  Wire<1> wReady;
-  Wire<1> bValid;
+  Wire<2> rResp;
+  Wire<1> awReady, wReady, bValid;
+  Wire<2> bResp;
 };
 struct AXIDataOutput {
   Wire<1> arValid;
   Wire<32> arAddr;
-  Wire<1> rReady;
-  Wire<1> awValid;
+  Wire<1> rReady, awValid;
   Wire<32> awAddr;
   Wire<1> wValid;
   Wire<32> wData;
   Wire<4> wStrb;
   Wire<1> bReady;
 };
+struct AXIDataEntry {
+  std::array<Register<8>, DCACHE_BLOCK_CAP> bytes;
+  Register<32> address;
+  Register<3> transaction;
+  Register<5> issued, collected, aw, w;
+  Register<1> mmio;
+};
 struct AXIDataInner {
-  // Fill port: one outstanding line read plus the reply buffer.
-  Register<1> readActive;
-  Register<32> readAddr;
-  Register<5> readIssued;
-  Register<5> readCollected;
-  std::array<Register<RV32_WORD_BITS>, DCACHE_WORDS_PER_LINE> readWords;
-  Register<1> replyValid;
-  // Writeback port: one outstanding line write plus the latched line.
-  Register<1> writeActive;
-  Register<32> writeAddr;
-  Register<5> writeAw;
-  Register<5> writeW;
-  Register<5> writeB;
-  std::array<Register<RV32_WORD_BITS>, DCACHE_WORDS_PER_LINE> writeWords;
+  std::array<AXIDataEntry, AXI_DEPTH> reads, writes;
+  Register<4> rh, wh;
+  Register<5> rn, wn;
 };
 struct AXIData : dark::Module<AXIDataInput, AXIDataOutput, AXIDataInner> {
   AXIData();
-  bool isReadBusy() const { return static_cast<bool>(readActive); }
-  bool isWriteBusy() const { return static_cast<bool>(writeActive); }
-  bool isReplyReady() const { return static_cast<bool>(replyValid); }
-  // One byte of the completed line read (DCache fill path).
-  uint8_t lineByte(int i) const;
   void work() override;
+  uint32_t freeCredits() const;
+  bool isReplyReady() const;
+  bool isWriteReplyReady() const;
+  uint8_t lineByte(int byte) const;
+  uint32_t replyAddress() const;
+  uint32_t replyTransaction() const;
+  uint32_t writeReplyAddress() const;
+  uint32_t writeReplyTransaction() const;
+  bool exitReady() const;
+private:
+  int readIssue() const;
+  int writeIssue(bool address) const;
+  int readCollect() const;
+  int writeCollect() const;
 };

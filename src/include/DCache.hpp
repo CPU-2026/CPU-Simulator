@@ -1,146 +1,113 @@
 #pragma once
-#include "common.h"
+#include "MemoryBus.hpp"
+#include "SRAM.hpp"
 #include "module.h"
 #include "tools.h"
-#include "SRAM.hpp"
-#include <array>
-#include <cstdint>
 
-// Set-associative, write-back/write-allocate DCache mirroring the main tree:
-// 4-entry RequestBuffer, head-only SRAM lookup, DMEM dual-port refill,
-// tree-PLRU replacement. SRAMs are nested and clocked once per work();
-// outputs are combinational Wires over _M_old so no extra stage is added.
 struct DCacheInput {
   Wire<1> squashNeed;
   Wire<ROB_TAG_WIDTH> squashTag;
   Wire<1> decisionValid;
   Wire<5> decisionOp;
-  Wire<32> decisionValue;
-  Wire<32> decisionAddr;
+  Wire<32> decisionValue, decisionAddr;
   Wire<1> decisionIsSigned;
   Wire<2> decisionNBytes;
   Wire<ROB_TAG_WIDTH> decisionRobTag;
   Wire<7> decisionMemIndex;
-  Wire<1> dmemReadBusy;
-  Wire<1> dmemWriteBusy;
-  Wire<1> dmemReplyReady;
+  Wire<1> dmemWriteReady, dmemReplyReady, dmemWriteReplyReady, exitReady;
+  Wire<5> dmemCredits;
+  Wire<3> replyTransaction, writeTransaction;
+  Wire<32> replyAddress, writeAddress;
   std::array<Wire<8>, DCACHE_BLOCK_CAP> dmemLineData;
 };
 struct DCacheOutput {
-  Wire<1> busyOut;
-  Wire<1> loadRespValid;
+  Wire<1> busyOut, loadRespValid;
   Wire<7> loadRespMemIndex;
   Wire<ROB_TAG_WIDTH> loadRespRobTag;
   Wire<32> loadRespValue;
   Wire<1> reqReadValid;
   Wire<32> reqReadAddr;
+  Wire<3> reqReadTransaction;
   Wire<1> reqWriteValid;
   Wire<32> reqWriteAddr;
+  Wire<3> reqWriteTransaction;
   std::array<Wire<8>, DCACHE_BLOCK_CAP> reqWriteLineData;
-  Wire<1> fillFire;
+  Wire<1> fillFire, writeConsumed, exitValid;
+  Wire<32> exitValue;
 };
 struct DCacheEntry {
   Register<5> op;
-  Register<32> value;
-  Register<32> addr;
+  Register<32> value, address, raw;
   Register<1> isSigned;
   Register<2> nEnc;
   Register<ROB_TAG_WIDTH> robTag;
   Register<7> memIndex;
-  Register<32> raw;
-  Register<DCACHE_TAG_WIDTH> tag;
-  Register<2> way; // Hit way, or the selected victim way on a miss.
-  Register<1> lineValid;
-  Register<1> lineDirty;
-  Register<1> needReadMemory;
-  Register<1> cancelled;
-  Register<1> valid;
-  void sync() {
-    dark::Visitor::sync(op);
-    dark::Visitor::sync(value);
-    dark::Visitor::sync(addr);
-    dark::Visitor::sync(isSigned);
-    dark::Visitor::sync(nEnc);
-    dark::Visitor::sync(robTag);
-    dark::Visitor::sync(memIndex);
-    dark::Visitor::sync(raw);
-    dark::Visitor::sync(tag);
-    dark::Visitor::sync(way);
-    dark::Visitor::sync(lineValid);
-    dark::Visitor::sync(lineDirty);
-    dark::Visitor::sync(needReadMemory);
-    dark::Visitor::sync(cancelled);
-    dark::Visitor::sync(valid);
-  }
+  Register<2> way;
+  Register<3> miss; // 0 = none; MSHR m is encoded m+1 (zero-reset safe).
+  Register<1> active, ready, deferred, cancelled;
+};
+struct DCacheMiss {
+  Register<32> line;
+  Register<DCACHE_TAG_WIDTH> victimTag;
+  std::array<Register<8>, DCACHE_BLOCK_CAP> victimLine;
+  Register<DCACHE_REQUEST_BITS> owner;
+  Register<2> way;
+  Register<DCACHE_WORD_INDEX_BITS> fillWord;
+  Register<1> valid, dirty, readSent, writeSent, writeDone, responded;
+};
+struct DCachePlan {
+  int lookup = -1, response = -1, store = -1, mergeSlot = -1, mergeMiss = -1;
+  int allocate = -1, fillMiss = -1, writeAck = -1;
+  bool fillBeat = false, fillFire = false, loadValid = false, exitValid = false;
+  uint32_t loadValue = 0, exitValue = 0;
+  CacheMemoryRequest memoryRequest{};
+  std::array<std::array<CacheSRAMPort<4>, DCACHE_WORDS_PER_LINE>, NUM_OF_DCACHE_WAYS> data{};
+  std::array<CacheSRAMPort<1>, NUM_OF_DCACHE_WAYS> meta{};
+};
+// A combinational cache, exactly like Wire's per-cycle memoization. It holds
+// events/ports only, never a next-state copy; sync invalidates it after work.
+struct DCacheComb {
+  mutable bool valid = false;
+  mutable DCachePlan events{};
+  void sync() { valid = false; }
 };
 struct DCacheInner {
-  Register<DCACHE_REQUEST_BITS> head;
+  std::array<DCacheEntry, REQUEST_CAP> requests;
+  std::array<DCacheMiss, DCACHE_MSHR_CAP> misses;
+  std::array<Register<REQUEST_CAP>, REQUEST_CAP> olderMask;
   Register<DCACHE_COUNT_BITS> count;
-  Register<DCACHE_REQUEST_BITS> readIndex;
-  Register<DCACHE_OFFSET_BITS> readLaneIndex;
-  Register<2> readNEnc;
+  Register<DCACHE_REQUEST_BITS> cursor, readIndex;
+  Register<NUM_OF_DCACHE_WAYS> readWayMask;
   Register<1> readValid;
-  Register<4> readWayMask; // Per-way validity sampled with the synchronous SRAM read.
-  Register<1> memReadSent;
-  Register<1> memWriteSent;
-  Register<1> loadResponded; // One transport response per head, independent of refill retirement.
-  Register<DCACHE_WORD_INDEX_BITS> fillWord;
-  std::array<DCacheEntry, REQUEST_CAP> requestBuffer;
-  std::array<Register<8>, DCACHE_BLOCK_CAP> victimLine;
-  std::array<std::array<SRAM<NUM_OF_DCACHE_SETS, 32, 8>, DCACHE_WORDS_PER_LINE>,
-             NUM_OF_DCACHE_WAYS>
-      dataSrams;
-  std::array<SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS>, NUM_OF_DCACHE_WAYS>
-      metaSrams;
-  std::array<std::array<Register<1>, NUM_OF_DCACHE_WAYS>, NUM_OF_DCACHE_SETS>
-      validBits;
-  std::array<Register<3>, NUM_OF_DCACHE_SETS> plru; // Tree-PLRU; unused when direct-mapped.
+  std::array<std::array<SRAM<NUM_OF_DCACHE_SETS, 32, 8>, DCACHE_WORDS_PER_LINE>, NUM_OF_DCACHE_WAYS> datas;
+  std::array<SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS>, NUM_OF_DCACHE_WAYS> metadata;
+  std::array<std::array<Register<1>, NUM_OF_DCACHE_WAYS>, NUM_OF_DCACHE_SETS> validBits;
+  std::array<Register<DCACHE_PLRU_BITS>, NUM_OF_DCACHE_SETS> plru;
+  DCacheComb comb;
 };
 struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
-  DCache() { wire_output(); }
+  DCache();
   void work() override;
   bool isEmpty() const { return static_cast<uint32_t>(count) == 0; }
   bool isRequestFull() const { return static_cast<uint32_t>(count) == REQUEST_CAP; }
-  // host-only: reporting counters, never consumed by datapath logic.
-  uint64_t statHits = 0;
-  uint64_t statMisses = 0;
-
- private:
-  void wire_output();
-  static int decodeNBytes(uint32_t enc);
-  uint32_t headAddr() const;
-  uint32_t headSet() const;
-  uint32_t headWay() const;
-  uint32_t storeWay() const;
+  uint64_t statHits = 0, statMisses = 0; // host-only reporting
+private:
+  CacheRequest request(int slot) const;
+  int miss(int slot) const;
+  uint8_t activeMask() const;
+  int oldestRequest(uint8_t mask) const;
+  int oldestMiss(uint8_t mask) const;
+  int freeRequest() const;
+  int freeMiss() const;
+  int findMiss(uint32_t line) const;
+  bool setLocked(uint32_t addr) const;
+  bool storeHazard(int slot, bool allocating) const;
+  bool victimHazard(int id) const;
+  uint32_t victimAddress(int id) const;
   int hitWay() const;
   uint32_t selectVictim(uint32_t set) const;
-  bool needsLookup() const;
-  bool readHit() const;
-  bool headReadReady() const;
-  bool isReturnReady() const;
-  bool headIsStore() const;
-  bool headNeedMemory() const;
-  bool headDirty() const;
-  bool needsMemRead() const;
-  bool needsMemWrite() const;
-  bool canFill() const;
-  uint32_t fillWordIndex() const;
-  bool fillIsLast() const;
-  bool fillActive() const;
-  bool fillDone() const;
-  bool storeHit() const;
-  bool storeTouchesBank(uint32_t bank) const;
-  uint32_t victimAddr() const;
-  bool hitLoadReady() const;
-  bool fillLoadReady() const;
-  bool sramWantWrite() const;
-  bool dataBankWantWrite(uint32_t bank) const;
-  bool dataBankWantWrite(uint32_t way, uint32_t bank) const;
-  bool metaWantWrite() const;
-  bool metaWantWrite(uint32_t way) const;
-  bool sramWantRead() const;
-  uint32_t readRaw() const;
-  uint32_t hitRaw() const;
-  uint32_t fillRaw() const;
-  bool loadSquashGuard(uint32_t rob) const;
+  uint32_t sramRaw(int slot, int way) const;
+  uint32_t memoryRaw(int slot) const;
+  DCachePlan plan() const;
+  const DCachePlan &events() const;
 };

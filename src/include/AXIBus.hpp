@@ -62,6 +62,7 @@ struct AXIBusInner {
   Register<6> ownerHead;
   Register<7> ownerCount;
   Register<1> preferData;
+  Register<1> grantHeld, heldData;
 };
 struct AXIBus : dark::Module<AXIBusInput, AXIBusOutput, AXIBusInner> {
   AXIBus();
