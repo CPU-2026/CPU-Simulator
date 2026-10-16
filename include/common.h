@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <bit>
+#include <cstddef>
 #include <cstdint>
 #include "tools.h"
 using RobTag = uint8_t;
@@ -273,6 +274,18 @@ static_assert(DCACHE_META_BITS <= RV32_WORD_BITS,
               "DCache metadata must fit one SRAM lane");
 constexpr uint32_t DCACHE_META_DIRTY = 1u << DCACHE_TAG_WIDTH;
 constexpr uint32_t DCACHE_META_TAG_MASK = DCACHE_META_DIRTY - 1u;
+
+// AXI4-Lite memory subsystem (mirrors RISC-V-CPU-2026/docs/axi4-lite.md and
+// scripts/sim.cpp): depth-16 FIFO per channel, fixed service latency,
+// OKAY/SLVERR/DECERR response codes and the 0x80000000 exit MMIO address.
+constexpr int AXI_DEPTH = 16;
+constexpr int AXI_LATENCY = 10;
+constexpr uint32_t AXI_OKAY = 0;
+constexpr uint32_t AXI_SLVERR = 2;
+constexpr uint32_t AXI_DECERR = 3;
+constexpr uint32_t AXI_EXIT_ADDR = 0x80000000u;
+constexpr std::size_t AXI_RAM_BYTES = static_cast<std::size_t>(256) << 20;
+
 enum class ValueState : uint32_t{
   NOTREADY,
   FETCHING,

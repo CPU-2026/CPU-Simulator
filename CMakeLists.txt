@@ -12,7 +12,6 @@ set(CPU_SOURCES
 	src/CPU/CPU.cpp
 	src/Decoder/Decoder.cpp
 	src/DCache/DCache.cpp
-	src/DMEM/DMEM.cpp
 	src/ROB/ROB.cpp
 	src/RS/RS.cpp
  	src/ALU/ALU.cpp
@@ -22,7 +21,6 @@ set(CPU_SOURCES
 	src/StaticArbiter/StaticArbiter.cpp
 	src/CDB/CDB.cpp
 	src/DynamicArbiter/DynamicArbiter.cpp
-	src/IMEM/IMEM.cpp
 	src/ICache/ICache.cpp
 	src/FetchUnit/FetchUnit.cpp
 	src/LQ/LQ.cpp
@@ -38,6 +36,14 @@ add_executable(code
 	${CPU_SOURCES}
 	src/include/DIV.hpp
 	src/DIV/DIV.cpp
+	src/include/AXIBus.hpp
+	src/AXI/AXIBus.cpp
+	src/include/AXIData.hpp
+	src/AXI/AXIData.cpp
+	src/include/AXIFetch.hpp
+	src/AXI/AXIFetch.cpp
+	src/include/Slave.hpp
+	src/AXI/Slave.cpp
 )
 
 target_include_directories(code PRIVATE src/include)

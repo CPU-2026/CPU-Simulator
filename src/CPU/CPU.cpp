@@ -47,12 +47,12 @@ FetchTypeInfo scanJump(bool valid, uint32_t raw, uint32_t pc) {
 
 } // namespace
 
-CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
+CPU::CPU(Memory mem) : SlaveModule(mem) {
   wire();
   // Non-owning registration in the exact work() order of the former
   // hand-written run loop (module members outlive dark::CPU's pointers).
   dcpu.add_module(&FetchUnitModule);
-  dcpu.add_module(&IMEMModule);
+  dcpu.add_module(&AXIFetchModule);
   dcpu.add_module(&ICacheModule);
   dcpu.add_module(&FQModule);
   dcpu.add_module(&LQModule);
@@ -66,7 +66,9 @@ CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
   dcpu.add_module(&BRUModule);
   dcpu.add_module(&BPUModule);
   dcpu.add_module(&DCacheModule);
-  dcpu.add_module(&DMEMModule);
+  dcpu.add_module(&AXIDataModule);
+  dcpu.add_module(&AXIBusModule);
+  dcpu.add_module(&SlaveModule);
   dcpu.add_module(&RSModule);
   dcpu.add_module(&RATModule);
   dcpu.add_module(&AluCDBArbiterModule);
@@ -139,21 +141,21 @@ void CPU::wire() {
     return FQModule.headPredictedPC();
   };
   DecodeUnitModule.fqHeadCkptId = [this]() { return FQModule.headCkptId(); };
-  // Wire the IMEM's input wires once.
-  IMEMModule.needSquash = [this]() {
+  // Wire the instruction-side AXI adapter's input wires once.
+  AXIFetchModule.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
   // original comb() gated imemFetch: a fetch that hits in the ICache must
-  // NOT claim an IMEM line; accepted requests carry instruction-line bases.
-  IMEMModule.fetchValid = [this]() {
+  // NOT claim a memory line; accepted requests carry instruction-line bases.
+  AXIFetchModule.fetchValid = [this]() {
     return static_cast<bool>(BPUModule.outValid) &&
            !ICacheModule.hit(static_cast<uint32_t>(BPUModule.outPC)) &&
            !ICacheModule.refillHit(static_cast<uint32_t>(FetchUnitModule.programCounter));
   };
-  IMEMModule.fetchPC = [this]() {
+  AXIFetchModule.fetchPC = [this]() {
     return static_cast<uint32_t>(BPUModule.outPC) & ~ICACHE_OFFSET_MASK;
   };
-  IMEMModule.lineConsumed = [this]() {
+  AXIFetchModule.lineConsumed = [this]() {
     return static_cast<bool>(ICacheModule.fillFire);
   };
 
@@ -185,13 +187,13 @@ void CPU::wire() {
            FQModule.canAccept(!FQModule.isEmpty() &&
                DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid)));
   };
-  ICacheModule.lineReturn.valid = [this]() { return IMEMModule.retValid(); };
+  ICacheModule.lineReturn.valid = [this]() { return AXIFetchModule.retValid(); };
   ICacheModule.lineReturn.lineAddr = [this]() {
-    return IMEMModule.retLineAddr();
+    return AXIFetchModule.retLineAddr();
   };
   for (int w = 0; w < ICACHE_WORDS_PER_LINE; ++w) {
     ICacheModule.lineReturn.data[w] = [this, w]() {
-      return IMEMModule.retWord(w);
+      return AXIFetchModule.retWord(w);
     };
   }
 
@@ -1236,8 +1238,8 @@ void CPU::wire() {
   }
 
   // ---- Wire DCache's Input Wires (decision from the MemArbiter Output;
-  // squash from FlushArbiter; DMEM completion observed through the DMEM
-  // bridge accessors reading _M_old -- the DCache is now DMEM's only
+  // squash from FlushArbiter; adapter completion observed through the AXIData
+  // bridge accessors reading _M_old -- the DCache is now the only memory
   // client) ----
   DCacheModule.squashNeed = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
@@ -1270,42 +1272,161 @@ void CPU::wire() {
     return static_cast<uint32_t>(MemArbiterModule.memIndex);
   };
   DCacheModule.dmemReadBusy = [this]() {
-    return DMEMModule.isReadBusy() ? 1u : 0u;
+    return AXIDataModule.isReadBusy() ? 1u : 0u;
   };
   DCacheModule.dmemWriteBusy = [this]() {
-    return DMEMModule.isWriteBusy() ? 1u : 0u;
+    return AXIDataModule.isWriteBusy() ? 1u : 0u;
   };
   DCacheModule.dmemReplyReady = [this]() {
-    return DMEMModule.isReplyReady() ? 1u : 0u;
+    return AXIDataModule.isReplyReady() ? 1u : 0u;
   };
   for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) {
     DCacheModule.dmemLineData[i] = [this, i]() {
-      return DMEMModule.lineByte(i);
+      return AXIDataModule.lineByte(i);
     };
   }
 
-  // Wire the DMEM's Input Wires (dual-port line access: readValid/readAddress
-  // for fills, writeValid/writeAddress/writeLineData for dirty writebacks --
-  // the DCache is the only producer).
-  DMEMModule.DMEMInput::readValid = [this]() {
+  // Wire the data-side AXI adapter's Input Wires (dual-port line access:
+  // readValid/readAddress for fills, writeValid/writeAddress/writeLineData
+  // for dirty writebacks -- the DCache is the only producer).
+  AXIDataModule.readValid = [this]() {
     return static_cast<uint32_t>(DCacheModule.reqReadValid);
   };
-  DMEMModule.DMEMInput::readAddress = [this]() {
+  AXIDataModule.readAddress = [this]() {
     return static_cast<uint32_t>(DCacheModule.reqReadAddr);
   };
-  DMEMModule.DMEMInput::writeValid = [this]() {
+  AXIDataModule.writeValid = [this]() {
     return static_cast<uint32_t>(DCacheModule.reqWriteValid);
   };
-  DMEMModule.DMEMInput::writeAddress = [this]() {
+  AXIDataModule.writeAddress = [this]() {
     return static_cast<uint32_t>(DCacheModule.reqWriteAddr);
   };
   for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) {
-    DMEMModule.DMEMInput::writeLineData[i] = [this, i]() {
+    AXIDataModule.writeLineData[i] = [this, i]() {
       return static_cast<uint32_t>(DCacheModule.reqWriteLineData[i]);
     };
   }
-  DMEMModule.DMEMInput::replyConsumed = [this]() {
+  AXIDataModule.replyConsumed = [this]() {
     return static_cast<uint32_t>(DCacheModule.fillFire);
+  };
+
+  // ---- Wire the AXI4-Lite interconnect: two masters in (instruction fetch
+  // and data), one slave port out. Every channel is a Wire over committed
+  // state; the bus owns the AR round-robin and the R owner FIFO. ----
+  AXIBusModule.fetchArValid = [this]() {
+    return static_cast<uint32_t>(AXIFetchModule.arValid);
+  };
+  AXIBusModule.fetchArAddr = [this]() {
+    return static_cast<uint32_t>(AXIFetchModule.arAddr);
+  };
+  AXIBusModule.fetchRReady = [this]() {
+    return static_cast<uint32_t>(AXIFetchModule.rReady);
+  };
+  AXIBusModule.dataArValid = [this]() {
+    return static_cast<uint32_t>(AXIDataModule.arValid);
+  };
+  AXIBusModule.dataArAddr = [this]() {
+    return static_cast<uint32_t>(AXIDataModule.arAddr);
+  };
+  AXIBusModule.dataRReady = [this]() {
+    return static_cast<uint32_t>(AXIDataModule.rReady);
+  };
+  AXIBusModule.dataAwValid = [this]() {
+    return static_cast<uint32_t>(AXIDataModule.awValid);
+  };
+  AXIBusModule.dataAwAddr = [this]() {
+    return static_cast<uint32_t>(AXIDataModule.awAddr);
+  };
+  AXIBusModule.dataWValid = [this]() {
+    return static_cast<uint32_t>(AXIDataModule.wValid);
+  };
+  AXIBusModule.dataWData = [this]() {
+    return static_cast<uint32_t>(AXIDataModule.wData);
+  };
+  AXIBusModule.dataWStrb = [this]() {
+    return static_cast<uint32_t>(AXIDataModule.wStrb);
+  };
+  AXIBusModule.dataBReady = [this]() {
+    return static_cast<uint32_t>(AXIDataModule.bReady);
+  };
+  AXIBusModule.arReady = [this]() {
+    return static_cast<uint32_t>(SlaveModule.arReady);
+  };
+  AXIBusModule.rValid = [this]() {
+    return static_cast<uint32_t>(SlaveModule.rValid);
+  };
+  AXIBusModule.rData = [this]() {
+    return static_cast<uint32_t>(SlaveModule.rData);
+  };
+  AXIBusModule.rResp = [this]() {
+    return static_cast<uint32_t>(SlaveModule.rResp);
+  };
+  AXIBusModule.awReady = [this]() {
+    return static_cast<uint32_t>(SlaveModule.awReady);
+  };
+  AXIBusModule.wReady = [this]() {
+    return static_cast<uint32_t>(SlaveModule.wReady);
+  };
+  AXIBusModule.bValid = [this]() {
+    return static_cast<uint32_t>(SlaveModule.bValid);
+  };
+  AXIBusModule.bResp = [this]() {
+    return static_cast<uint32_t>(SlaveModule.bResp);
+  };
+  AXIFetchModule.arReady = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.fetchArReady);
+  };
+  AXIFetchModule.rValid = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.fetchRValid);
+  };
+  AXIFetchModule.rData = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.fetchRData);
+  };
+  AXIDataModule.arReady = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.dataArReady);
+  };
+  AXIDataModule.rValid = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.dataRValid);
+  };
+  AXIDataModule.rData = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.dataRData);
+  };
+  AXIDataModule.awReady = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.dataAwReady);
+  };
+  AXIDataModule.wReady = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.dataWReady);
+  };
+  AXIDataModule.bValid = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.dataBValid);
+  };
+  // Wire the external slave's Input Wires from the single AXI master port.
+  SlaveModule.arValid = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.arValid);
+  };
+  SlaveModule.arAddr = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.arAddr);
+  };
+  SlaveModule.rReady = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.rReady);
+  };
+  SlaveModule.awValid = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.awValid);
+  };
+  SlaveModule.awAddr = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.awAddr);
+  };
+  SlaveModule.wValid = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.wValid);
+  };
+  SlaveModule.wData = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.wData);
+  };
+  SlaveModule.wStrb = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.wStrb);
+  };
+  SlaveModule.bReady = [this]() {
+    return static_cast<uint32_t>(AXIBusModule.bReady);
   };
 
   LQModule.squash.needSquash = [this]() {
@@ -1748,7 +1869,7 @@ void CPU::wire() {
   };
   BPUModule.fetchCtx.memCanAccept = [this]() {
     return static_cast<bool>(initialized) && (!ICacheModule.isRequestFull() || static_cast<bool>(ICacheModule.popConsume)) &&
-           (!IMEMModule.isRequestFull() || ICacheModule.refillHit(
+           (!AXIFetchModule.isRequestFull() || ICacheModule.refillHit(
                static_cast<uint32_t>(FetchUnitModule.programCounter))) &&
            !static_cast<bool>(ICacheModule.readBlocked);
   };
