@@ -1,5 +1,18 @@
 # 前端子系统：取指 · 预译码 · 译码 · 分支预测
 
+> **2026-10-16范围说明**：主树只调整数据侧D$/读写共享16项DMEM；两树I$/IMEM和取指代码均未改，
+> 没有新增I$ MSHR。模板代码整体保持旧实现，与主树的整核周期不再要求等价。
+
+> **当前默认（2026-10-14）**：D$按RTL同步为4 KiB/32 B直映、4拍回填、首拍Load
+> 早返回；I$仍1 KiB/64 B，取指/预测/checkpoint及boot1拍/立即HALT规则不变。
+> 当前验证见[cache.md](cache.md)，以下8拍回填为旧配置。
+
+> **2026-10-14 D$几何扫描**：数据行32/64/128 B与1/2/4路PLRU独立参数化；
+> I$仍64 B/1 KiB，取指、BPU/checkpoint及停取规则不变，见[cache.md](cache.md)。
+
+> **2026-10-13 D$ early restart**：仅提前缺失Load供数，I$/IMEM、预测、取指、checkpoint
+> 与停取规则不变；HALT可在D$仍回填时立即结束，不新增drain，详见[cache.md](cache.md)。
+
 > **2026-10-13 valid寄存器同步**：D$ tag/dirty SRAM为20bit，valid为Register<1>数组；查询采样对齐、8拍回填和boot1拍保持。I$/预测/取指不变，结构及最新验证见[cache.md](cache.md)。
 
 > **2026-10-13 D$8拍回填**：仅调整数据缓存及其接线，16个32bit bank每拍写一对。
@@ -276,6 +289,8 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
   （`CKPT_ID_WIDTH`）。
   当前 `BPUSnapshot` 仅保存 **8-bit GHR**。RAS 从旧 `archRAS` 提交基线恢复，按 ROB
   从 head 到 `SquashTag`（含自身）的存活前缀重放 call/ret；不保存 per-checkpoint RAS 阵列。
+  当前RTL也使用旧提交基线，包含同拍提交头项恰好一次；内部深度位宽按容量收紧，默认5bit，
+  恢复候选独立计算、最后按flush选择。模板算法及逐拍合同不变，无新增恢复级。
 - **训练**：BRU 条件分支结果更新 localPHT/globalPHT/selector、condSeen 与目标侧状态；
   CDB 的 JAL/JALR 转移只更新目标侧。两个训练口共享周期初旧快照；表更新按资源固定写口
   仲裁（`fetch > cdb > bru`，BTB 的 identity/state 与 target 分两组），每个物理 Register

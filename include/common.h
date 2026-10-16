@@ -227,7 +227,7 @@ static_assert(CKPT_CAP <= (1 << 6),
               "checkpoint IDs must fit the retained 6-bit carrier");
 // DCache geometry (mirrors main tree common.hpp). Address fields and masks
 // are derived from the line size and set count.
-constexpr int DCACHE_BLOCK_CAP = 64;
+constexpr int DCACHE_BLOCK_CAP = 32; // bytes per line; 128 sets gives 4 KiB total
 constexpr int NUM_OF_DCACHE_SETS = 128;
 constexpr int NUM_OF_DCACHE_WAYS = 1;
 constexpr int MEM_LATENCY = 20;
@@ -252,15 +252,44 @@ static_assert(DCACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
 static_assert(NUM_OF_DCACHE_SETS > 0 &&
                   std::has_single_bit(static_cast<uint32_t>(NUM_OF_DCACHE_SETS)),
               "DCache set count must be a positive power of two");
-static_assert(NUM_OF_DCACHE_WAYS == 1 || NUM_OF_DCACHE_WAYS == 4,
-              "DCache supports direct mapping or four-way tree-PLRU");
+static_assert(NUM_OF_DCACHE_WAYS == 1 || NUM_OF_DCACHE_WAYS == 2 ||
+                  NUM_OF_DCACHE_WAYS == 4,
+              "DCache supports direct mapping or 2/4-way tree-PLRU");
+// Tree-PLRU victim/update helpers (mirror the main tree): 2-way keeps the
+// MRU way in bit0; 4-way keeps MRU directions in bit2 (root), bit1 (left),
+// bit0 (right), where a set bit means the right child is more recent.
+inline uint32_t dcachePlruVictim(uint32_t bits) {
+  if (NUM_OF_DCACHE_WAYS == 2) return (bits & 1u) ? 0u : 1u;
+  if (NUM_OF_DCACHE_WAYS == 4) {
+    const uint32_t root = (bits >> 2) & 1u;
+    const uint32_t w1 = root ^ 1u;
+    const uint32_t sub = w1 ? (bits & 1u) : ((bits >> 1) & 1u);
+    return (w1 << 1) | (sub ^ 1u);
+  }
+  return 0;
+}
+inline uint32_t dcachePlruTouch(uint32_t bits, uint32_t way) {
+  if (NUM_OF_DCACHE_WAYS == 2) return way & 1u;
+  if (NUM_OF_DCACHE_WAYS == 4) {
+    const uint32_t w1 = (way >> 1) & 1u;
+    const uint32_t w0 = way & 1u;
+    uint32_t out = (w1 << 2) | (bits & 0x3u);
+    if (w1)
+      out = (out & ~0x1u) | w0;
+    else
+      out = (out & ~0x2u) | (w0 << 1);
+    return out;
+  }
+  return 0;
+}
 constexpr int DCACHE_OFFSET_BITS =
     std::bit_width(static_cast<uint32_t>(DCACHE_BLOCK_CAP - 1));
 constexpr uint32_t DCACHE_OFFSET_MASK = DCACHE_BLOCK_CAP - 1u;
 constexpr int DCACHE_INDEX_BITS =
     std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_SETS - 1));
 constexpr uint32_t DCACHE_INDEX_MASK = NUM_OF_DCACHE_SETS - 1u;
-constexpr int DCACHE_CAPACITY_BYTES = DCACHE_BLOCK_CAP << DCACHE_INDEX_BITS;
+constexpr int DCACHE_CAPACITY_BYTES = DCACHE_BLOCK_CAP <<
+    (DCACHE_INDEX_BITS + std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_WAYS - 1)));
 constexpr int DCACHE_TAG_SHIFT = DCACHE_OFFSET_BITS + DCACHE_INDEX_BITS;
 constexpr int DCACHE_TAG_WIDTH = RV32_WORD_BITS - DCACHE_TAG_SHIFT;
 constexpr int DCACHE_WAY_BITS =

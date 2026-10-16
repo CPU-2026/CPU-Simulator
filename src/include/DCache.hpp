@@ -6,10 +6,10 @@
 #include <array>
 #include <cstdint>
 
-// Direct-mapped, write-back/write-allocate DCache mirroring the main tree:
-// 4-entry RequestBuffer, head-only SRAM lookup, DMEM dual-port refill.
-// SRAMs are nested and clocked once per work(); outputs are combinational
-// Wires over _M_old so no extra pipeline stage is added.
+// Set-associative, write-back/write-allocate DCache mirroring the main tree:
+// 4-entry RequestBuffer, head-only SRAM lookup, DMEM dual-port refill,
+// tree-PLRU replacement. SRAMs are nested and clocked once per work();
+// outputs are combinational Wires over _M_old so no extra stage is added.
 struct DCacheInput {
   Wire<1> squashNeed;
   Wire<ROB_TAG_WIDTH> squashTag;
@@ -49,6 +49,7 @@ struct DCacheEntry {
   Register<7> memIndex;
   Register<32> raw;
   Register<DCACHE_TAG_WIDTH> tag;
+  Register<2> way; // Hit way, or the selected victim way on a miss.
   Register<1> lineValid;
   Register<1> lineDirty;
   Register<1> needReadMemory;
@@ -64,6 +65,7 @@ struct DCacheEntry {
     dark::Visitor::sync(memIndex);
     dark::Visitor::sync(raw);
     dark::Visitor::sync(tag);
+    dark::Visitor::sync(way);
     dark::Visitor::sync(lineValid);
     dark::Visitor::sync(lineDirty);
     dark::Visitor::sync(needReadMemory);
@@ -78,15 +80,21 @@ struct DCacheInner {
   Register<DCACHE_OFFSET_BITS> readLaneIndex;
   Register<2> readNEnc;
   Register<1> readValid;
-  Register<1> readLineValid;
+  Register<4> readWayMask; // Per-way validity sampled with the synchronous SRAM read.
   Register<1> memReadSent;
   Register<1> memWriteSent;
+  Register<1> loadResponded; // One transport response per head, independent of refill retirement.
   Register<DCACHE_WORD_INDEX_BITS> fillWord;
   std::array<DCacheEntry, REQUEST_CAP> requestBuffer;
   std::array<Register<8>, DCACHE_BLOCK_CAP> victimLine;
-  std::array<SRAM<NUM_OF_DCACHE_SETS, 32, 8>, DCACHE_WORDS_PER_LINE> dataSrams;
-  SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS> metaSram;
-  std::array<Register<1>, NUM_OF_DCACHE_SETS> validBits;
+  std::array<std::array<SRAM<NUM_OF_DCACHE_SETS, 32, 8>, DCACHE_WORDS_PER_LINE>,
+             NUM_OF_DCACHE_WAYS>
+      dataSrams;
+  std::array<SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS>, NUM_OF_DCACHE_WAYS>
+      metaSrams;
+  std::array<std::array<Register<1>, NUM_OF_DCACHE_WAYS>, NUM_OF_DCACHE_SETS>
+      validBits;
+  std::array<Register<3>, NUM_OF_DCACHE_SETS> plru; // Tree-PLRU; unused when direct-mapped.
 };
 struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   DCache() { wire_output(); }
@@ -102,6 +110,10 @@ struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   static int decodeNBytes(uint32_t enc);
   uint32_t headAddr() const;
   uint32_t headSet() const;
+  uint32_t headWay() const;
+  uint32_t storeWay() const;
+  int hitWay() const;
+  uint32_t selectVictim(uint32_t set) const;
   bool needsLookup() const;
   bool readHit() const;
   bool headReadReady() const;
@@ -123,7 +135,9 @@ struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   bool fillLoadReady() const;
   bool sramWantWrite() const;
   bool dataBankWantWrite(uint32_t bank) const;
+  bool dataBankWantWrite(uint32_t way, uint32_t bank) const;
   bool metaWantWrite() const;
+  bool metaWantWrite(uint32_t way) const;
   bool sramWantRead() const;
   uint32_t readRaw() const;
   uint32_t hitRaw() const;

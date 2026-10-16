@@ -1,9 +1,21 @@
 # 后端子系统：发射 · 乱序执行 · 写回 · 提交 · squash 恢复
 
+> **2026-10-16范围说明**：仅主树升级D$四MSHR/同行合并及读写共享16项流水DMEM；模板后端代码
+> 未改，数值语义与退休合同保持，但不能再声明周期匹配主树新golden。
+
+> **当前默认（2026-10-14）**：D$按RTL切为4 KiB/32 B直映，Load首个合格回填拍
+> 响应一次、Cache第4拍才释放。ROB/LSQ身份与生命周期、dirty写完成资格、CDB与
+> 依赖派发、恢复及立即HALT保持；Register单写、所有work后统一sync。下面8拍为历史。
+
+> **2026-10-14 D$几何扫描**：三端采用1/2/4路PLRU，回填4/8/16拍；Load首拍响应
+> 与Cache末拍释放仍分离，ROB/LSQ/恢复及ALU/CDB依赖边界不变。立即HALT不排空，
+> 扫描当时默认容量/golden未切换，见[cache.md](cache.md)。
+
 > **2026-10-13 valid寄存器同步**：D$ tag/dirty SRAM为20bit，valid为Register<1>数组；查询采样对齐、8拍回填保持。ROB/LSQ/恢复/立即HALT不变，结构及最新验证见[cache.md](cache.md)。
 
-> **2026-10-13 D$8拍回填**：每拍写两个32bit bank，第8拍才形成缺失Load响应。
-> 命中时序、DMEM协议及后端发射/写回/退休/恢复合同不变；活动周期按双树实测更新。
+> **2026-10-13 D$ early restart＋8拍回填**：每拍写两个32bit bank，缺失Load首个合格
+> 回填拍响应一次，Cache仍第8拍才释放。Load回填/owner/ROB提交三种完成事件分离；
+> 各Register单写、统一sync，命中、CDB寄存边界、ALU依赖派发/退休/恢复资格不变。
 
 > **2026-10-13双树同步完成**：删除finishPhase，HALT提交立即结束、不排空。
 > D$保存跨拍Load取消标记，拒绝取消后因ROB/LQ身份复用而误接收的迟到响应。

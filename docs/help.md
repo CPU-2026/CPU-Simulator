@@ -1,5 +1,22 @@
 # RISC-V Simulator Template 使用指南
 
+> **当前默认（2026-10-14）**：D$已按RTL切到4 KiB/128组/1路/32 B，metadata为
+> tag20＋dirty1。首个合格回填拍只返回一次Load，第4拍才安装完整行与消费DMEM回复。
+> `run_sram_dcache.py`默认检查三端真实配置，不改测试副本几何；`run_sram_cpu.py`
+> 不带`--geometry`时验证真实默认，并记录`actual_geometry`供early-restart专项使用。
+> I$与Register单写/统一sync不变；旧8 KiB报告不作为当前源码验证证据。
+
+> **4 KiB几何扫描**：`sync/dcache_sweep.py`在私有副本中编译两软件和转换RTL，
+> 不覆盖仓库`code`或临时改写生产常量；`--reuse`保留完成项、`--synth-jobs`只并行
+> 独立转换快照。`run_sram_cpu.py --geometry LINE SETS WAYS --out ...`同样只改验证副本。
+> 更改行大小不改变I$；1/2/4路统一tree-PLRU，嵌套SRAM逐路work、正常统一sync。
+
+> **2026-10-13 early restart**：`loadResponded: Register<1>`仅属于当前Cache队首。
+> 首个合格回填拍（仍等待dirty写实际完成）从旧DMEM完整行供Load字节并单写置位；
+> 取消Load也置位，不重复返回。直到末拍才清位/释放队首/消费整行，valid首拍清末拍置；
+> Load响应与嵌套SRAM不增加寄存级，各work完成后统一sync。立即HALT不排空。
+> 最新三端/软件四构建验证与活动周期见共同父目录sync/README.md；下面较早统计为历史。
+
 > **2026-10-13 valid寄存器更新**：D$ valid为128项Register<1>，metadata SRAM仅tag19+dirty1；
 > 查询沿采样readLineValid，不提前sync，不从新写SRAM读取。第8拍填完并置valid，各Register
 > 每拍单写。无SRAM初始化扫描；最新对拍/回归入口为共同父目录sync/README.md，下面为历史阶段验收。
@@ -8,7 +25,7 @@
 > HALT提交立即结束、无SQ/Cache/DMEM排空。Release/`_DEBUG`各18 ISA＋6 IPC严格匹配
 > 根级golden及主树结果/周期/退休数/保留统计；clock总计12,987,988/759,991，drain=0。
 > 本轮报告位于`/tmp/opencode/tpl-dcache-regression.json`及`tpl-dcache-directed.json`。
-> RTL尚未同步；下面全dirty/排空/三端门禁属于历史，不证明此次SRAM时序。
+> 此处数值为早期SRAM单拍回填历史记录；当前RTL已经同步，最新验收不沿用旧全dirty门禁。
 
 > **模板同步要点**：Load响应和DMEM请求保持组合Wire，不能恢复旧lb/rq输出寄存级。
 > 请求n拍入队、n+1拍由旧队首查询SRAM、命中n+2拍服务；旧full时即使完成也不补入。

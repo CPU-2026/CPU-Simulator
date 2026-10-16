@@ -1,6 +1,12 @@
 # RV32IM 乱序处理器模拟器
 
-> **2026-10-13 D$同步完成**：4项请求队列、队首串行查询，data为128×512bit字节写
+> **当前默认（2026-10-14，按RTL同步）**：D$为4 KiB（128组×1路×32 B），8个
+> 128×32bit data SRAM＋128×21bit tag/dirty SRAM＋独立valid。缺失Load首个合格
+> 回填拍从完整256bit回复返回一次；整行4拍填完才释放Cache队首与消费回复。
+> I$保持1 KiB/64 B，Register单写/统一sync、boot1拍和立即HALT保持；最新验收见sync/README.md。
+> 当前源码三CPU24镜像逐拍通过，活动golden已刷新；两软件四构建24镜像strict复核通过。
+
+> **历史2026-10-13 D$同步完成**：4项请求队列、队首串行查询，data为128×512bit字节写
 > SRAM，metadata为128×21bit SRAM；DMEM回复保持至回填消费。HALT提交立即结束，
 > 不排空。Release/`_DEBUG`各18 ISA＋6 IPC与主树结果/周期/退休数/保留统计一致，
 > 严格匹配共同golden；总clock分别12,987,988/759,991。RTL尚未同步此次时序。
@@ -68,7 +74,7 @@ VERBOSE=clock,icache ./code < data/testcases/gcd.data
 | LQ / SQ | 8 / 8 |
 | 结果总线 | ALU、Load、MUL、DIV 四路独立 CDB |
 | ICache | 1 KiB，16×64 B，单端口同步 SRAM；4 项请求队列，队首命中最早 n+1 拍旁路交付 FQ |
-| DCache | 8 KiB，128×64 B，data/metadata 同步 SRAM，4 项请求队列，write-back + write-allocate |
+| DCache | 4 KiB，128×32 B，data/metadata 同步 SRAM，4 项请求队列，首拍Load早返回/4拍回填，write-back + write-allocate |
 | 主存延迟 | 20 周期 |
 
 分支预测器的方向侧由 local/global/selector 各 256×2-bit 的 Tournament 表和 8-bit GHR
