@@ -3,22 +3,24 @@
 #define CPU_HPP
 #include "AGU.hpp"
 #include "ALU.hpp"
+#include "AXIBus.hpp"
+#include "AXIData.hpp"
+#include "AXIFetch.hpp"
 #include "DynamicArbiter.hpp"
 #include "StaticArbiter.hpp"
 #include "BRU.hpp"
 #include "BPU.hpp"
 #include "CDB.hpp"
 #include "DCache.hpp"
-#include "DMEM.hpp"
 #include "Decoder.hpp"
 #include "InstructBuffer.hpp"
 #include "FetchUnit.hpp"
 #include "ICache.hpp"
-#include "IMEM.hpp"
 #include "LQ.hpp"
 #include "MUL.hpp"
 #include "DIV.hpp"
 #include "SQ.hpp"
+#include "Slave.hpp"
 #include "Memory.hpp"
 #include "PRF.hpp"
 #include "RAT.hpp"
@@ -51,9 +53,11 @@ class CPU {
   ICache ICacheModule;
   DecodeUnit DecodeUnitModule;
   PRF PRFModule;
-  DMEM DMEMModule;
+  AXIData AXIDataModule;
   DCache DCacheModule;
-  IMEM IMEMModule;
+  AXIFetch AXIFetchModule;
+  AXIBus AXIBusModule;
+  Slave SlaveModule;
   BPU BPUModule;
   FlushArbiter flushArbiter;
   AluCDB AluCDBArbiterModule;
