@@ -3,7 +3,8 @@
 
 AXIBus::AXIBus() {
   arValid = [this]() -> uint32_t {
-    return (static_cast<bool>(fetchArValid) || static_cast<bool>(dataArValid))
+    return (static_cast<uint32_t>(ownerCount) < AXI_BUS_DEPTH &&
+            (static_cast<bool>(fetchArValid) || static_cast<bool>(dataArValid)))
                ? 1u
                : 0u;
   };
@@ -12,10 +13,10 @@ AXIBus::AXIBus() {
                         : static_cast<uint32_t>(dataArAddr);
   };
   fetchArReady = [this]() -> uint32_t {
-    return (grantFetch() && static_cast<bool>(arReady)) ? 1u : 0u;
+    return (static_cast<uint32_t>(ownerCount) < AXI_BUS_DEPTH && grantFetch() && static_cast<bool>(arReady)) ? 1u : 0u;
   };
   dataArReady = [this]() -> uint32_t {
-    return (grantData() && static_cast<bool>(arReady)) ? 1u : 0u;
+    return (static_cast<uint32_t>(ownerCount) < AXI_BUS_DEPTH && grantData() && static_cast<bool>(arReady)) ? 1u : 0u;
   };
   rReady = [this]() -> uint32_t {
     if (ownerIsFetch())
@@ -55,12 +56,14 @@ AXIBus::AXIBus() {
 }
 
 bool AXIBus::grantFetch() const {
+  if (static_cast<bool>(grantHeld)) return !static_cast<bool>(heldData);
   const bool fetch = static_cast<bool>(fetchArValid);
   const bool data = static_cast<bool>(dataArValid);
   return fetch && (!data || !static_cast<bool>(preferData));
 }
 
 bool AXIBus::grantData() const {
+  if (static_cast<bool>(grantHeld)) return static_cast<bool>(heldData);
   const bool fetch = static_cast<bool>(fetchArValid);
   const bool data = static_cast<bool>(dataArValid);
   return data && (!fetch || static_cast<bool>(preferData));
@@ -81,7 +84,7 @@ void AXIBus::work() {
   const uint32_t count = static_cast<uint32_t>(ownerCount);
   const bool bothValid = static_cast<bool>(fetchArValid) &&
                          static_cast<bool>(dataArValid);
-  const bool arFire = (static_cast<bool>(fetchArValid) ||
+  const bool arFire = count < AXI_BUS_DEPTH && (static_cast<bool>(fetchArValid) ||
                        static_cast<bool>(dataArValid)) &&
                       static_cast<bool>(arReady);
   const bool rFire = static_cast<bool>(rValid) && count != 0 &&
@@ -91,6 +94,10 @@ void AXIBus::work() {
 
   // The granted AR order is the R return order; one owner tag per beat.
   const uint32_t tail = (head + count) & (AXI_BUS_DEPTH - 1);
+  if (static_cast<bool>(arValid) && !static_cast<bool>(arReady) && !static_cast<bool>(grantHeld)) {
+    grantHeld <= 1;
+    heldData <= (grantData() ? 1u : 0u);
+  } else if (arFire) grantHeld <= 0;
   if (arFire)
     owner[tail] <= (grantFetch() ? 0u : 1u);
   if (rFire)

@@ -70,8 +70,11 @@ class CPU {
   FetchUnit FetchUnitModule;
   // Top-level state is written once before work(), committed after all work().
   Register<1> initialized;
+  Register<1> exitCommitted;
+  bool exitRetiring() const;
+  bool memoryDispatchValid() const;
 public:
-  CPU(Memory mem);
+  CPU(const Memory &mem);
   void wire();
   void run(bool shuffle = false);
 };

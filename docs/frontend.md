@@ -1,5 +1,10 @@
 # 前端子系统：取指 · 预译码 · 译码 · 分支预测
 
+## 2026-10-16 双树AXI同步（当前合同）
+
+I$1 KiB/64 B直映不变，共同REQUEST_CAP=8；checkpoint预算ROB16+I$8+FQ2+IQ2=28≤32。AXIFetch替代IMEM，经共享AR/owner FIFO逐32-bit取整行；恢复丢弃在途响应，保留未握手AR，计数器扩至9bit，满队列pop无push必须释放槽。BPU/FQ/IQ语义保持。
+课程镜像不识别旧HALT伪指令，合法`addi a0,x0,255`正常执行，只有`LEGACY_HALT=1`例外。退出Store退休时停止核心，旧20拍IMEM和历史周期不再是活动golden。
+
 > **2026-10-16范围说明**：主树只调整数据侧D$/读写共享16项DMEM；两树I$/IMEM和取指代码均未改，
 > 没有新增I$ MSHR。模板代码整体保持旧实现，与主树的整核周期不再要求等价。
 

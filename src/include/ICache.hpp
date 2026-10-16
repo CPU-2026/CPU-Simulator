@@ -156,7 +156,7 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
   // combinational predicate: the ICache head holds the halt instruction.
   // Member function (not a stored Register) so it is visible the same cycle.
   bool isHaltSignal() const {
-    return isReturnReady() && returnRaw() == 0x0ff00513;
+    return legacyHaltEnabled && isReturnReady() && returnRaw() == 0x0ff00513;
   }
   void work() override;
 };

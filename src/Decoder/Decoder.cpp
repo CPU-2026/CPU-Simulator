@@ -116,7 +116,7 @@ void DecodeUnit::work() {
       uop.predictedPC =
           static_cast<int32_t>(static_cast<uint32_t>(fqHeadPredictedPC));
       uop.ckptId = static_cast<uint8_t>(static_cast<uint32_t>(fqHeadCkptId));
-      uop.isHalt = (raw == 0x0ff00513);
+      uop.isHalt = legacyHaltEnabled && (raw == 0x0ff00513);
       auto t = static_cast<uint32_t>(tail) & (IQ_CAP - 1);
       entries[t].type <= static_cast<uint32_t>(uop.type);
       entries[t].opcode <= static_cast<uint32_t>(uop.opcode);

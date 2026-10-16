@@ -1,5 +1,11 @@
 # RISC-V Simulator Template 使用指南
 
+## 当前运行规则（2026-10-16）
+
+默认加载`data/course-testcases/*/program.data`原始课程镜像。D$4 KiB/2-way/4 MSHR/8请求槽，I/D共享AXI4-Lite；SW写`0x80000000`，B握手结束并打印完整32-bit结果。`test.sh`跑25例，`test_IPC.sh`跑6个perf例，BP_BIN可选择外部Release构建。
+根级`python3 data/course.py test --binary <主树> --peer <模板>`同时核验结果、课程动态退休数及逐例总/core/drain周期；`smoke`检查合法255指令/完整32bit/栈与RAM顶/字节扩展/并发冷Load/脏逐出/错误路径退出。旧镜像只可`LEGACY_HALT=1`运行，其旧周期表保留为历史。
+断言构建使用`-DCMAKE_CXX_FLAGS=-D_DEBUG -DCMAKE_CXX_FLAGS_RELEASE='-O3 -UNDEBUG'`，确保Release默认的`-DNDEBUG`不遮蔽标准断言。CPU冻结核心时仍sync所有模块，不能只清transport的Wire。
+
 > **当前默认（2026-10-14）**：D$已按RTL切到4 KiB/128组/1路/32 B，metadata为
 > tag20＋dirty1。首个合格回填拍只返回一次Load，第4拍才安装完整行与消费DMEM回复。
 > `run_sram_dcache.py`默认检查三端真实配置，不改测试副本几何；`run_sram_cpu.py`

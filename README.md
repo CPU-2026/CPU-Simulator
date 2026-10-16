@@ -1,6 +1,23 @@
 # RV32IM 乱序处理器模拟器
 
-> **当前默认（2026-10-14，按RTL同步）**：D$为4 KiB（128组×1路×32 B），8个
+## 当前双树AXI配置（2026-10-16）
+
+D$已与主树同步为**4 KiB/64组/2路/32 B，4 MSHR＋8个请求槽**，支持同行Load合并。
+AXIFetch/AXIData经共享AXI4-Lite连接256 MiB Slave；每通道16项、服务延迟10拍，数据侧读写共享16条整行信用，AW/W独立推进。Register每拍单写，全部work后统一sync；D$组合事件缓存仅缓存端口与事件，不能充当next-state。
+
+当前25个课程镜像在`data/course-testcases/`，与根级副本和课程来源逐字节相同。
+**停机是SW向`0x80000000`写结果，Slave消费B响应后结束**；输出完整32位，不是读停机，也不再依赖旧HALT伪指令。IPC在该Store按序退休时冻结，计入最后一条Store，不做全dirty扫描。
+
+```bash
+BP_BIN=/tmp/opencode/rv32-sync-template/code ./test.sh
+BP_BIN=/tmp/opencode/rv32-sync-template/code ./test_IPC.sh
+python3 ../data/course.py smoke --binary /tmp/opencode/rv32-sync-template/code
+```
+
+完整构建/双树对比命令见[主树README](../README.md)，共同golden见`../docs/benchmarks.md`。
+旧语料必须显式`LEGACY_HALT=1`，历史周期不适用于AXI；本轮不包含RTL同步。
+
+> **历史默认（2026-10-14，按RTL同步）**：D$为4 KiB（128组×1路×32 B），8个
 > 128×32bit data SRAM＋128×21bit tag/dirty SRAM＋独立valid。缺失Load首个合格
 > 回填拍从完整256bit回复返回一次；整行4拍填完才释放Cache队首与消费回复。
 > I$保持1 KiB/64 B，Register单写/统一sync、boot1拍和立即HALT保持；最新验收见sync/README.md。

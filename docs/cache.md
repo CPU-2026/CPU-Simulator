@@ -1,5 +1,10 @@
 # 缓存与存储层次：L1I / L1D / 片上主存
 
+## 2026-10-16 双树AXI同步（当前合同）
+
+D$4 KiB（64组×2路×32 B），4 MSHR＋8请求槽（包含owner），同行Load合并、独立组hit-under-miss、Store有序、4拍/每拍两个bank回填、Load首拍返回。每路8个`SRAM<64,32,8>`及`SRAM<64,22>`，valid独立，tree-PLRU。组合事件缓存只保存端口/事件，sync失效，不保存模块next-state；Register单写及所有work后统一sync保持。
+数据读写共享16条整行信用，经共享AXI4-Lite访问每通道16项/服务10拍/256 MiB RAM的Slave。退出SW绕过Cache，完整32-bit结果在B握手确定，不全dirty扫描。下方单miss/旧DMEM/旧RTL声明为历史，活动表见`../../docs/benchmarks.md`。
+
 > **实现分叉（2026-10-16）**：用户仅升级主树为4 KiB两路/四MSHR/同行Load合并，DMEM
 > 读写共享总计16项混合队列。模板与RTL代码未改，仍为下面的旧实现，不与主树新周期表等价。
 > 新结构见[主树cache.md](../../docs/cache.md)；不能拿旧三端报告证明新主树已同步。

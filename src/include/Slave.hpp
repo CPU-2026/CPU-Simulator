@@ -66,6 +66,7 @@ struct SlaveInner {
   Register<4> bHead;
   Register<5> bCount;
   Register<32> cycle;
+  Register<32> random;
   Register<1> done;
   Register<32> result;
 };

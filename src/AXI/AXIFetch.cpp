@@ -108,7 +108,7 @@ void AXIFetch::work() {
     // owed to squashed lines are dropped first (they return before new ones).
     if (rBeat) {
       uint32_t slot = 0;
-      if (disc == 0 && !static_cast<bool>(pending) && oldestWithDeficit(slot)) {
+      if (disc == 0 && oldestWithDeficit(slot)) {
         const uint32_t c = static_cast<uint32_t>(lines[slot].collected);
         lines[slot].words[c] <= static_cast<uint32_t>(rData);
         lines[slot].collected <= c + 1u;
@@ -134,7 +134,7 @@ void AXIFetch::work() {
     const bool doPush = static_cast<bool>(fetchValid) && !static_cast<bool>(needSquash) &&
                         (occ < static_cast<uint32_t>(IMEM_CAP) || doPop);
     const uint32_t pushSlot = (h + occ) & (IMEM_CAP - 1);
-    const bool reuseHead = doPop && pushSlot == h;
+    const bool reuseHead = doPop && doPush && pushSlot == h;
     if (doPop && !reuseHead)
       lines[h].valid <= 0;
     if (doPush) {
