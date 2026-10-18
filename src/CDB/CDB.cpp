@@ -76,3 +76,33 @@ void LqCDB::wire_output() {
     return lsqLive() ? static_cast<uint32_t>(lsqMemIndex) : 0u;
   };
 }
+
+uint32_t SharedCDB::selectOldest() const {
+  uint32_t winner = 0;
+  RobTag tag = 0;
+  for (uint32_t i = 0; i < 3; ++i) {
+    const RobTag candidateTag = static_cast<uint32_t>(candidates[i].robTag);
+    if (static_cast<bool>(candidates[i].valid) &&
+        (winner == 0 || ROB::isOlder(candidateTag, tag))) {
+      winner = i + 1;
+      tag = candidateTag;
+    }
+  }
+  return winner;
+}
+
+SharedCDB::SharedCDB() {
+  selected = [this]() { return selectOldest(); };
+  valid = [this]() { return static_cast<uint32_t>(selected) != 0; };
+  value = [this]() -> uint32_t {
+    const uint32_t source = static_cast<uint32_t>(selected);
+    return source ? static_cast<uint32_t>(candidates[source - 1].value) : 0u;
+  };
+  robTag = [this]() -> uint32_t {
+    const uint32_t source = static_cast<uint32_t>(selected);
+    return source ? static_cast<uint32_t>(candidates[source - 1].robTag) : 0u;
+  };
+  mulGrant = [this]() { return static_cast<uint32_t>(selected) == 1; };
+  divGrant = [this]() { return static_cast<uint32_t>(selected) == 2; };
+  lqGrant = [this]() { return static_cast<uint32_t>(selected) == 3; };
+}

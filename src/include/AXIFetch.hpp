@@ -27,14 +27,14 @@ struct AXIFetchOutput {
 struct AXIFetchLine {
   Register<1> valid;
   Register<32> lineAddr;
-  std::array<Register<RV32_WORD_BITS>, ICACHE_WORDS_PER_LINE> words;
   Register<5> issued;    // read beats handed to the bus
   Register<5> collected; // read beats received
-  Register<1> ready;
 };
 struct AXIFetchInner {
   std::array<AXIFetchLine, IMEM_CAP> lines;
-  Register<4> head;
+  std::array<std::array<Register<RV32_WORD_BITS>, ICACHE_WORDS_PER_LINE>, IMEM_CAP> payload;
+  Register<std::bit_width(static_cast<uint32_t>(IMEM_CAP - 1))> head;
+  Register<std::bit_width(static_cast<uint32_t>(IMEM_CAP))> count, tail, issue, collect;
   Register<9> inflight; // issued beats not yet received
   Register<9> discard;  // squashed beats still to drop
   // An AR beat asserted but not yet accepted when squash hits: it must stay

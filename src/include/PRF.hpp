@@ -1,6 +1,7 @@
 #pragma once
 #include "common.h"
 #include "module.h"
+#include "Recovery.hpp"
 #include <array>
 #include <cstdint>
 struct PRFEntry {
@@ -11,11 +12,7 @@ struct PRFInputSquash {
   Wire<1> needSquash;
   Wire<ROB_TAG_WIDTH> SquashTag;
 };
-// Quad-CDB write ports (mirrors the main tree's
-// PRFInput.cdbOfALU/cdbOfLQ/cdbOfMul/cdbOfDiv): the ALU group gates on
-// cdbIsControl (control results never write PRF); the LQ/MUL/DIV groups have
-// no isControl wire -- loads, multiplies and divides are never control ops,
-// saving three ports.
+// Two result write ports: dedicated ALU and age-selected MUL/DIV/LQ.
 struct PRFInputCDBAlu {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
@@ -23,19 +20,7 @@ struct PRFInputCDBAlu {
   Wire<1> cdbIsControl;
   Wire<PHY_TAG_WIDTH> cdbNewPhy;
 };
-struct PRFInputCDBLq {
-  Wire<1> cdbValid;
-  Wire<32> cdbValue;
-  Wire<ROB_TAG_WIDTH> cdbRobTag;
-  Wire<PHY_TAG_WIDTH> cdbNewPhy;
-};
-struct PRFInputCDBMul {
-  Wire<1> cdbValid;
-  Wire<32> cdbValue;
-  Wire<ROB_TAG_WIDTH> cdbRobTag;
-  Wire<PHY_TAG_WIDTH> cdbNewPhy;
-};
-struct PRFInputCDBDiv {
+struct PRFInputCDBShared {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
   Wire<ROB_TAG_WIDTH> cdbRobTag;
@@ -55,14 +40,13 @@ struct PRFInputROB {
   Wire<2> robHeadType;
   Wire<ROB_TAG_WIDTH> robNextTag;
   Wire<PHY_TAG_WIDTH> robHeadOldPhy;
-  std::array<Wire<PHY_TAG_WIDTH>, ROB_CAP> robNewPhy;
 };
 struct PRFInput {
+  std::array<RecoveryNarrowPort, RECOVERY_WIDTH> replay;
+  RecoveryInput recovery;
   PRFInputSquash squash;
   PRFInputCDBAlu cdbOfALU;
-  PRFInputCDBLq cdbOfLQ;
-  PRFInputCDBMul cdbOfMUL;
-  PRFInputCDBDiv cdbOfDIV;
+  PRFInputCDBShared cdbOfShared;
   PRFInputIssue issue;
   PRFInputROB rob;
 };

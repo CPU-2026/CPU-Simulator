@@ -3,6 +3,8 @@
 #include "module.h"
 #include "register.h"
 #include "tools.h"
+#include "Recovery.hpp"
+#include "SRAM.hpp"
 #include <array>
 #include <cstdint>
 // The common-header CKPT_LIVE_MAX guard covers every checkpoint retained in
@@ -63,6 +65,8 @@ struct BPUInputFetchTypeInfo {
   Wire<32> FetchJALTarget;
 };
 struct BPUInput {
+  std::array<RecoveryRasPort, RECOVERY_WIDTH> replay;
+   RecoveryInput recovery;
   BPUInputBRU bru;
   BPUInputCDB cdb;
   BPUInputROB rob;
@@ -112,7 +116,10 @@ struct DirectionPred {
 struct TargetPred {
   std::array<BTBEntryReg, BTB_CAP> BTB;
   std::array<RASEntry, RAS_CAP> specRAS;
-  std::array<RASEntry, RAS_CAP> archRAS;
+   SRAM<1, (RAS_CAP << 5), 32> archStorage;
+   std::array<Register<1>, RAS_CAP> archValid;
+   Register<8> baselineTop;
+   Register<1> replayOpen;
   Register<8> specTopOfRAS;
   Register<8> archTopOfRAS;
   // Branch-type filter: set when a PC resolves as a conditional (taken or
@@ -129,7 +136,7 @@ struct BPUInner {
   Register<1> bootDone; // cycle-0 init: all direction counters = 1
 };
 struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
-  BPU() { wire_output(); }
+   BPU();
   uint64_t branchTotal = 0;
   uint64_t branchCorrect = 0;
   uint8_t getGHR() const { return static_cast<uint32_t>(dir.GHR); }
@@ -139,7 +146,9 @@ struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   BPUSnapshot snapshotCheckPoint() const;
   uint8_t getNextCkptId() const { return static_cast<uint32_t>(nextCkptId); }
   void work() override;
-private:
+ private:
+   bool archWriteEnabled() const;
+   uint32_t archWriteLane() const;
   // Fetch-direction guard, verbatim from the retired FetchDecision::build.
   bool fetchAllowed() const;
   void wire_output();

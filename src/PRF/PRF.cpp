@@ -24,12 +24,7 @@ void PRF::work() {
   bool issueIsCtrl = static_cast<bool>(issue.issueIsControl);
   uint32_t issuePCVal = static_cast<uint32_t>(issue.issuePC);
 
-  // ---- Quad-CDB writeback: four independent write ports
-  // (aluCDB / lqCDB / mulCDB / divCDB). Register renaming guarantees a distinct
-  // newPhy per in-flight instruction, so same-cycle writebacks always hit
-  // different physical registers (no WAW; the Register array's per-element
-  // single write port is naturally satisfied). Each port keeps its own
-  // squash guard, verbatim from the single-CDB era.
+  // Two result write ports. Renaming keeps their destinations distinct.
   bool cdbWriteAlu = false;
   uint32_t cdbPhyAlu = 0;
   uint32_t cdbValAlu = 0;
@@ -46,46 +41,17 @@ void PRF::work() {
       }
     }
   }
-  bool cdbWriteLq = false;
-  uint32_t cdbPhyLq = 0;
-  uint32_t cdbValLq = 0;
-  if (static_cast<bool>(cdbOfLQ.cdbValid)) {
-    RobTag cdbTag = static_cast<uint32_t>(cdbOfLQ.cdbRobTag);
+  bool cdbWriteShared = false;
+  uint32_t cdbPhyShared = 0;
+  uint32_t cdbValShared = 0;
+  if (static_cast<bool>(cdbOfShared.cdbValid)) {
+    RobTag cdbTag = static_cast<uint32_t>(cdbOfShared.cdbRobTag);
     if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
-      uint32_t newPhy = static_cast<uint32_t>(cdbOfLQ.cdbNewPhy);
+      uint32_t newPhy = static_cast<uint32_t>(cdbOfShared.cdbNewPhy);
       if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
-        cdbWriteLq = true;
-        cdbPhyLq = newPhy;
-        cdbValLq = static_cast<uint32_t>(cdbOfLQ.cdbValue);
-      }
-    }
-  }
-  bool cdbWriteMul = false;
-  uint32_t cdbPhyMul = 0;
-  uint32_t cdbValMul = 0;
-  if (static_cast<bool>(cdbOfMUL.cdbValid)) {
-    RobTag cdbTag = static_cast<uint32_t>(cdbOfMUL.cdbRobTag);
-    if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
-      uint32_t newPhy = static_cast<uint32_t>(cdbOfMUL.cdbNewPhy);
-      if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
-        cdbWriteMul = true;
-        cdbPhyMul = newPhy;
-        cdbValMul = static_cast<uint32_t>(cdbOfMUL.cdbValue);
-      }
-    }
-  }
-
-  bool cdbWriteDiv = false;
-  uint32_t cdbPhyDiv = 0;
-  uint32_t cdbValDiv = 0;
-  if (static_cast<bool>(cdbOfDIV.cdbValid)) {
-    RobTag cdbTag = static_cast<uint32_t>(cdbOfDIV.cdbRobTag);
-    if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
-      uint32_t newPhy = static_cast<uint32_t>(cdbOfDIV.cdbNewPhy);
-      if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
-        cdbWriteDiv = true;
-        cdbPhyDiv = newPhy;
-        cdbValDiv = static_cast<uint32_t>(cdbOfDIV.cdbValue);
+        cdbWriteShared = true;
+        cdbPhyShared = newPhy;
+        cdbValShared = static_cast<uint32_t>(cdbOfShared.cdbValue);
       }
     }
   }
@@ -94,18 +60,9 @@ void PRF::work() {
     PhysicalRegs[cdbPhyAlu].ready <= true;
     PhysicalRegs[cdbPhyAlu].value <= cdbValAlu;
   }
-  if (cdbWriteLq) {
-    PhysicalRegs[cdbPhyLq].ready <= true;
-    PhysicalRegs[cdbPhyLq].value <= cdbValLq;
-  }
-  if (cdbWriteMul) {
-    PhysicalRegs[cdbPhyMul].ready <= true;
-    PhysicalRegs[cdbPhyMul].value <= cdbValMul;
-  }
-
-  if (cdbWriteDiv) {
-    PhysicalRegs[cdbPhyDiv].ready <= true;
-    PhysicalRegs[cdbPhyDiv].value <= cdbValDiv;
+  if (cdbWriteShared) {
+    PhysicalRegs[cdbPhyShared].ready <= true;
+    PhysicalRegs[cdbPhyShared].value <= cdbValShared;
   }
 
   // ---- Issue: squash owns recovery; only a non-squash cycle can pop. ----
@@ -113,7 +70,7 @@ void PRF::work() {
   uint32_t nextHead = curHead;
   bool doPop = false;
   uint8_t popPhy = 0;
-  if (!needSquash) {
+  if (!needSquash && !static_cast<bool>(recovery.active)) {
     if (issueValid) {
       if (issueAlloc) {
         assert(curHead != static_cast<uint32_t>(tailSeq));
@@ -147,21 +104,17 @@ void PRF::work() {
   // only insert matchesTag-live tags, all read from the same ROB snapshot.
   uint32_t recPhy[ROB_CAP + 1];
   uint32_t nRec = 0;
-  if (needSquash) {
-    const RobTag oldNext = static_cast<uint32_t>(rob.robNextTag);
-    RobTag tag = robNextTag(squashTag);
-    bool scanDone = (tag == oldNext);
-    for (int k = 0; k < ROB_CAP; ++k) {
-      if (scanDone)
-        continue;
-      uint32_t recoverPRF = static_cast<uint32_t>(rob.robNewPhy[robSlot(tag)]);
-      if (recoverPRF != static_cast<uint32_t>(InvalidPhy)) {
-        recPhy[nRec] = recoverPRF;
-        nRec = nRec + 1u;
+  const auto step = recovery.sample();
+  if (step.active) {
+    RobTag tag = step.nextTag;
+    for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
+      const unsigned offset = unsigned(step.offset) + lane;
+      if (offset < ROB_CAP && offset < step.liveCount &&
+          static_cast<uint32_t>(replay[lane].tag) == tag && ROB::isYounger(tag, step.squashTag)) {
+        const uint32_t phy = static_cast<uint32_t>(replay[lane].newPhy);
+        if (phy != 0) recPhy[nRec++] = phy;
       }
       tag = robNextTag(tag);
-      if (tag == oldNext)
-        scanDone = true;
     }
   }
 

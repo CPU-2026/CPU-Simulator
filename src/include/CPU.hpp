@@ -64,6 +64,7 @@ class CPU {
   LqCDB LqCDBArbiterModule;
   MulCDB MulCDBModule;
   DivCDB DivCDBModule;
+  SharedCDB SharedCDBModule;
   MemArbiter MemArbiterModule;
   DispatchArbiter DispatchArbiterModule;
   IssueArbiter IssueArbiterModule;
@@ -71,6 +72,9 @@ class CPU {
   // Top-level state is written once before work(), committed after all work().
   Register<1> initialized;
   Register<1> exitCommitted;
+  Register<1> recoveryActive;
+  Register<2> recoveryBeat;
+  Register<ROB_TAG_WIDTH> recoveryOffset, recoveryCount, recoveryNextTag, recoveryBoundary;
   bool exitRetiring() const;
   bool memoryDispatchValid() const;
 public:

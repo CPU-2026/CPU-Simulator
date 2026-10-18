@@ -1,0 +1,397 @@
+# 前端子系统：取指 · 预译码 · 译码 · 分支预测
+
+> **2026-10-18 AXIFetch容量收敛**：两软件按当前RTL将行运输16→8，对齐I$8请求预算，
+> pending AR保持、错路R丢弃、顺序返回及取指时刻不变。RAS通过ROB四槽窄窗重放，四拍
+> 游标及同步基线读不变。验收见父工作区`sync/RTL-TO-SW-SYNC-20261018.md`。
+
+> **2026-10-17 四拍恢复**：与主树/RTL相同，archRAS为掩码宽字SRAM＋每lane valid，
+> 深度及specRAS保留Register。广播沿读基线并保存旧arch深度，R+1..R+4每拍重放四条存活ROB，
+> 含head/边界、先pop后push、不重复提交；恢复期禁止早取指栈更新。GHR/checkpoint仍广播拍回卷。
+> ICache/AXIFetch继续处理在途回复，前端FQ/IQ和取指PC冻结；全部Wire仍逐拍失效。
+> 验收见父工作区`sync/RECOVERY4-SYNC-20261017.md`，旧单拍恢复周期不再是当前golden。
+
+> **2026-10-17 AXIFetch第二轮优化**：占用/收发改为计数及epoch游标；16行及I$预算、
+> pending AR、恢复丢弃、整行返回时刻不变，去掉payload无用复位/清零，无新级；见[memory.md](memory.md)。
+
+> **2026-10-17 AXIData**：数据侧游标/共享池优化不调整AXIFetch、I$或前端预算；AR轮询、
+> 背压锁定与恢复旧运输丢弃保持。详见[memory.md](memory.md)。
+
+> **2026-10-16 两路CDB**：ALU独占一路，MUL/DIV/LQ按ROB年龄共享另一路；BPU训练、
+> 恢复、前端容量与取指时序保持。SharedCDB无新寄存级，见[backend.md](backend.md)。
+
+## 2026-10-16 双树AXI同步（当前合同）
+
+I$1 KiB/64 B直映不变，共同REQUEST_CAP=8；checkpoint预算ROB16+I$8+FQ2+IQ2=28≤32。AXIFetch替代IMEM，经共享AR/owner FIFO逐32-bit取整行；恢复丢弃在途响应，保留未握手AR，计数器扩至9bit，满队列pop无push必须释放槽。BPU/FQ/IQ语义保持。
+课程镜像不识别旧HALT伪指令，合法`addi a0,x0,255`正常执行，只有`LEGACY_HALT=1`例外。退出Store退休时停止核心，旧20拍IMEM和历史周期不再是活动golden。
+
+> **2026-10-16范围说明**：主树只调整数据侧D$/读写共享16项DMEM；两树I$/IMEM和取指代码均未改，
+> 没有新增I$ MSHR。模板代码整体保持旧实现，与主树的整核周期不再要求等价。
+
+> **当前默认（2026-10-14）**：D$按RTL同步为4 KiB/32 B直映、4拍回填、首拍Load
+> 早返回；I$仍1 KiB/64 B，取指/预测/checkpoint及boot1拍/立即HALT规则不变。
+> 当前验证见[cache.md](cache.md)，以下8拍回填为旧配置。
+
+> **2026-10-14 D$几何扫描**：数据行32/64/128 B与1/2/4路PLRU独立参数化；
+> I$仍64 B/1 KiB，取指、BPU/checkpoint及停取规则不变，见[cache.md](cache.md)。
+
+> **2026-10-13 D$ early restart**：仅提前缺失Load供数，I$/IMEM、预测、取指、checkpoint
+> 与停取规则不变；HALT可在D$仍回填时立即结束，不新增drain，详见[cache.md](cache.md)。
+
+> **2026-10-13 valid寄存器同步**：D$ tag/dirty SRAM为20bit，valid为Register<1>数组；查询采样对齐、8拍回填和boot1拍保持。I$/预测/取指不变，结构及最新验证见[cache.md](cache.md)。
+
+> **2026-10-13 D$8拍回填**：仅调整数据缓存及其接线，16个32bit bank每拍写一对。
+> I$/IMEM、取指/预测、boot及HALT规则不变；整核周期受数据缺失延迟影响，见活动表。
+
+> **2026-10-13双树同步完成**：取指停取和boot保持，HALT提交立即结束、不排空，
+> clock=core、drain=0。模板D$ data/metadata SRAM已同步，Release/`_DEBUG`各18＋6
+> 与主树结果/周期/退休数/保留统计及根级golden严格一致；RTL未同步此次时序。
+
+> **历史HALT边界（2026-10-12）**：取指停取、HALT提交冻结core/IPC及boot保持；
+> DONE只等待已提交SQ和在途Cache/DMEM事务排空，不再发起全D$扫描写回。
+> 下面SPEC §62的全dirty完成与总周期记录为删除前历史。
+
+> **完整活动整核（SPEC §63/64）**：24镜像三CPU12667040拍2872word无损逐拍与
+> 独立退休/最终128KiB全等，现有周期表保持。软件非法指令保真PC/CID并异常ready，
+> 真提交才trap，错误路径取消不trap；观察修LSU lane配对与不可变Load owner宽度。
+> 第5/12/13当前范围收口，课程AXI/STA及未纳入异常继续，入口sync/README §56。
+
+> **boot隔离（SPEC §62/66）**：CPU顶层initialized Register门控第一正常fetch；一拍
+> 非零PRF/RAT/BPU初始化不分配CID，随后PC0/CID0周期0。HALT冻结core/IPC，最终
+> DONE等所有dirty写回；16程序9629/2872、最终128KiB核验/7负向通过。全部Register
+> 单写sync保持，ISA/IPC total新11973998/693042，core保持；README §54。
+
+> **全流水恢复（SPEC §61）**：67真实三CPU程序9001/2872严格全等，11源码负向。
+> n+1实际检测/拍末请求入队，n+2旧队列最老广播；前端取消与BPU/GHR/CID/RAS内容
+> 恢复和全后端同链核验。全部work后sync保持，第18当前域完成；第19boot/HALT/
+> drain计时继续。命令/报告sync/README §53。
+
+> **BTB竞争/参数验收（SPEC §60）**：BTB行与target写意图分别fetch > CDB > taken BRU，
+> JALR/RET无静态target不能屏蔽同槽解析target，异槽独立、Register单写及查询读old。
+> 26真实三CPU程序6690/1848严格全等，三类fetch/三源五种槽分组和七实际功能负向通过。
+> 13合法/9非法RTL参数引脚与22软件编译约束通过，第17当前域完成；第18全流水恢复
+> 继续。默认参数/活动ISA11967396、IPC691640保持，入口sync/README §52。
+
+> **用户RAS策略（SPEC §59）**：JALR两个link标志独立，双link含同寄存器先pop再push，
+> JAL仅按rd。实际三CPU33程序13,041拍1848字段严格同值，独立ISA/预测器转移核验
+> 栈内容/GHR/CID，7真实软件/RTL负向有效。模板BPU活动ROB校验补robNextTag；所有
+> Register单写/统一sync。18 ISA11967396保持，六IPC新691640，入口README §51。
+
+> **前端当前验收（SPEC §58）**：实际FetchUnit/ICache/IMEM/FQ/Decoder/decoded IQ
+> 与主树/RTL/独立参考2259步216字段严格全等，给定JAL预测/恢复、HALT、三级满替换
+> 与checkpoint回绕通过。RTL data是真实SRAM、tag是寄存器；模板仅加只读友元，
+> 全部work后sync，换输入只清Wire缓存，Release/_DEBUG各18＋6/golden保持。
+> 命令README §50；预测器内部状态与检测/广播闭环继续第17/18步。
+
+> **当前后端边界（SPEC §57/67）**：SQ组合输出Store槽位图/epoch，ROB批量校验完成，历史实际Cache后端
+> 764字段严格门禁见sync/README §49。退休仍读旧ROB ready；本轮取指/译码周期保持，
+> 两软件Release/_DEBUG各18＋6严格golden一致，前端专项仍按第16步推进。
+
+> **当前存储结构区分（SPEC §55）**：RTL D$按用户决定改寄存器、数据缓存模块
+> 6378/14与两软件同步；I$同步SRAM及前端完整逐拍仍属第16步，模板取指/译码
+> work/sync边界保持。不要将D$验收写成取指验收，入口sync/README §47。
+
+> SQ软件合同已同步RTL（SPEC §45）：退休不释放SQ额度，下游接受拍末释放、下一拍
+> issue可用；RTL HALT提交停issue、SQ接受排空后输出halted，分支恢复保留已提交Store。
+> RTL14/14及两软件18＋6严格通过，模板work/sync边界和活动golden保持。
+
+> LQ实际提交拍末回收、下一拍受理已三端一致（SPEC §44），不提前派发新RS；18＋6
+> 严格新golden clock11,967,396/690,814，旧测量保留历史。
+
+> 主树LQ初始化后置对齐模板push排他结果（SPEC §43），新RS下拍派发和旧态读取边界
+> 保持；两软件18＋6严格结果/退休/周期/统计一致，golden保持。
+
+> 第10步DIV消费同拍接收/严格年轻flush及真实返回后端通过（SPEC §40）；18 ISA新clock
+> 总和11,967,406，六IPC仍690,826。解码后返回链5000步500字段一致，完整前端仍依第16步验收。
+
+> 第9步MUL解码后返回链已验收：三级弹性/单槽结果，n+3 CDB/n+4依赖派发；真实两池/
+> 重命名链2302步508字段四方一致。前端接收周期依第16步验证，详见SPEC §38。
+
+> **第8步已修正方向训练**：BRU→BPU携带真实actualTaken，条件真且offset=4训练1；
+> 方向预测错误与next-PC错误分开，后者才产生地址恢复。原准确率统计仍按nextPC，不改称方向正确率。
+> 真BPU控制链1518步/2230字段含全表/GHR/checkpoint一致；完整前端与RAS策略另验（SPEC §35）。
+
+> 第8步现状观察：条件真且目标为PC+4时，软件BPU训练taken=0，RTL真实条件taken=1；
+> nextPC相同仍不代表方向表/GHR训练语义相同。表状态尚未对拍，训练输入对齐目标见SPEC §34。
+
+> 第7步地址结果级已与RTL统一为单槽；AGU旧结果取消与更老新派发可同拍发生。
+> 前端交付的访存指令仍先分配LSQ再入RS；18+6严格回归总clock12,246,204保持。
+> 后续地址整链1195步四方一致，LSQ接收及Store广播已匹配生产者tag；实际decoder/BPU触发另验。
+
+> 第6步普通整数整链2536步/5072点与主树/RTL/独立参考一致，入口在decoder之后，
+> 前端及真实误预测触发的端到端周期仍由对应步骤验收。
+
+> 第5步flush时禁止新分配，但允许旧RS严格更老项在执行端ready时派发；Integer正常
+> 域三端1131步/2262点通过，真实执行接收测试通过。
+
+> 第4步后端FIFO基础域已与主树/RTL对齐，前端交付指令按一致的ROB/PRF准入处理。
+> 1293步/2586点模块对拍通过，18+6严格周期保持12,246,204。
+
+> **2026-10-06 第3步收官**：FQ/IQ使用3-bit epoch，各4项；IQ满时actualIssue
+> 可接收旧FQ队首，FQ满时真实弹出可同拍接收ICache返回。icacheReturnAccepted与
+> popConsume共享握手，组合haltSignal只在真实接收HALT时停取，BPU取指准入同时检查
+> 旧haltFetched和当拍haltSignal；ICache满时消费队首可同拍接受新请求。checkpoint预算28。
+> RAS32的空pop/满push保持。D$8 KB；18+6例完整结果、周期和统计逐项与主树一致。
+> 同行实际回填可给新ICache槽供数，拍末ready、下一拍按序返回；候选PC始终读未门控
+> FetchUnit.programCounter，避免BPU准入形成组合环。补正后总clock12,246,204。
+
+> 负责"把指令送进乱序核心"：预测下一个 PC、沿预测路径取指、按序预译码并排队。前端只产生**顺序的指令流**——乱序执行由后端处理。
+> 相关实现：
+> `FetchUnit`(取指控制流)
+> `InstructBuffer`(32位指令缓冲队列)
+>  `Decoder`+`DecodeUnit`(解码器+微指令缓冲队列)
+>  `BPU`(Tournament 分支预测器)。
+
+存储部件（ICache/IMEM）的行为在 [缓存与存储层次](cache.md) 中描述，本文只说明取指逻辑如何使用它们。
+
+> 实现词汇：主树用周期初快照与 `tick()` 表达时序更新，模板树用 `Wire`、
+> `Register` 与 `work()/sync()` 表达同一硬件语义。下文统一使用“组合决策”和
+> “周期更新”，只在映射源码时区分这两套词汇。
+>
+> **当前双树状态（2026-10-01）**：两树 ICache 均为 1 KB、64 B 行单端口同步 SRAM，
+> 队首命中最早 n+1 拍旁路进入 FQ；回填选槽、`fillFire/readBlocked` 和 FQ 非满的 HALT 门控已对齐。
+> 主树、模板 Release 与 `_DEBUG` 均通过 18/18 x10+cycles 活动 golden 门禁。共同流程见
+> [根级 frontend.md](../../docs/frontend.md)，阶段记录见 [process.md](../../docs/process.md)。
+> 同日数据侧采用 16 KB/64 B 行直接映射 DCache，活动总 clock 12,209,929；缓存几何参数
+> 统一由组数与行长派生，取指端口与 n+1 队首交付契约见 [cache.md](cache.md)。
+
+---
+
+## 1. 边界与职责
+
+```
+                 ┌──────────────── 前端 ─────────────────────────┐
+  FetchDecision ─►│ FetchUnit(PC/halt) → ICache* → IMEM*         │
+  （BPU 预测）     │        ▼                                    │
+                   │ InstructBuffer(FQ, 4槽/4可用) → IQ(4槽/4可用)│
+                   └──────────────┬──────────────────────────────┘
+                                  ▼（进入后端发射）
+```
+
+| 模块 | 职责 | 备注 |
+|------|------|------|
+| `FetchUnit` | PC 寄存器与 halt 闩锁（`programCounter` / `haltFetched`） | 每周期一个 `FetchDecision` 有效即推进 PC |
+| `InstructBuffer`（FQ） | 4 个物理槽、4 条有效指令；epoch 环形指针，条目为 `{raw, pc, predictedPC, ckptId}` | 预译码为 RAS/BTB 提供精确跳转类型 |
+| `Decoder` / `DecodeUnit` | 指令译码 + epoch 队列 IQ（4 个物理槽、4 条有效 Uop） | `Uop` 携带执行与恢复元数据 |
+| `BPU` | 方向预测（Tournament）+ 目标预测（BTB/RAS/SARAS） | 见 §4 |
+
+---
+
+## 2. 取指数据流
+
+每个周期由组合逻辑求值一次取指决策（主树位于 `comb()`，模板树由
+`FetchDecision` 输出 `Wire` 表达）：
+
+```
+fillFire = !needSquash && ICache.refillValid()
+refillHit = fillFire && sameLine(PC, IMEM.return.lineAddr)
+readBlocked = fillFire && ICache.hit(PC) && !refillHit
+decodeCanAccept = IQ.canAccept(actualIssue)
+fqPop = !needSquash && !FQ.isEmpty() && decodeCanAccept
+fqCanAccept = !needSquash && FQ.canAccept(fqPop)
+popConsume = fqCanAccept && ICache.isReturnReady() && !haltFetched
+haltSignal = haltFetched || (popConsume && ICache.returnRaw() == HALT)
+memCanAccept = (!ICache.isRequestFull() || popConsume) &&
+               (!IMEM.isRequestFull() || refillHit) && !readBlocked
+fetchAllowed = !needSquash && !haltSignal && fqCanAccept && memCanAccept
+```
+
+`isFull()/isRequestFull()` 表示拍初实际占用已满；`CanAccept` 表示考虑本拍真实出队、
+回填旁路和端口仲裁后的接收能力。模板使用正向 `fetchCtx.fqCanAccept`、
+`fetchCtx.memCanAccept` 与 FQ 输入 `decodeCanAccept`，主树 `build` 的两个准入参数
+同样为正向语义；最终取指授权为无 squash、无 halt 且两项准入均成立。
+
+`refillValid()` / `refillSlot()` 从旧存活窗口中匹配一个未就绪 miss。`fillFire/readBlocked`
+为 ICache Output Wire，所有取指消费者共享 BPU 的已准入 `outValid`。
+端口冲突判定读取未门控的 FetchUnit PC，避免从已门控 `outPC` 反馈到准入形成组合环。
+
+取指被**门控停止**当且仅当以下任一成立：
+
+- `squashDetect.needSquash`（有恢复在途，前端整窗清空后从目标 PC 重启）；
+- halt 已被闩锁或本拍真实接收 HALT（见 §2.2）；
+- FQ 满且本拍没有向 IQ 转移队首（背压）；
+- ICache 请求队列满且本拍没有向 FQ 交付队首；
+- IMEM 请求队列满且当前 PC 不能由本拍同行回填直接供数；
+- 同拍有获准回填写，当前 PC 命中 ICache 且不属于回填行，无法获得 SRAM 读口。
+
+这些条件只反压取指，后端和数据访存继续推进；新 miss 可与回填写同拍准入。
+
+### 2.1 命中 / 缺失路径
+
+- **命中**：无需访问 IMEM；n 拍接受请求并读 SRAM，n+1 拍当读身份匹配存活、未 ready
+  队首时，`headReadReady()` 让返回接口选择旧 SRAM 输出，FQ 无背压则当拍接收。
+  PC/预测 PC/ckptId 仍来自队首槽；已消费结果跳过落槽，背压或年轻结果仍保存到原槽。
+- **缺失**：以**64 B 行对齐地址**（`pc & ~0x3F`）向 IMEM 发起整行请求，20 周期后返回
+  `LineReturn` 16-word 总线。critical word 完成第一个存活、未就绪且行地址匹配的 miss；
+  年轻请求可先完成，交付保持队首顺序，待落槽 hit 不作为 miss 匹配。
+- **回填握手**：`fillFire` 同时确认 IMEM 返回消费、请求槽完成及 SRAM 行写入；无匹配时保持返回。
+
+ICache 结果进入 FQ 的握手是组合谓词：`¬needSquash ∧ ICache返回就绪 ∧ ¬haltFetched ∧ FQ.canAccept(fqPop)`；
+`popConsume` 表示该结果已被 FQ 接收，ICache 随后清除自己的持有状态。FQ 到 IQ
+是另一组握手：FQ非空且IQ未满或本拍实际Issue时，旧FQ队首译码入IQ，同时弹出FQ头。
+
+### 2.2 halt 闩锁
+
+两树使用 `popConsume && returnRaw()==0x0ff00513` 生成当拍 HALT 接收事件
+`haltSignal`。HALT 交付 FQ 与 `haltFetched` 锁存发生在同一拍；FQ 满时保持请求等待，
+不能先停取而把 HALT 自己挡在队列外。该标记在 ROB 提交并完成访存排空后停机
+（程序出口 = 停机时 `x10` 低 8 位）。
+
+### 2.3 预译码（pre-decode, `scanJump`）
+
+取指结果推入 FQ 时，FQ 在 `lastPush` 缓存里对**新入队的那条指令**做一次静态
+扫描，只关心无条件跳转族（`jal`/`jalr`），**条件分支刻意排除**：
+
+- RISC-V 非特权 ISA 通过 `jal`/`jalr` 的 `rd`、`rs1` 是否为链接寄存器
+  `x1/ra` 或 `x5/t0` 隐式编码 RAS hint [[1]](#front-ref-1)；
+- `jal`：`rd∈{x1,x5}` ⇒ `isCall`，并静态解出 `jalTarget`；
+- `jalr`（用户指定策略）：`rd` 为link ⇒ push/isCall，`rs1` 为link ⇒ pop/isRet，
+  标志独立；双link包括`rd==rs1`都先pop再push。非link/nonlink无动作，JAL只按rd。
+
+预译码的意义：**RAS 维护与 BTB 类型训练不再依赖预测表命中**——跳转指令即使
+从未被 BTB 记录，前端也能正确推送 call/ret 语义（修复了 RAS 冷启动漏栈问题）。
+
+---
+
+## 3. 译码进队
+
+`DecodeUnit` 的周期更新从 FQ 头取原始指令字，`Decoder::decode` 生成 `Uop`
+（类型/opcode/funct3/funct7/rd/rs1/rs2/imm/pc/halt/allocDest/predictedPC/
+ckptId），压入IQ。FQ头能否消费由IQ拍初满状态与本拍实际Issue共同决定。发射侧
+（后端 IssueArbiter）从 IQ 头取指，见
+[`backend.md`](backend.md) §2。
+
+---
+
+## 4. 分支预测（BPU）
+
+方向预测与目标预测分开：方向侧采用 **Tournament**，以 chooser 在局部与全局
+2-bit 预测器之间选择 [[2]](#front-ref-2)[[3]](#front-ref-3)；目标侧按控制流类型拆分，
+总体分工也参考香山开源处理器的公开设计 [[10]](#front-ref-10)[[11]](#front-ref-11)。
+容量、哈希和单周期预测时序均为本项目配置，并不等同于引用设计的具体实现。
+预测在**取指当拍**完成（**这可能带来主频问题，等待后续综合后进行评估**），
+结果随 `FetchDecision` 携带。
+
+### 4.1 方向预测：Tournament
+
+| 部件 | 配置 | 说明 |
+|------|------|------|
+| localPHT | 256 × 2-bit | 索引 = `(PC >> 2) & 255`；计数器 `>=2` 预测 taken |
+| globalPHT | 256 × 2-bit | 索引 = `((PC >> 2) ^ GHR[7:0]) & 255`；计数器 `>=2` 预测 taken |
+| selector | 256 × 2-bit | 与 globalPHT 使用同一索引；`>=2` 选择 global，否则选择 local |
+| condSeen 过滤器 | 512 × 1-bit | 条件分支解析时置位；取指侧 `btbHit ∨ condSeen` 才移位 GHR——避免"从不 taken 的分支不留历史、BTB 驻留漂移改变历史成员"两类缺口 |
+
+三张 2-bit 表的计数器均初始化为 1（弱 not-taken）。条件分支解析后，localPHT 与
+globalPHT 都按实际结果饱和更新；仅当两者预测不同，selector 才朝本次预测正确的一侧更新。
+selector 选出的结果记为 `directionTaken`。最终条件分支方向还受 BTB 身份门控：
+`taken = btbHit && directionTaken`；若 BTB 命中项标记为无条件跳转，则覆盖为 taken。
+
+### 4.2 目标预测（跳去哪）
+
+| 部件 | 配置 | 说明 |
+|------|------|------|
+| BTB | 64 条目 | 经典 Branch Target Buffer 的项目实现 [[5]](#front-ref-5)；语义项为 `{PC[31:8], target[31:2], state}`，`state` 编码 invalid/conditional/unconditional/return（后两者必 taken）；命中且无条件 ⇒ 必 taken |
+| RAS | 16 条目返回地址；`specRAS` 与 `archRAS` 各一份 | call 压入返回地址、return 弹栈并预测目标 [[7]](#front-ref-7)；恢复从提交基线重放存活 ROB，处理投机错位 [[8]](#front-ref-8) |
+
+当前源码不使用 `times` 去重或 SARAS 日志；旧方案的面积与实验数据保存在根级 benchmark 历史记录中。
+
+> 目标侧不设间接目标缓存（Target Cache）与提交级 BHT：方向侧改用 Tournament 后，BHT 仅服务
+> 间接目标哈希，二者构成闭环；活动语料中唯一的真间接站点为单目标，收益不可观测，遂按
+> 面积/效率权衡删除（见根 `docs/benchmarks.md` 复核记录）。
+
+> 活动 RV32IM 镜像无压缩指令，PC 和跳转目标均为 4-byte 对齐；BTB 使用 `PC[7:2]` 索引、
+> `PC[31:8]` tag 与 `target[31:2]`，每项为 56 bit。参考树可保留等价的全宽宿主载体，模板
+> `Register` 实现以此作为物理状态位宽。
+
+### 4.3 GHR 与 checkpoint
+
+- **GHR 移位**：8-bit GHR 在取指侧于 `btbHit ∨ condSeen` 时随预测结果移位（`FetchDecision`
+  携带 `shift/shiftValue`）；BRU训练condSeen影响后续移位资格，不直接追加actual到
+  live GHR；恢复使用取指前GHR快照。
+- **checkpoint**：每次获准取指消耗一个 `ckptId`。活动池 `CKPT_CAP=32`，大于
+  `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ2 + IQ2 = 24`，由 `static_assert`
+  守住不会在仍存活时复用 ID；逻辑 ID 与模板运输载体均按派生宽度收紧为 5 bit
+  （`CKPT_ID_WIDTH`）。
+  当前 `BPUSnapshot` 仅保存 **8-bit GHR**。RAS 从旧 `archRAS` 提交基线恢复，按 ROB
+  从 head 到 `SquashTag`（含自身）的存活前缀重放 call/ret；不保存 per-checkpoint RAS 阵列。
+  当前RTL也使用旧提交基线，包含同拍提交头项恰好一次；内部深度位宽按容量收紧，默认5bit，
+  恢复候选独立计算、最后按flush选择。模板算法及逐拍合同不变，无新增恢复级。
+- **训练**：BRU 条件分支结果更新 localPHT/globalPHT/selector、condSeen 与目标侧状态；
+  CDB 的 JAL/JALR 转移只更新目标侧。两个训练口共享周期初旧快照；表更新按资源固定写口
+  仲裁（`fetch > cdb > bru`，BTB 的 identity/state 与 target 分两组），每个物理 Register
+  每拍至多一次写。获准取指维护投机 GHR，FQ 预译码维护 `specRAS`，ROB 提交维护
+  `archRAS`；squash 优先恢复投机态，CDB 训练侧不直接更新投机 GHR/RAS。
+  **方向表不被 JAL/JALR 恒跳指令污染**。
+
+---
+
+## 5. 与后端 / 存储层次的接口
+
+- **误预测恢复**：解析点（BRU 出队结果、CDB 上 JAL/JALR）在后端判对错；需要
+  squash 时进入 `FlushArbiter` 排队（见 [`backend.md`](backend.md) §6）。前端侧
+  的恢复 = 按 `ckptId` 恢复 GHR、从 `archRAS` 基线重放存活 ROB 的 call/ret，
+  并整窗清空投机取指/译码队列后从 `SquashPC` 重新取指。
+- **存储层次**：ICache 命中的取指数据来自 `cache.md` 描述的 L1I 行阵；缺失回填
+  由 IMEM（20 周期主存延迟）承担。
+
+---
+
+## 6. 关键规格
+
+| 项 | 规格 |
+|----|------|
+| 取指带宽 | 每周期至多 1 条；请求队列与 FQ 有空间、无 squash/未闩锁 halt，且命中读获得 SRAM 端口 |
+| 两树 ICache | 1 KB · 16×64 B · 单端口同步 SRAM · 4 项请求队列；队首命中最早 n+1 拍进入 FQ |
+| FQ / IQ | 各2项，epoch指针；IQ满时actualIssue可替换，FQ满时真实出队可补入 |
+| 方向预测 | Tournament：localPHT 256×2b · globalPHT 256×2b · selector 256×2b · GHR 8b |
+| 目标预测与身份状态 | BTB 64 · specRAS/archRAS 各 16 · condSeen 512b |
+| checkpoint | ckptId 池 32（存活上界 24；逻辑与模板运输载体均 5 bit） |
+| 预译码 | FQ 尾 jal/jalr 静态分类（call/ret/indirect + 静态 jal 目标） |
+| halt | 队首 = `0x0ff00513` 且实际交付 FQ ⇒ latch haltFetched 并当拍停取 |
+
+## 相关文档
+
+- [`../README.md`](../README.md) — 总览 / 数据通路图 / 周期模型
+- [`cache.md`](cache.md) — L1I（ICache/IMEM）存储行为与主存延迟
+- [`backend.md`](backend.md) — 发射、执行、写回、提交与 squash 恢复
+
+## 参考文献
+
+1. <a id="front-ref-1"></a>RISC-V International, *The RISC-V Instruction Set
+   Manual, Volume I: Unprivileged Architecture*, RV32I Version 2.1,
+   §“Unconditional Jumps,” 2026.
+   https://docs.riscv.org/reference/isa/v20260120/unpriv/rv32.html#_unconditional_jumps
+2. <a id="front-ref-2"></a>Scott McFarling, “Combining Branch Predictors,”
+   Digital Equipment Corporation Western Research Laboratory, Technical Note
+   TN-36, 1993.
+   https://www.hpl.hp.com/techreports/Compaq-DEC/WRL-TN-36.pdf
+3. <a id="front-ref-3"></a>R. E. Kessler, “The Alpha 21264 Microprocessor,”
+   *IEEE Micro*, vol. 19, no. 2, pp. 24–36, 1999.
+   https://doi.org/10.1109/40.755465
+4. <a id="front-ref-4"></a>Tse-Yu Yeh and Yale N. Patt, “Two-Level Adaptive
+   Training Branch Prediction,” in *Proceedings of MICRO-24*, pp. 51–61, 1991.
+   https://doi.org/10.1145/123465.123475
+5. <a id="front-ref-5"></a>J. K. F. Lee and A. J. Smith, “Branch Prediction
+   Strategies and Branch Target Buffer Design,” *Computer*, vol. 17, no. 1,
+   pp. 6–22, 1984. https://doi.org/10.1109/MC.1984.1658927
+6. <a id="front-ref-6"></a>Po-Yung Chang, Eric Hao, and Yale N. Patt, “Target
+   Prediction for Indirect Jumps,” in *Proceedings of ISCA ’97*, pp. 274–283,
+   1997. https://doi.org/10.1145/264107.264209
+7. <a id="front-ref-7"></a>David R. Kaeli and Philip G. Emma, “Branch History
+   Table Prediction of Moving Target Branches Due to Subroutine Returns,” in
+   *Proceedings of ISCA ’91*, pp. 34–42, 1991.
+   https://doi.org/10.1145/115952.115957
+8. <a id="front-ref-8"></a>Kevin Skadron, P. S. Ahuja, Margaret Martonosi,
+   and Douglas W. Clark, “Improving Prediction for Procedure Returns with
+   Return-Address-Stack Repair Mechanisms,” in *Proceedings of MICRO-31*,
+   pp. 259–271, 1998. https://doi.org/10.1109/MICRO.1998.742787
+9. <a id="front-ref-9"></a>Guopeng Wang, Xiangdong Hu, Ying Zhu, and Yingnan
+   Zhang, “Self-Aligning Return Address Stack,” in *2012 IEEE Seventh
+   International Conference on Networking, Architecture, and Storage*,
+   pp. 278–282, 2012. https://doi.org/10.1109/NAS.2012.49
+10. <a id="front-ref-10"></a>Yinan Xu et al., “Towards Developing High
+    Performance RISC-V Processors Using Agile Methodology,” in *Proceedings of
+    MICRO-55*, pp. 1178–1199, 2022.
+    https://doi.org/10.1109/MICRO56248.2022.00080
+11. <a id="front-ref-11"></a>OpenXiangShan Project, “XiangShan Bpu Design
+    Document,” Kunminghu-V3 design documentation, version V3, draft, 2026.
+    https://docs.xiangshan.cc/projects/design/en/kunminghu-v3/frontend/BPU/
