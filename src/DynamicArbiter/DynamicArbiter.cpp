@@ -62,6 +62,7 @@ void insertPlain(FlushReqPlain cur[FLUSHARBITER_CAP],
 } // namespace
 
 const FlushRequest *FlushArbiter::selectOldest() const {
+  if (static_cast<bool>(broadcastBlocked)) return nullptr;
   const FlushRequest *best = nullptr;
   for (int i = 0; i < FLUSHARBITER_CAP; ++i) {
     if (!static_cast<bool>(requests[i].valid))

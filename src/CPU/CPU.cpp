@@ -75,6 +75,7 @@ CPU::CPU(const Memory &mem) : SlaveModule(mem) {
   dcpu.add_module(&LqCDBArbiterModule);
   dcpu.add_module(&MulCDBModule);
   dcpu.add_module(&DivCDBModule);
+  dcpu.add_module(&SharedCDBModule);
   dcpu.add_module(&MemArbiterModule);
   dcpu.add_module(&DispatchArbiterModule);
   dcpu.add_module(&IssueArbiterModule);
@@ -83,6 +84,32 @@ CPU::CPU(const Memory &mem) : SlaveModule(mem) {
 }
 
 void CPU::wire() {
+  auto recoveryPort = [this](RecoveryInput &port) {
+    port.active = [this]() { return static_cast<uint32_t>(recoveryActive); };
+    port.beat = [this]() { return static_cast<uint32_t>(recoveryBeat); };
+    port.offset = [this]() { return static_cast<uint32_t>(recoveryOffset); };
+    port.liveCount = [this]() { return static_cast<uint32_t>(recoveryCount); };
+    port.nextTag = [this]() { return static_cast<uint32_t>(recoveryNextTag); };
+    port.squashTag = [this]() { return static_cast<uint32_t>(recoveryBoundary); };
+  };
+  recoveryPort(RATModule.recovery);
+  recoveryPort(PRFModule.recovery);
+  recoveryPort(BPUModule.recovery);
+  ROBModule.replayOffset = [this]() { return static_cast<bool>(recoveryActive) ? static_cast<uint32_t>(recoveryOffset) : 0u; };
+  for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
+    RATModule.replay[lane].tag = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayNarrow[lane].tag); };
+    RATModule.replay[lane].rd = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayNarrow[lane].rd); };
+    RATModule.replay[lane].newPhy = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayNarrow[lane].newPhy); };
+    PRFModule.replay[lane].tag = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayNarrow[lane].tag); };
+    PRFModule.replay[lane].rd = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayNarrow[lane].rd); };
+    PRFModule.replay[lane].newPhy = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayNarrow[lane].newPhy); };
+    BPUModule.replay[lane].tag = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayRas[lane].tag); };
+    BPUModule.replay[lane].pc = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayRas[lane].pc); };
+    BPUModule.replay[lane].pop = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayRas[lane].pop); };
+    BPUModule.replay[lane].push = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayRas[lane].push); };
+  }
+  flushArbiter.broadcastBlocked = [this]() { return static_cast<bool>(recoveryActive) || static_cast<bool>(exitCommitted); };
+  ROBModule.retirementBlocked = [this]() { return static_cast<bool>(recoveryActive) || static_cast<bool>(flushArbiter.needSquash); };
   // Wire FetchUnit's input wires once. needSquash/SquashPC come straight from
   // FlushArbiter (single producer, via its combinational member accessor);
   // haltSignal from ICache's combinational predicate; FetchValid/PredictPC
@@ -182,7 +209,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(BPUModule.outCkptId);
   };
   ICacheModule.popConsume = [this]() {
-    return !static_cast<bool>(flushArbiter.needSquash) && ICacheModule.isReturnReady() &&
+    return !static_cast<bool>(recoveryActive) && !static_cast<bool>(flushArbiter.needSquash) && ICacheModule.isReturnReady() &&
            !static_cast<bool>(FetchUnitModule.haltFetched) &&
            FQModule.canAccept(!FQModule.isEmpty() &&
                DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid)));
@@ -197,11 +224,11 @@ void CPU::wire() {
     };
   }
 
-  // ---- Wire the dual-CDB bus sources (producers stay bridges reading _M_old;
+  // ---- Wire the ALU result and three shared-CDB candidates (_M_old only;
   // lsq* are gated here so an invalid CDBDetect index never reaches
   // getValue's throw; each source carries its own squash guard) ----
   AluCDBArbiterModule.aluEmpty = [this]() {
-    return ALUModule.isEmpty() ? 1u : 0u;
+    return static_cast<bool>(recoveryActive) || ALUModule.isEmpty() ? 1u : 0u;
   };
   AluCDBArbiterModule.aluValue = [this]() { return ALUModule.headValue(); };
   AluCDBArbiterModule.aluRobTag = [this]() {
@@ -217,7 +244,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
   LqCDBArbiterModule.lsqValid = [this]() {
-    return LQModule.CDBDetect() != -1 ? 1u : 0u;
+    return !static_cast<bool>(recoveryActive) && LQModule.CDBDetect() != -1 ? 1u : 0u;
   };
   LqCDBArbiterModule.lsqMemIndex = [this]() {
     auto d = LQModule.CDBDetect();
@@ -237,9 +264,9 @@ void CPU::wire() {
   LqCDBArbiterModule.squashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
-  // MulCDB: the MUL unit's dedicated result bus. Empty/value/tag sample the
+  // MulCDB: the MUL candidate before shared arbitration. Empty/value/tag sample the
   // MUL head bridges (_M_old); the squash guard lives in MulCDB::mulLive.
-  MulCDBModule.mulEmpty = [this]() { return MULModule.isEmpty() ? 1u : 0u; };
+  MulCDBModule.mulEmpty = [this]() { return static_cast<bool>(recoveryActive) || MULModule.isEmpty() ? 1u : 0u; };
   MulCDBModule.mulValue = [this]() { return MULModule.headValue(); };
   MulCDBModule.mulRobTag = [this]() {
     return static_cast<uint32_t>(MULModule.headRobTag());
@@ -250,13 +277,13 @@ void CPU::wire() {
   MulCDBModule.squashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
-  // DivCDB: the DIV unit's dedicated result bus. The divider has no output
+  // DivCDB: the DIV candidate before shared arbitration. The divider has no output
   // buffer, so the bus is a straight tap on the unit's result registers --
   // divEmpty = !isReady, and divValue is gated by isReady because
   // DIV::getValue() throws on a stale operationType (the same guard the
   // reference's divCDB::build applies before reading it). The squash guard
   // lives in DivCDB::divLive.
-  DivCDBModule.divEmpty = [this]() { return DIVModule.isReady() ? 0u : 1u; };
+  DivCDBModule.divEmpty = [this]() { return !static_cast<bool>(recoveryActive) && DIVModule.isReady() ? 0u : 1u; };
   DivCDBModule.divValue = [this]() {
     return DIVModule.isReady() ? DIVModule.getValue() : 0u;
   };
@@ -269,6 +296,16 @@ void CPU::wire() {
   DivCDBModule.squashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
+
+  SharedCDBModule.candidates[0].valid = [this]() { return static_cast<bool>(MulCDBModule.valid); };
+  SharedCDBModule.candidates[0].value = [this]() { return static_cast<uint32_t>(MulCDBModule.value); };
+  SharedCDBModule.candidates[0].robTag = [this]() { return static_cast<uint32_t>(MulCDBModule.robTag); };
+  SharedCDBModule.candidates[1].valid = [this]() { return static_cast<bool>(DivCDBModule.valid); };
+  SharedCDBModule.candidates[1].value = [this]() { return static_cast<uint32_t>(DivCDBModule.value); };
+  SharedCDBModule.candidates[1].robTag = [this]() { return static_cast<uint32_t>(DivCDBModule.robTag); };
+  SharedCDBModule.candidates[2].valid = [this]() { return static_cast<bool>(LqCDBArbiterModule.valid); };
+  SharedCDBModule.candidates[2].value = [this]() { return static_cast<uint32_t>(LqCDBArbiterModule.value); };
+  SharedCDBModule.candidates[2].robTag = [this]() { return static_cast<uint32_t>(LqCDBArbiterModule.robTag); };
 
   // ---- Wire MemArbiter's Input Wires (producers stay bridges reading
   // _M_old; SQ head addr/value gated by ready flags and LQ load payload gated
@@ -562,7 +599,7 @@ void CPU::wire() {
   MULModule.dispatchRobTag = [this]() {
     return static_cast<uint32_t>(DispatchArbiterModule.mul.robTag);
   };
-  MULModule.cdbValid = [this]() { return MulCDBModule.valid ? 1u : 0u; };
+  MULModule.cdbValid = [this]() { return SharedCDBModule.mulGrant ? 1u : 0u; };
   MULModule.cdbRobTag = [this]() {
     return static_cast<uint32_t>(MulCDBModule.robTag);
   };
@@ -601,8 +638,8 @@ void CPU::wire() {
   DIVModule.dispatchRobTag = [this]() {
     return static_cast<uint32_t>(DispatchArbiterModule.div.robTag);
   };
-  DIVModule.cdbValid = [this]() { return DivCDBModule.valid ? 1u : 0u; };
-  DIVModule.outReady = []() { return 1u; }; // Dedicated DIV result channel.
+  DIVModule.cdbValid = [this]() { return SharedCDBModule.divGrant ? 1u : 0u; };
+  DIVModule.outReady = [this]() { return SharedCDBModule.divGrant ? 1u : 0u; };
   DIVModule.cdbRobTag = [this]() {
     return static_cast<uint32_t>(DivCDBModule.robTag);
   };
@@ -707,8 +744,8 @@ void CPU::wire() {
   PRFModule.squash.SquashTag = [this]() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
-  // dual-CDB write ports: ALU group keeps isControl (PRF never writes control
-  // results); the LQ group omits it (loads are never control ops). newPhy is
+  // Dual-CDB write ports: ALU keeps isControl; shared MUL/DIV/LQ omits it.
+  // newPhy is
   // looked up from the ROB entry by tag, valid-gated (a broadcast only ever
   // targets an in-flight entry's rename).
   PRFModule.cdbOfALU.cdbValid = [this]() {
@@ -731,54 +768,19 @@ void CPU::wire() {
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
   };
-  PRFModule.cdbOfLQ.cdbValid = [this]() {
-    const RobTag tag = static_cast<uint32_t>(LqCDBArbiterModule.robTag);
-    return LqCDBArbiterModule.valid && ROBModule.matchesTag(tag) ? 1u : 0u;
+  PRFModule.cdbOfShared.cdbValid = [this]() {
+    const RobTag tag = static_cast<uint32_t>(SharedCDBModule.robTag);
+    return SharedCDBModule.valid && ROBModule.matchesTag(tag) ? 1u : 0u;
   };
-  PRFModule.cdbOfLQ.cdbValue = [this]() {
-    return static_cast<uint32_t>(LqCDBArbiterModule.value);
+  PRFModule.cdbOfShared.cdbValue = [this]() {
+    return static_cast<uint32_t>(SharedCDBModule.value);
   };
-  PRFModule.cdbOfLQ.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(LqCDBArbiterModule.robTag);
+  PRFModule.cdbOfShared.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(SharedCDBModule.robTag);
   };
-  PRFModule.cdbOfLQ.cdbNewPhy = [this]() {
-    const RobTag tag = static_cast<uint32_t>(LqCDBArbiterModule.robTag);
-    if (!static_cast<bool>(LqCDBArbiterModule.valid) ||
-        !ROBModule.matchesTag(tag))
-      return static_cast<uint32_t>(InvalidPhy);
-    return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
-  };
-  // MUL write port: never a control op, so no isControl wire (loads and
-  // multiplies share that port saving).
-  PRFModule.cdbOfMUL.cdbValid = [this]() {
-    const RobTag tag = static_cast<uint32_t>(MulCDBModule.robTag);
-    return MulCDBModule.valid && ROBModule.matchesTag(tag) ? 1u : 0u;
-  };
-  PRFModule.cdbOfMUL.cdbValue = [this]() {
-    return static_cast<uint32_t>(MulCDBModule.value);
-  };
-  PRFModule.cdbOfMUL.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(MulCDBModule.robTag);
-  };
-  PRFModule.cdbOfMUL.cdbNewPhy = [this]() {
-    const RobTag tag = static_cast<uint32_t>(MulCDBModule.robTag);
-    if (!static_cast<bool>(MulCDBModule.valid) || !ROBModule.matchesTag(tag))
-      return static_cast<uint32_t>(InvalidPhy);
-    return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
-  };
-  PRFModule.cdbOfDIV.cdbValid = [this]() {
-    const RobTag tag = static_cast<uint32_t>(DivCDBModule.robTag);
-    return DivCDBModule.valid && ROBModule.matchesTag(tag) ? 1u : 0u;
-  };
-  PRFModule.cdbOfDIV.cdbValue = [this]() {
-    return static_cast<uint32_t>(DivCDBModule.value);
-  };
-  PRFModule.cdbOfDIV.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(DivCDBModule.robTag);
-  };
-  PRFModule.cdbOfDIV.cdbNewPhy = [this]() {
-    const RobTag tag = static_cast<uint32_t>(DivCDBModule.robTag);
-    if (!static_cast<bool>(DivCDBModule.valid) || !ROBModule.matchesTag(tag))
+  PRFModule.cdbOfShared.cdbNewPhy = [this]() {
+    const RobTag tag = static_cast<uint32_t>(SharedCDBModule.robTag);
+    if (!static_cast<bool>(SharedCDBModule.valid) || !ROBModule.matchesTag(tag))
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
   };
@@ -816,14 +818,8 @@ void CPU::wire() {
         ROBModule.entry
             .oldPhy[robSlot(static_cast<uint32_t>(ROBModule.headView.head))]);
   };
-  // Squash-recovery scan inputs: pre-flush next tag (range end) + per-slot
-  // newPhy array (same-source pattern as RATModule.rob.next/newPhy).
+  // Recovery payloads use the shared narrow window wired above.
   PRFModule.rob.robNextTag = [this]() { return ROBModule.getNextTag(); };
-  for (int i = 0; i < ROB_CAP; ++i) {
-    PRFModule.rob.robNewPhy[i] = [this, i]() {
-      return static_cast<uint32_t>(ROBModule.entry.newPhy[i]);
-    };
-  }
 
   // Wire RAT's Input Wires
   RATModule.needSquash = [this]() {
@@ -871,12 +867,6 @@ void CPU::wire() {
   for (int i = 0; i < ROB_CAP; ++i) {
     RATModule.rob.tag[i] = [this, i]() {
       return static_cast<uint32_t>(ROBModule.entry.tag[i]);
-    };
-    RATModule.rob.dest[i] = [this, i]() {
-      return static_cast<uint32_t>(ROBModule.entry.dest[i]);
-    };
-    RATModule.rob.newPhy[i] = [this, i]() {
-      return static_cast<uint32_t>(ROBModule.entry.newPhy[i]);
     };
   }
 
@@ -1011,7 +1001,7 @@ void CPU::wire() {
     return RATModule.readRAT_PRF(DecodeUnitModule.headRd());
   };
   IssueArbiterModule.squashNeed = [this]() {
-    return static_cast<bool>(flushArbiter.needSquash) || ROBModule.isTrapCommitted();
+    return static_cast<bool>(recoveryActive) || static_cast<bool>(exitCommitted) || static_cast<bool>(flushArbiter.needSquash) || ROBModule.isTrapCommitted();
   };
   // Wire RS's Input Wires: issue selection + flattened push payloads sample
   // the IssueArbiter's Output groups; dispatch release reads the
@@ -1471,12 +1461,12 @@ void CPU::wire() {
     // lqCDB.valid already embeds the squash guard on the lsq candidate
     // (LqCDBArbiter passes only candidates older than the squash point), so
     // the former re-check here is a redundant idempotent gate.
-    return LqCDBArbiterModule.valid ? 1u : 0u;
+    return SharedCDBModule.lqGrant ? 1u : 0u;
   };
   LQModule.cdb.cdbMemIndex = [this]() {
     return static_cast<uint32_t>(LqCDBArbiterModule.memIndex);
   };
-  LQModule.agu.isAGUEmpty = [this]() { return AGUModule.isEmpty(); };
+  LQModule.agu.isAGUEmpty = [this]() { return static_cast<bool>(recoveryActive) || AGUModule.isEmpty(); };
   LQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };
   LQModule.agu.aguHeadRobTag = [this]() { return AGUModule.headRobTag(); };
   LQModule.agu.aguHeadValue = [this]() { return AGUModule.headValue(); };
@@ -1635,13 +1625,13 @@ void CPU::wire() {
   SQModule.rob.storeWillCommit = [this]() {
     return !static_cast<bool>(exitCommitted) && ROBModule.storeWillCommit() ? 1u : 0u;
   };
-  SQModule.agu.isAGUEmpty = [this]() { return AGUModule.isEmpty(); };
+  SQModule.agu.isAGUEmpty = [this]() { return static_cast<bool>(recoveryActive) || AGUModule.isEmpty(); };
   SQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };
   SQModule.agu.aguHeadRobTag = [this]() { return AGUModule.headRobTag(); };
   SQModule.agu.aguHeadValue = [this]() { return AGUModule.headValue(); };
   for (int i = 0; i < STORERS_CAP; ++i) {
     SQModule.prf.svWriteValid[i] = [this, i]() {
-      if (RSModule.isSvFree(i) ||
+      if (static_cast<bool>(recoveryActive) || RSModule.isSvFree(i) ||
           !PRFModule.isOperandReady(RSModule.getSvData(i)))
         return 0u;
       if (static_cast<bool>(flushArbiter.needSquash) &&
@@ -1673,23 +1663,11 @@ void CPU::wire() {
   ROBModule.cdbOfALU.cdbRobTag = [this]() {
     return static_cast<uint32_t>(AluCDBArbiterModule.robTag);
   };
-  ROBModule.cdbOfLQ.cdbValid = [this]() {
-    return LqCDBArbiterModule.valid ? 1u : 0u;
+  ROBModule.cdbOfShared.cdbValid = [this]() {
+    return SharedCDBModule.valid ? 1u : 0u;
   };
-  ROBModule.cdbOfLQ.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(LqCDBArbiterModule.robTag);
-  };
-  ROBModule.cdbOfMUL.cdbValid = [this]() {
-    return MulCDBModule.valid ? 1u : 0u;
-  };
-  ROBModule.cdbOfMUL.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(MulCDBModule.robTag);
-  };
-  ROBModule.cdbOfDIV.cdbValid = [this]() {
-    return DivCDBModule.valid ? 1u : 0u;
-  };
-  ROBModule.cdbOfDIV.cdbRobTag = [this]() {
-    return static_cast<uint32_t>(DivCDBModule.robTag);
+  ROBModule.cdbOfShared.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(SharedCDBModule.robTag);
   };
   ROBModule.bru.isBRUEmpty = [this]() { return BRUModule.isEmpty() ? 1u : 0u; };
   ROBModule.bru.bruHeadRobTag = [this]() {
@@ -1824,7 +1802,7 @@ void CPU::wire() {
   BPUModule.cdb.cdbIsControl = [this]() {
     return AluCDBArbiterModule.isControl ? 1u : 0u;
   };
-  BPUModule.bru.isBRUEmpty = [this]() { return BRUModule.isEmpty() ? 1u : 0u; };
+  BPUModule.bru.isBRUEmpty = [this]() { return static_cast<bool>(recoveryActive) || BRUModule.isEmpty() ? 1u : 0u; };
   BPUModule.bru.bruHeadRobTag = [this]() {
     return static_cast<uint32_t>(BRUModule.headRobTag());
   };
@@ -1881,7 +1859,7 @@ void CPU::wire() {
         DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid)));
   };
   BPUModule.fetchCtx.memCanAccept = [this]() {
-    return !static_cast<bool>(exitCommitted) && static_cast<bool>(initialized) && (!ICacheModule.isRequestFull() || static_cast<bool>(ICacheModule.popConsume)) &&
+    return !static_cast<bool>(recoveryActive) && !static_cast<bool>(exitCommitted) && static_cast<bool>(initialized) && (!ICacheModule.isRequestFull() || static_cast<bool>(ICacheModule.popConsume)) &&
            (!AXIFetchModule.isRequestFull() || ICacheModule.refillHit(
                static_cast<uint32_t>(FetchUnitModule.programCounter))) &&
            !static_cast<bool>(ICacheModule.readBlocked);
@@ -1932,7 +1910,7 @@ void CPU::wire() {
   // ---- Wire SQ's Output Wires (notify/reply production, single point) ----
   for (int i = 0; i < STORERS_CAP; ++i) {
     SQModule.data.valid[i] = [this, i]() {
-      if (RSModule.isSvFree(i) ||
+      if (static_cast<bool>(recoveryActive) || RSModule.isSvFree(i) ||
           !PRFModule.isOperandReady(RSModule.getSvData(i)))
         return 0u;
       if (static_cast<bool>(flushArbiter.needSquash) &&
@@ -2001,7 +1979,7 @@ void CPU::wire() {
     };
   }
   SQModule.addr.valid = [this]() {
-    if (AGUModule.isEmpty() || !isStoreMem(AGUModule.headMemIndex()))
+    if (static_cast<bool>(recoveryActive) || AGUModule.isEmpty() || !isStoreMem(AGUModule.headMemIndex()))
       return 0u;
     if (static_cast<bool>(flushArbiter.needSquash) &&
         !ROB::isOlder(AGUModule.headRobTag(),
@@ -2065,7 +2043,7 @@ void CPU::wire() {
         .unknownOldestTag;
   };
   SQModule.reply.valid = [this]() {
-    if (AGUModule.isEmpty() || isStoreMem(AGUModule.headMemIndex()))
+    if (static_cast<bool>(recoveryActive) || AGUModule.isEmpty() || isStoreMem(AGUModule.headMemIndex()))
       return 0u;
     auto r = SQModule.replyToLoadRequest(
         AGUModule.headValue(), LQModule.getNBytes(memSlot(AGUModule.headMemIndex())),
@@ -2098,18 +2076,40 @@ bool CPU::memoryDispatchValid() const {
 void CPU::clock(bool shuffle) {
   initialized <= 1;
   const bool frozen = static_cast<bool>(exitCommitted);
+  const bool recovering = static_cast<bool>(recoveryActive);
+  if (!frozen) {
+    if (static_cast<bool>(flushArbiter.needSquash)) {
+      const RobTag head = static_cast<uint32_t>(ROBModule.headView.head);
+      recoveryActive <= 1;
+      recoveryBeat <= 0;
+      recoveryOffset <= 0;
+      recoveryNextTag <= head;
+      recoveryBoundary <= static_cast<uint32_t>(flushArbiter.SquashTag);
+      recoveryCount <= ((ROBModule.getNextTag() - head) & ROB_TAG_MASK);
+    } else if (recovering) {
+      RobTag next = static_cast<uint32_t>(recoveryNextTag);
+      for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) next = robNextTag(next);
+      recoveryNextTag <= next;
+      recoveryOffset <= (static_cast<uint32_t>(recoveryOffset) + RECOVERY_WIDTH);
+      if (static_cast<uint32_t>(recoveryBeat) == RECOVERY_BEATS - 1) recoveryActive <= 0;
+      else recoveryBeat <= (static_cast<uint32_t>(recoveryBeat) + 1u);
+    }
+  }
   if (exitRetiring()) exitCommitted <= 1;
-  if (frozen) {
+  if (frozen || recovering) {
     ++dcpu.cycles;
     AXIFetchModule.work(); SQModule.work(); DCacheModule.work();
     AXIDataModule.work(); AXIBusModule.work(); SlaveModule.work();
+    if (recovering && !frozen) {
+      ICacheModule.work(); LQModule.work(); PRFModule.work(); BPUModule.work(); RATModule.work();
+    }
     // Frozen sequential state holds, but ALL Wire caches still invalidate at
     // this edge. No transport/SRAM response is allowed to bypass sync().
     dark::ModuleBase *modules[] = {&FetchUnitModule, &AXIFetchModule, &ICacheModule, &FQModule,
         &LQModule, &SQModule, &ROBModule, &PRFModule, &ALUModule, &MULModule, &DIVModule,
         &AGUModule, &BRUModule, &BPUModule, &DCacheModule, &AXIDataModule, &AXIBusModule,
         &SlaveModule, &RSModule, &RATModule, &AluCDBArbiterModule, &LqCDBArbiterModule,
-        &MulCDBModule, &DivCDBModule, &MemArbiterModule, &DispatchArbiterModule,
+        &MulCDBModule, &DivCDBModule, &SharedCDBModule, &MemArbiterModule, &DispatchArbiterModule,
         &IssueArbiterModule, &flushArbiter, &DecodeUnitModule};
     for (auto *module : modules) module->sync();
   } else if (shuffle)
@@ -2120,6 +2120,12 @@ void CPU::clock(bool shuffle) {
   // once at the same edge, after every module has completed work().
   dark::sync_member(initialized);
   dark::sync_member(exitCommitted);
+  dark::sync_member(recoveryActive);
+  dark::sync_member(recoveryBeat);
+  dark::sync_member(recoveryOffset);
+  dark::sync_member(recoveryNextTag);
+  dark::sync_member(recoveryBoundary);
+  dark::sync_member(recoveryCount);
 }
 
 void CPU::run(bool shuffle) {

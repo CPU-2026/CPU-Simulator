@@ -1,6 +1,7 @@
 #pragma once
 #include "common.h"
 #include "tools.h"
+#include <array>
 struct AluCDBInput {
   Wire<1> aluEmpty;     // ALUModule.isEmpty()
   Wire<32> aluValue;    // ALUModule.headValue()
@@ -42,8 +43,8 @@ private:
   void wire_output();
   bool mulLive() const;
 };
-// DIV's dedicated result bus. The divider, unlike MUL, has no output buffer:
-// the bus is a straight combinational tap on the unit's own result registers
+// DIV's pre-arbitration candidate. The divider, unlike MUL, has no output buffer:
+// the candidate is a straight combinational tap on the unit's own result registers
 // (isReady / getValue / getResultRobtag), so `divEmpty` is !isReady. The value
 // wire is gated by isReady at the wiring site because DIV::getValue() throws
 // for a stale operationType -- exactly the guard the reference's
@@ -90,4 +91,29 @@ private:
   void wire_output();
   // LSQ load candidate surviving the squash guard (verbatim from CDBArbiter).
   bool lsqLive() const;
+};
+
+struct SharedCDBCandidate {
+  Wire<1> valid;
+  Wire<32> value;
+  Wire<ROB_TAG_WIDTH> robTag;
+};
+struct SharedCDBInput {
+  // MUL, DIV, LQ; all candidates are flush-qualified before arbitration.
+  std::array<SharedCDBCandidate, 3> candidates;
+};
+struct SharedCDBOutput {
+  Wire<1> valid;
+  Wire<32> value;
+  Wire<ROB_TAG_WIDTH> robTag;
+  Wire<2> selected; // 0=none, 1=MUL, 2=DIV, 3=LQ
+  Wire<1> mulGrant;
+  Wire<1> divGrant;
+  Wire<1> lqGrant;
+};
+struct SharedCDB : dark::Module<SharedCDBInput, SharedCDBOutput> {
+  SharedCDB();
+  void work() override {}
+private:
+  uint32_t selectOldest() const;
 };

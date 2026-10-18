@@ -172,9 +172,7 @@ auto SQ::replyToLoadRequest(uint32_t addr, uint8_t nBytes,
       // nothing forwards (single source, full cover -- no byte stitching).
       const uint32_t storeAddress = static_cast<uint32_t>(SQqueue[index].address);
       const uint8_t storeNBytes = getNBytes(index);
-      const bool overlaps = addr >= storeAddress
-          ? addr - storeAddress < static_cast<uint32_t>(storeNBytes)
-          : storeAddress - addr < nBytes;
+      const bool overlaps = byteOverlap(addr, nBytes, storeAddress, storeNBytes);
       if (overlaps) {
         youngestSameAddrOrder = k;
         SameAddrValueReady = static_cast<bool>(SQqueue[index].isValueReady);
@@ -209,11 +207,7 @@ bool SQ::canSendLoadToCache(uint32_t addr, uint8_t nBytes,
       continue;
     if (static_cast<bool>(SQqueue[cur].isAddressReady)) {
       const uint32_t storeAddr = static_cast<uint32_t>(SQqueue[cur].address);
-      // Any byte overlap blocks an unforwarded Load, including partial
-      // coverage in either direction. Differences avoid overflowing end addresses.
-      hasOverlappingStore = addr >= storeAddr
-          ? addr - storeAddr < static_cast<uint32_t>(getNBytes(cur))
-          : storeAddr - addr < nBytes;
+      hasOverlappingStore = byteOverlap(addr, nBytes, storeAddr, getNBytes(cur));
     } else {
       hasUnknownAddressStore = true;
     }

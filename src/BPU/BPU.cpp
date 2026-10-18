@@ -5,6 +5,31 @@
 
 #include "../include/ROB.hpp"
 
+uint32_t BPU::archWriteLane() const {
+  uint32_t top = static_cast<uint32_t>(tgt.archTopOfRAS);
+  const auto slot = robSlot(static_cast<uint32_t>(rob.robHeadTag));
+  if (static_cast<bool>(rob.robIsRet[slot]) && top > 0) --top;
+  return top;
+}
+
+bool BPU::archWriteEnabled() const {
+  const RobTag head = static_cast<uint32_t>(rob.robHeadTag);
+  return !static_cast<bool>(squash.needSquash) && !static_cast<bool>(recovery.active) &&
+    static_cast<bool>(rob.robWillCommit) && static_cast<uint32_t>(rob.robTag[robSlot(head)]) == head &&
+    static_cast<bool>(rob.robIsCall[robSlot(head)]) && archWriteLane() < RAS_CAP;
+}
+
+BPU::BPU() {
+  wire_output();
+  tgt.archStorage.enable = [this]() { return static_cast<bool>(squash.needSquash) || archWriteEnabled(); };
+  tgt.archStorage.writeEnable = [this]() { return archWriteEnabled(); };
+  tgt.archStorage.addr = []() { return 0u; };
+  for (int i = 0; i < RAS_CAP; ++i) {
+    tgt.archStorage.writeMask[i] = [this, i]() { return archWriteLane() == unsigned(i); };
+    tgt.archStorage.writeData[i] = [this]() { return static_cast<uint32_t>(rob.robPC[robSlot(static_cast<uint32_t>(rob.robHeadTag))]) + 4u; };
+  }
+}
+
 PredictInfo BPU::predict(uint32_t pc) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
   const uint8_t ghr = static_cast<uint32_t>(dir.GHR);
@@ -163,6 +188,8 @@ bool robTagMatches(const BPUInputROB &rob, RobTag tag) {
          static_cast<uint32_t>(rob.robTag[slot]) == tag;
 }
 void BPU::work() {
+  tgt.archStorage.work();
+  const auto step = recovery.sample();
   // Cycle-0 boot: direction counters need non-zero init. Runs in parallel with
   // normal logic -- cycle 0 has ROB/BRU empty, so no training can race it.
   bool boot = !static_cast<bool>(bootDone);
@@ -183,7 +210,7 @@ void BPU::work() {
   // ---- decode both train requests (once per cycle) ----
   TrainReq trBru, trCdb;
   const RobTag brRobTag = static_cast<uint32_t>(bru.bruHeadRobTag);
-  if (!static_cast<bool>(bru.isBRUEmpty) && robTagMatches(rob, brRobTag)) {
+  if (!step.active && !static_cast<bool>(bru.isBRUEmpty) && robTagMatches(rob, brRobTag)) {
     auto pcResult = static_cast<uint32_t>(bru.bruHeadPCResult);
     auto pcFrom = static_cast<uint32_t>(bru.bruHeadPCFrom);
     if (!needSquash || ROB::isOlder(brRobTag, squashTag)) {
@@ -300,18 +327,17 @@ void BPU::work() {
   // The tops are non-wrapping depths in [0, RAS_CAP].
   uint32_t specTop = static_cast<uint32_t>(tgt.specTopOfRAS);
   uint32_t archTop = static_cast<uint32_t>(tgt.archTopOfRAS);
-  uint32_t specRAS[RAS_CAP], archRAS[RAS_CAP];
+  uint32_t specRAS[RAS_CAP];
   for (int i = 0; i < RAS_CAP; ++i) {
     specRAS[i] = static_cast<uint32_t>(tgt.specRAS[i].retPC);
-    archRAS[i] = static_cast<uint32_t>(tgt.archRAS[i].retPC);
   }
 
   BTBWriteIntent fetchWriteIntent;
-  if (static_cast<bool>(fetchInfo.FetchValid)) {
+  if (!step.active && static_cast<bool>(fetchInfo.FetchValid)) {
     const uint32_t ra = static_cast<uint32_t>(fetchInfo.FetchPC) + 4;
-    if (static_cast<bool>(fetchInfo.isFetchRet) && specTop > 0)
+    if (!needSquash && static_cast<bool>(fetchInfo.isFetchRet) && specTop > 0)
       --specTop;
-    if (static_cast<bool>(fetchInfo.isFetchCall) && specTop < RAS_CAP) {
+    if (!needSquash && static_cast<bool>(fetchInfo.isFetchCall) && specTop < RAS_CAP) {
       specRAS[specTop++] = ra;
     }
     // Early training (BRU-port fetch side; same-line conflicts arbitrated at
@@ -331,22 +357,20 @@ void BPU::work() {
   // Pre-commit architectural baseline: like the main tree tick() (which reads
   // the comb snapshot `tgt` for recovery), a same-cycle squash must replay
   // from the OLD committed state, ignoring this cycle's head commit.
-  uint32_t archTopPreCommit = archTop;
-  uint32_t archRASPre[RAS_CAP];
-  for (int i = 0; i < RAS_CAP; ++i)
-    archRASPre[i] = archRAS[i];
 
   // Commit is the architectural RAS baseline used for later ROB replay
   // (mirrors the main tree; CDB never participates).
-  if (static_cast<bool>(rob.robWillCommit)) {
+  if (!needSquash && !step.active && static_cast<bool>(rob.robWillCommit)) {
     const RobTag headTag = static_cast<uint32_t>(rob.robHeadTag);
     const uint32_t headSlot = robSlot(headTag);
     if (headSlot < ROB_CAP &&
         static_cast<uint32_t>(rob.robTag[headSlot]) == headTag) {
       if (static_cast<bool>(rob.robIsRet[headSlot]) && archTop > 0)
         --archTop;
-      if (static_cast<bool>(rob.robIsCall[headSlot]) && archTop < RAS_CAP)
-        archRAS[archTop++] = static_cast<uint32_t>(rob.robPC[headSlot]) + 4u;
+      if (static_cast<bool>(rob.robIsCall[headSlot]) && archTop < RAS_CAP) {
+        tgt.archValid[archTop] <= 1;
+        ++archTop;
+      }
     }
   }
 
@@ -362,30 +386,29 @@ void BPU::work() {
     uint8_t ckptGHR = static_cast<uint32_t>(bpCkpt[ckid].GHR);
     dark::debug::assert(robTagMatches(rob, squashTag),
                         "squash tag must be live in the ROB");
-    uint32_t commitTOS = archTopPreCommit;
-    for (int i = 0; i < RAS_CAP; ++i)
-      specRAS[i] = archRASPre[i];
-    bool recovered = false;
-    RobTag robTag = static_cast<uint32_t>(rob.robHeadTag);
-    for (int i = 0; i < ROB_CAP; ++i) {
-      if (!recovered) {
-        const uint32_t robIndex = robSlot(robTag);
-        if (robIndex < ROB_CAP &&
-            static_cast<uint32_t>(rob.robTag[robIndex]) == robTag) {
-          if (static_cast<bool>(rob.robIsRet[robIndex]) && commitTOS > 0)
-            --commitTOS;
-          if (static_cast<bool>(rob.robIsCall[robIndex]) && commitTOS < RAS_CAP)
-            specRAS[commitTOS++] =
-                static_cast<uint32_t>(rob.robPC[robIndex]) + 4u;
-        }
-        recovered = robTag == squashTag;
-        robTag = robNextTag(robTag);
-      }
-    }
-    dark::debug::assert(recovered, "squash tag not found from ROB head");
+    tgt.baselineTop <= static_cast<uint32_t>(tgt.archTopOfRAS);
     ghrLocal = ckptGHR;
-    specTop = commitTOS;
     nextCkpt = (ckid + 1) & (CKPT_CAP - 1);
+  }
+  if (step.active) {
+    specTop = step.first() ? static_cast<uint32_t>(tgt.baselineTop) : specTop;
+    if (step.first()) for (int i = 0; i < RAS_CAP; ++i)
+      specRAS[i] = static_cast<bool>(tgt.archValid[i]) ? tgt.archStorage.readLane(i) : 0u;
+    bool open = step.first() || static_cast<bool>(tgt.replayOpen);
+    RobTag tag = step.nextTag;
+    for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
+      const unsigned offset = unsigned(step.offset) + lane;
+      if (open && offset < ROB_CAP && offset < step.liveCount) {
+        if (static_cast<uint32_t>(replay[lane].tag) == tag) {
+          if (static_cast<bool>(replay[lane].pop) && specTop > 0) --specTop;
+          if (static_cast<bool>(replay[lane].push) && specTop < RAS_CAP)
+            specRAS[specTop++] = static_cast<uint32_t>(replay[lane].pc) + 4u;
+          if (tag == step.squashTag) open = false;
+        } else open = false;
+      }
+      tag = robNextTag(tag);
+    }
+    tgt.replayOpen <= open;
   }
 
   // ---- BTB write-port arbitration: fetch > cdb > bru. The line fields and
@@ -431,6 +454,5 @@ void BPU::work() {
 
   for (int i = 0; i < RAS_CAP; ++i) {
     tgt.specRAS[i].retPC <= specRAS[i];
-    tgt.archRAS[i].retPC <= archRAS[i];
   }
 }

@@ -46,7 +46,8 @@ auto LQ::getAddress(int index) const -> uint32_t {
 auto LQ::getValue(int index) const -> int32_t {
   if (static_cast<uint32_t>(LQqueue[index].valueState) ==
       static_cast<uint32_t>(ValueState::READY))
-    return static_cast<uint32_t>(LQqueue[index].value);
+    return static_cast<int32_t>(extendLoad(static_cast<uint32_t>(LQqueue[index].value),
+                                          getNBytes(index), getIsUnsigned(index)));
   throw std::runtime_error("Value is not ready!");
 }
 
@@ -113,16 +114,7 @@ void LQ::work() {
   uint32_t tailData = 0;
 
   auto writeValueIntent = [&](int index, uint32_t value) {
-    const int nBytes = getNBytes(index);
-    if (nBytes == 1)
-      value &= 0xffu;
-    else if (nBytes == 2)
-      value &= 0xffffu;
-    if (!getIsUnsigned(index) && nBytes != 4) {
-      const unsigned width = 8u << (nBytes - 1);
-      if (value & (1u << (width - 1)))
-        value |= ~((1u << width) - 1u);
-    }
+    // Store raw data from all producers. Extend once in getValue(), as RTL.
     intent[index].valWrite = true;
     intent[index].valData = value;
     intent[index].stateWrite = true;

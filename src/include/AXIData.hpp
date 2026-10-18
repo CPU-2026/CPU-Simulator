@@ -30,16 +30,19 @@ struct AXIDataOutput {
   Wire<1> bReady;
 };
 struct AXIDataEntry {
-  std::array<Register<8>, DCACHE_BLOCK_CAP> bytes;
   Register<32> address;
   Register<3> transaction;
-  Register<5> issued, collected, aw, w;
+  Register<std::bit_width(static_cast<uint32_t>(DCACHE_WORDS_PER_LINE))> issued, collected, w;
   Register<1> mmio;
 };
 struct AXIDataInner {
-  std::array<AXIDataEntry, AXI_DEPTH> reads, writes;
+  std::array<AXIDataEntry, AXI_DATA_CAP> entries;
+  std::array<Register<4>, AXI_ORDER_CAP> readOrder, writeOrder;
+  std::array<std::array<Register<32>, DCACHE_WORDS_PER_LINE>, AXI_DATA_CAP> payload;
+  Register<AXI_DATA_CAP> dataBusy;
   Register<4> rh, wh;
   Register<5> rn, wn;
+  Register<5> rt, wt, ra, rr, wa, wd, wb;
 };
 struct AXIData : dark::Module<AXIDataInput, AXIDataOutput, AXIDataInner> {
   AXIData();
@@ -58,4 +61,6 @@ private:
   int writeIssue(bool address) const;
   int readCollect() const;
   int writeCollect() const;
+  const AXIDataEntry &readEntry(int slot) const { return entries[static_cast<uint32_t>(readOrder[slot])]; }
+  const AXIDataEntry &writeEntry(int slot) const { return entries[static_cast<uint32_t>(writeOrder[slot])]; }
 };

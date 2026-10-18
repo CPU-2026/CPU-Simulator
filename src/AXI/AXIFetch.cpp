@@ -12,8 +12,8 @@ AXIFetch::AXIFetch() {
   arAddr = [this]() -> uint32_t {
     if (static_cast<bool>(pending))
       return static_cast<uint32_t>(pendingAddr);
-    uint32_t slot = static_cast<uint32_t>(head);
-    oldestUnscheduled(slot);
+    uint32_t slot = 0;
+    if (!oldestUnscheduled(slot)) return 0u;
     return static_cast<uint32_t>(lines[slot].lineAddr) +
            (static_cast<uint32_t>(lines[slot].issued) << RV32_WORD_BYTE_BITS);
   };
@@ -23,44 +23,23 @@ AXIFetch::AXIFetch() {
 }
 
 uint32_t AXIFetch::occupancy() const {
-  uint32_t n = 0;
-  for (int i = 0; i < IMEM_CAP; ++i)
-    n += static_cast<bool>(lines[i].valid) ? 1u : 0u;
-  return n;
+  return static_cast<uint32_t>(count);
 }
 
 bool AXIFetch::oldestUnscheduled(uint32_t &slot) const {
-  const uint32_t occ = occupancy();
-  const uint32_t h = static_cast<uint32_t>(head);
-  for (uint32_t age = 0; age < occ; ++age) {
-    const uint32_t s = (h + age) & (IMEM_CAP - 1);
-    if (static_cast<bool>(lines[s].valid) &&
-        static_cast<uint32_t>(lines[s].issued) < ICACHE_WORDS_PER_LINE) {
-      slot = s;
-      return true;
-    }
-  }
-  return false;
+  slot = static_cast<uint32_t>(issue) & (IMEM_CAP - 1);
+  return static_cast<uint32_t>(issue) != static_cast<uint32_t>(tail);
 }
 
 bool AXIFetch::oldestWithDeficit(uint32_t &slot) const {
-  const uint32_t occ = occupancy();
-  const uint32_t h = static_cast<uint32_t>(head);
-  for (uint32_t age = 0; age < occ; ++age) {
-    const uint32_t s = (h + age) & (IMEM_CAP - 1);
-    if (static_cast<bool>(lines[s].valid) &&
-        static_cast<uint32_t>(lines[s].collected) <
-            static_cast<uint32_t>(lines[s].issued)) {
-      slot = s;
-      return true;
-    }
-  }
-  return false;
+  slot = static_cast<uint32_t>(collect) & (IMEM_CAP - 1);
+  return static_cast<uint32_t>(collect) != static_cast<uint32_t>(tail) &&
+    static_cast<uint32_t>(lines[slot].collected) < static_cast<uint32_t>(lines[slot].issued);
 }
 
 bool AXIFetch::retValid() const {
   const uint32_t h = static_cast<uint32_t>(head);
-  return static_cast<bool>(lines[h].valid) && static_cast<bool>(lines[h].ready);
+  return static_cast<bool>(lines[h].valid) && static_cast<uint32_t>(lines[h].collected) == ICACHE_WORDS_PER_LINE;
 }
 
 uint32_t AXIFetch::retLineAddr() const {
@@ -68,7 +47,7 @@ uint32_t AXIFetch::retLineAddr() const {
 }
 
 uint32_t AXIFetch::retWord(int w) const {
-  return static_cast<uint32_t>(lines[static_cast<uint32_t>(head)].words[w]);
+  return static_cast<uint32_t>(payload[static_cast<uint32_t>(head)][w]);
 }
 
 void AXIFetch::work() {
@@ -90,6 +69,7 @@ void AXIFetch::work() {
     for (int i = 0; i < IMEM_CAP; ++i)
       lines[i].valid <= 0;
     head <= 0;
+    count <= 0; tail <= 0; issue <= 0; collect <= 0;
     if (static_cast<bool>(pending)) {
       if (arFire)
         pending <= 0;
@@ -110,10 +90,10 @@ void AXIFetch::work() {
       uint32_t slot = 0;
       if (disc == 0 && oldestWithDeficit(slot)) {
         const uint32_t c = static_cast<uint32_t>(lines[slot].collected);
-        lines[slot].words[c] <= static_cast<uint32_t>(rData);
+        payload[slot][c] <= static_cast<uint32_t>(rData);
         lines[slot].collected <= c + 1u;
         if (c + 1u == ICACHE_WORDS_PER_LINE)
-          lines[slot].ready <= 1;
+          collect <= ((static_cast<uint32_t>(collect) + 1u) & ((IMEM_CAP << 1) - 1));
       } else if (disc != 0) {
         nextDiscard = disc - 1u;
       }
@@ -126,8 +106,11 @@ void AXIFetch::work() {
         nextDiscard = nextDiscard + 1u;
       } else {
         uint32_t slot = 0;
-        if (oldestUnscheduled(slot))
+        if (oldestUnscheduled(slot)) {
           lines[slot].issued <= static_cast<uint32_t>(lines[slot].issued) + 1u;
+          if (static_cast<uint32_t>(lines[slot].issued) + 1u == ICACHE_WORDS_PER_LINE)
+            issue <= ((static_cast<uint32_t>(issue) + 1u) & ((IMEM_CAP << 1) - 1));
+        }
       }
     }
     // Pop the consumed head line and admit a new fetch line in its wake.
@@ -142,10 +125,11 @@ void AXIFetch::work() {
       lines[pushSlot].lineAddr <= static_cast<uint32_t>(fetchPC);
       lines[pushSlot].issued <= 0;
       lines[pushSlot].collected <= 0;
-      lines[pushSlot].ready <= 0;
+      tail <= ((static_cast<uint32_t>(tail) + 1u) & ((IMEM_CAP << 1) - 1));
     }
     if (doPop)
       head <= ((h + 1u) & (IMEM_CAP - 1));
+    count <= (occ + unsigned(doPush) - unsigned(doPop));
   }
   discard <= nextDiscard;
   inflight <= nextInflight;

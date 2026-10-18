@@ -16,6 +16,15 @@ bool ROB::isYounger(RobTag tag_a, RobTag tag_b) {
 ROB::ROB() { wire_output(); }
 
 void ROB::wire_output() {
+  for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
+    replayNarrow[lane].tag = [this, lane]() { return static_cast<uint32_t>(ROBqueue[replaySlot(lane)].tag); };
+    replayNarrow[lane].rd = [this, lane]() { return static_cast<uint32_t>(ROBqueue[replaySlot(lane)].dest); };
+    replayNarrow[lane].newPhy = [this, lane]() { return static_cast<uint32_t>(ROBqueue[replaySlot(lane)].newPhy); };
+    replayRas[lane].tag = [this, lane]() { return static_cast<uint32_t>(replayNarrow[lane].tag); };
+    replayRas[lane].pc = [this, lane]() { return static_cast<uint32_t>(ROBqueue[replaySlot(lane)].pc); };
+    replayRas[lane].pop = [this, lane]() { return static_cast<uint32_t>(ROBqueue[replaySlot(lane)].isRet); };
+    replayRas[lane].push = [this, lane]() { return static_cast<uint32_t>(ROBqueue[replaySlot(lane)].isCall); };
+  }
   headView.head = [this]() -> uint32_t {
     return static_cast<uint32_t>(robHead);
   };
@@ -85,6 +94,12 @@ void ROB::wire_output() {
   }
 }
 
+unsigned ROB::replaySlot(unsigned lane) const {
+  unsigned slot = robSlot(static_cast<uint32_t>(robHead)) + static_cast<uint32_t>(replayOffset) + lane;
+  if (slot >= ROB_CAP) slot -= ROB_CAP;
+  return slot;
+}
+
 bool ROB::isHaltCommitted() const {
   return static_cast<bool>(robHaltCommitted);
 }
@@ -108,6 +123,7 @@ bool ROB::matchesTag(RobTag tag) const {
          static_cast<uint32_t>(ROBqueue[slot].tag) == tag;
 }
 bool ROB::willCommit() const {
+  if (static_cast<bool>(retirementBlocked)) return false;
   if (isEmpty())
     return false;
   const RobTag headTag = static_cast<uint32_t>(robHead);
@@ -201,14 +217,8 @@ void ROB::work() {
   if (static_cast<bool>(cdbOfALU.cdbValid)) {
     markReady(static_cast<uint32_t>(cdbOfALU.cdbRobTag));
   }
-  if (static_cast<bool>(cdbOfLQ.cdbValid)) {
-    markReady(static_cast<uint32_t>(cdbOfLQ.cdbRobTag));
-  }
-  if (static_cast<bool>(cdbOfMUL.cdbValid)) {
-    markReady(static_cast<uint32_t>(cdbOfMUL.cdbRobTag));
-  }
-  if (static_cast<bool>(cdbOfDIV.cdbValid)) {
-    markReady(static_cast<uint32_t>(cdbOfDIV.cdbRobTag));
+  if (static_cast<bool>(cdbOfShared.cdbValid)) {
+    markReady(static_cast<uint32_t>(cdbOfShared.cdbRobTag));
   }
   for (int i = 0; i < ROB_CAP; ++i) {
     if (readyWrite[i])

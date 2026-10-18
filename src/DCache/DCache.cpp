@@ -106,8 +106,9 @@ bool DCache::storeHazard(int s, bool allocating) const {
   for (int j = 0; j < REQUEST_CAP; ++j) {
     const auto store = request(j);
     if (u(requests[j].active) && store.op == Operation::Store && (u(olderMask[j]) & (1u << s))) {
-      const bool overlap = load.address >= store.address ? load.address - store.address < uint32_t(store.nBytes)
-          : store.address - load.address < uint32_t(load.nBytes);
+      const uint32_t lo = load.address & DCACHE_OFFSET_MASK, so = store.address & DCACHE_OFFSET_MASK;
+      const bool overlap = (load.address >> DCACHE_OFFSET_BITS) == (store.address >> DCACHE_OFFSET_BITS) &&
+          lo <= so + uint32_t(store.nBytes) - 1u && so <= lo + uint32_t(load.nBytes) - 1u;
       if (overlap || (allocating && ((load.address ^ store.address) & (DCACHE_INDEX_MASK << DCACHE_OFFSET_BITS)) == 0)) blocked = true;
     }
   }
@@ -138,12 +139,14 @@ uint32_t DCache::selectVictim(uint32_t set) const {
 }
 uint32_t DCache::sramRaw(int s, int w) const {
   const auto r = request(s);
-  uint32_t raw = 0;
-  for (int i = 0; i < 4; ++i) if (i < r.nBytes) {
-    const uint32_t b = (r.address & DCACHE_OFFSET_MASK) + i;
-    raw |= datas[w][b >> 2].readLane(b & 3) << (i << 3);
+  const unsigned bank = (r.address & DCACHE_OFFSET_MASK) >> 2;
+  uint32_t low = 0, high = 0;
+  for (int lane = 0; lane < 4; ++lane) {
+    low |= datas[w][bank].readLane(lane) << (lane << 3);
+    if (bank + 1 < DCACHE_WORDS_PER_LINE)
+      high |= datas[w][bank + 1].readLane(lane) << (lane << 3);
   }
-  return raw;
+  return extractLoadWord(low, high, r.address, r.nBytes);
 }
 uint32_t DCache::memoryRaw(int s) const {
   const auto r = request(s);
@@ -154,6 +157,7 @@ uint32_t DCache::memoryRaw(int s) const {
 DCachePlan DCache::plan() const {
   DCachePlan p{};
   const int first = oldestRequest(activeMask()), way = hitWay();
+  p.readHitRaw = u(readValid) && way >= 0 ? sramRaw(u(readIndex), way) : 0;
   if (first >= 0 && request(first).address == AXI_EXIT_ADDR && request(first).op == Operation::Store && u(exitReady)) {
     assert(request(first).nBytes == 4);
     p.exitValid = true; p.exitValue = uint32_t(request(first).value);
@@ -183,7 +187,7 @@ DCachePlan DCache::plan() const {
   }
   if (p.response >= 0) {
     const int s = p.response;
-    p.loadValue = early ? memoryRaw(s) : u(readValid) && u(readIndex) == uint32_t(s) && way >= 0 ? sramRaw(s, way) : u(requests[s].raw);
+    p.loadValue = early ? memoryRaw(s) : u(readValid) && u(readIndex) == uint32_t(s) && way >= 0 ? p.readHitRaw : u(rawPayload[s]);
     p.loadValid = !u(requests[s].cancelled) && (!u(squashNeed) || ROB::isOlder(request(s).robTag, u(squashTag)));
   }
   if (!p.fillBeat && first >= 0 && request(first).op == Operation::Store && request(first).address != AXI_EXIT_ADDR &&
@@ -203,7 +207,7 @@ DCachePlan DCache::plan() const {
     p.mergeSlot = oldestRequest(mergeable);
     if (p.mergeSlot >= 0) p.mergeMiss = findMiss(request(p.mergeSlot).address & ~DCACHE_OFFSET_MASK);
   }
-  if (!u(readValid) && !p.fillBeat && p.store < 0) {
+  {
     uint8_t eligible = 0;
     bool anyMiss = false;
     for (int m = 0; m < DCACHE_MSHR_CAP; ++m) anyMiss = anyMiss || u(misses[m].valid);
@@ -214,7 +218,8 @@ DCachePlan DCache::plan() const {
           (r.op == Operation::Store && s != first) || (u(requests[s].deferred) && (s != first || freeMiss() < 0)) || (!anyMiss && s != first);
       if (!blocked) eligible |= 1u << s;
     }
-    p.lookup = oldestRequest(eligible);
+    p.lookupCandidate = oldestRequest(eligible);
+    if (!u(readValid) && !p.fillBeat && p.store < 0) p.lookup = p.lookupCandidate;
   }
   uint8_t readable = 0, writable = 0;
   for (int m = 0; m < DCACHE_MSHR_CAP; ++m) if (u(misses[m].valid)) {
@@ -226,7 +231,12 @@ DCachePlan DCache::plan() const {
   if (wr >= 0 && u(dmemWriteReady)) {
     p.memoryRequest.writeValid = true;
     p.memoryRequest.write.address = victimAddress(wr); p.memoryRequest.write.transaction = wr;
-    for (int b = 0; b < DCACHE_BLOCK_CAP; ++b) p.memoryRequest.write.lineData[b] = u(misses[wr].victimLine[b]);
+    for (int b = 0; b < DCACHE_BLOCK_CAP; ++b) p.memoryRequest.write.lineData[b] = u(victimPayload[wr][b >> 2]) >> ((b & 3) << 3);
+  }
+  const uint32_t lookupSet = (request(unsigned(p.lookupCandidate) & (REQUEST_CAP - 1)).address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+  for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
+    p.meta[w].addr = lookupSet;
+    for (int b = 0; b < DCACHE_WORDS_PER_LINE; ++b) p.data[w][b].addr = lookupSet;
   }
   if (p.fillBeat) {
     const auto &m = misses[p.fillMiss];
@@ -292,7 +302,7 @@ void DCache::work() {
       r.op <= u(decisionOp); r.value <= u(decisionValue); r.address <= u(decisionAddr);
       r.isSigned <= u(decisionIsSigned); r.nEnc <= u(decisionNBytes);
       r.robTag <= u(decisionRobTag); r.memIndex <= u(decisionMemIndex);
-      r.raw <= 0; r.way <= 0; r.miss <= 0;
+      r.way <= 0; r.miss <= 0;
       r.active <= 1; r.ready <= 0; r.deferred <= 0; r.cancelled <= 0;
       assert((u(decisionAddr) & DCACHE_OFFSET_MASK) + (1u << u(decisionNBytes)) <= DCACHE_BLOCK_CAP);
     } else {
@@ -300,9 +310,9 @@ void DCache::work() {
       if (released & (1u << s)) { r.ready <= 0; r.deferred <= 0; r.miss <= 0; }
       else if (u(r.active)) {
         const bool merged = firstFill && request(fillOwner).op == Operation::Load && miss(s) == p.fillMiss && s != fillOwner;
-        if (merged) { r.raw <= memoryRaw(s); r.ready <= 1; r.deferred <= 0; r.miss <= 0; }
+        if (merged) { rawPayload[s] <= memoryRaw(s); r.ready <= 1; r.deferred <= 0; r.miss <= 0; }
         else if (u(readValid) && int(u(readIndex)) == s) {
-          if (hit >= 0) { r.raw <= sramRaw(s, hit); r.ready <= 1; r.way <= hit; }
+          if (hit >= 0) { rawPayload[s] <= p.readHitRaw; r.ready <= 1; r.way <= hit; }
           else { r.miss <= p.allocate + 1; r.deferred <= (p.allocate < 0); }
         } else if (p.mergeSlot == s) { r.miss <= p.mergeMiss + 1; r.deferred <= 0; }
       }
@@ -325,7 +335,11 @@ void DCache::work() {
       m.owner <= u(readIndex); m.way <= victim; m.victimTag <= (valid ? meta & DCACHE_META_TAG_MASK : 0);
       m.dirty <= (valid && (meta & DCACHE_META_DIRTY));
       m.readSent <= 0; m.writeSent <= 0; m.writeDone <= 0; m.responded <= 0; m.fillWord <= 0;
-      for (int b = 0; b < DCACHE_BLOCK_CAP; ++b) m.victimLine[b] <= datas[victim][b >> 2].readLane(b & 3);
+      for (int word = 0; word < DCACHE_WORDS_PER_LINE; ++word) {
+        uint32_t value = 0;
+        for (int lane = 0; lane < 4; ++lane) value |= datas[victim][word].readLane(lane) << (lane << 3);
+        victimPayload[id][word] <= value;
+      }
     } else if (p.fillFire && p.fillMiss == id) m.valid <= 0;
     else if (u(m.valid)) {
       assert(u(requests[u(m.owner)].active) && miss(u(m.owner)) == id);

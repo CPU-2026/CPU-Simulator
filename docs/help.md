@@ -11,4 +11,4 @@
 - 先执行所有模块的 `work()`，再统一 `sync()`。不要用调用顺序做跨模块旁路。
 - 输入接到模块实例上；组合仲裁不因封装模块而增加寄存边界。
 
-[Register 实现](../include/register.h) · [Wire 实现](../include/wire.h)
+[完整 API 和示例（历史版）](_archive/20261018/docs/help.md)

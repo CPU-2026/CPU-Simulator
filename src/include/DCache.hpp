@@ -37,7 +37,7 @@ struct DCacheOutput {
 };
 struct DCacheEntry {
   Register<5> op;
-  Register<32> value, address, raw;
+  Register<32> value, address;
   Register<1> isSigned;
   Register<2> nEnc;
   Register<ROB_TAG_WIDTH> robTag;
@@ -49,7 +49,6 @@ struct DCacheEntry {
 struct DCacheMiss {
   Register<32> line;
   Register<DCACHE_TAG_WIDTH> victimTag;
-  std::array<Register<8>, DCACHE_BLOCK_CAP> victimLine;
   Register<DCACHE_REQUEST_BITS> owner;
   Register<2> way;
   Register<DCACHE_WORD_INDEX_BITS> fillWord;
@@ -57,9 +56,11 @@ struct DCacheMiss {
 };
 struct DCachePlan {
   int lookup = -1, response = -1, store = -1, mergeSlot = -1, mergeMiss = -1;
+  int lookupCandidate = -1;
   int allocate = -1, fillMiss = -1, writeAck = -1;
   bool fillBeat = false, fillFire = false, loadValid = false, exitValid = false;
   uint32_t loadValue = 0, exitValue = 0;
+  uint32_t readHitRaw = 0; // One read grant, one shared extraction.
   CacheMemoryRequest memoryRequest{};
   std::array<std::array<CacheSRAMPort<4>, DCACHE_WORDS_PER_LINE>, NUM_OF_DCACHE_WAYS> data{};
   std::array<CacheSRAMPort<1>, NUM_OF_DCACHE_WAYS> meta{};
@@ -74,6 +75,8 @@ struct DCacheComb {
 struct DCacheInner {
   std::array<DCacheEntry, REQUEST_CAP> requests;
   std::array<DCacheMiss, DCACHE_MSHR_CAP> misses;
+  std::array<Register<32>, REQUEST_CAP> rawPayload;
+  std::array<std::array<Register<32>, DCACHE_WORDS_PER_LINE>, DCACHE_MSHR_CAP> victimPayload;
   std::array<Register<REQUEST_CAP>, REQUEST_CAP> olderMask;
   Register<DCACHE_COUNT_BITS> count;
   Register<DCACHE_REQUEST_BITS> cursor, readIndex;

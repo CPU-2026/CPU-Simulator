@@ -49,6 +49,7 @@ struct FlushArbiterInputROB {
 // Wire views (BRUModule head, aluCDB output, ROBModule), all writes to its own
 // queue (receive).
 struct FlushArbiterInput {
+  Wire<1> broadcastBlocked{[]() { return 0u; }};
   FlushArbiterInputBRU bru;
   FlushArbiterInputCDB cdb;
   FlushArbiterInputROB rob;

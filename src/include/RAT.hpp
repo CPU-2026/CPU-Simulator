@@ -1,6 +1,8 @@
 #pragma once
 #include "common.h"
 #include "module.h"
+#include "Recovery.hpp"
+#include "SRAM.hpp"
 #include <array>
 #include <cstdint>
 
@@ -17,10 +19,10 @@ struct RATInputROB {
   Wire<5> headDest;
   Wire<PHY_TAG_WIDTH> headNewPhy;
   std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> tag;
-  std::array<Wire<5>, ROB_CAP> dest;
-  std::array<Wire<PHY_TAG_WIDTH>, ROB_CAP> newPhy;
 };
 struct RATInput {
+  std::array<RecoveryNarrowPort, RECOVERY_WIDTH> replay;
+  RecoveryInput recovery;
   Wire<1> needSquash;
   Wire<ROB_TAG_WIDTH> SquashTag;
   Wire<1> issueValid;
@@ -31,11 +33,14 @@ struct RATInput {
 };
 struct RATInner {
   std::array<Register<PHY_TAG_WIDTH>, REGISTER_CAP> specRAT;
-  std::array<Register<PHY_TAG_WIDTH>, REGISTER_CAP> archRAT;
+  SRAM<1, 192, 6> archStorage;
+  std::array<Register<1>, REGISTER_CAP> archValid;
+  Register<1> replayOpen;
   Register<1> bootDone;
 };
 
 struct RAT : dark::Module<RATInput, RATInner> {
+  RAT();
   uint8_t readRAT_PRF(int regNum) const;
   OperandInfo readOperand(int regNum) const;
   void work() override;

@@ -17,4 +17,4 @@ RESULT_FULL=1 VERBOSE=clock ./build/quickstart/bin/code < data/course-testcases/
 
 ## 文档
 
-[前端](docs/frontend.md) · [后端](docs/backend.md) · [访存](docs/memory.md) · [缓存](docs/cache.md) · [框架指南](docs/help.md)
+[前端](docs/frontend.md) · [后端](docs/backend.md) · [访存](docs/memory.md) · [缓存](docs/cache.md) · [框架指南](docs/help.md) · [验证记录](docs/progress.md)

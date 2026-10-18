@@ -2,6 +2,7 @@
 #include "common.h"
 #include "concept.h"
 #include "module.h"
+#include "Recovery.hpp"
 #include "tools.h"
 #include <array>
 #include <cstdint>
@@ -38,23 +39,12 @@ struct ROBInputIssue {
   Wire<1> issueValid;
   ROBInputEntry entry;
 };
-// Quad-CDB commit-ready ports (mirrors the main tree's
-// ROBInput.cdbOfALU/cdbOfLQ/cdbOfMul/cdbOfDiv): each bus marks its result's
-// ROB entry commit-ready; only valid+tag are needed (the ROB reads no
-// payload).
+// ALU and shared MUL/DIV/LQ completion ports (valid + ROB identity only).
 struct ROBInputCDBAlu {
   Wire<1> cdbValid;
   Wire<ROB_TAG_WIDTH> cdbRobTag;
 };
-struct ROBInputCDBLq {
-  Wire<1> cdbValid;
-  Wire<ROB_TAG_WIDTH> cdbRobTag;
-};
-struct ROBInputCDBMul {
-  Wire<1> cdbValid;
-  Wire<ROB_TAG_WIDTH> cdbRobTag;
-};
-struct ROBInputCDBDiv {
+struct ROBInputCDBShared {
   Wire<1> cdbValid;
   Wire<ROB_TAG_WIDTH> cdbRobTag;
 };
@@ -67,12 +57,12 @@ struct ROBInputSQ {
   Wire<ROB_CAP> epochMask;
 };
 struct ROBInput {
+  Wire<ROB_TAG_WIDTH> replayOffset{[]() { return 0u; }};
+  Wire<1> retirementBlocked{[]() { return 0u; }};
   ROBInputSquash squash;
   ROBInputIssue issue;
   ROBInputCDBAlu cdbOfALU;
-  ROBInputCDBLq cdbOfLQ;
-  ROBInputCDBMul cdbOfMUL;
-  ROBInputCDBDiv cdbOfDIV;
+  ROBInputCDBShared cdbOfShared;
   ROBInputBRU bru;
   ROBInputSQ sq;
 };
@@ -104,6 +94,8 @@ struct ROBOutput {
     std::array<Wire<PHY_TAG_WIDTH>, ROB_CAP> oldPhy;
   };
   Entry entry;
+  std::array<RecoveryNarrowPort, RECOVERY_WIDTH> replayNarrow;
+  std::array<RecoveryRasPort, RECOVERY_WIDTH> replayRas;
 };
 
 // Inner: flat ROBEntryReg array + state — keep in sync
@@ -136,6 +128,7 @@ struct ROBInner {
 struct ROB : dark::Module<ROBInput, ROBOutput, ROBInner> {
 private:
   void wire_output();
+  unsigned replaySlot(unsigned lane) const;
 public:
   ROB();
   static bool isOlder(RobTag tag_a, RobTag tag_b);
