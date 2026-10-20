@@ -12,7 +12,7 @@ bool MemArbiter::storeSelected() const {
   RobTag head = static_cast<uint32_t>(robHeadTag);
   bool committed = static_cast<bool>(sqHeadCommitted);
   bool atHeadReady = !committed &&
-                     static_cast<bool>(robStoreWillCommit) && storeTag == head;
+                     static_cast<bool>(robStoreWillCommit);
   return committed || atHeadReady;
 }
 

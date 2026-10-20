@@ -247,11 +247,13 @@ void LQ::work() {
   }
 
   // 5. retire pop
-  const bool retireLoad = !isEmpty() && static_cast<bool>(rob.robWillCommit) &&
-      headRobTag() == static_cast<uint32_t>(rob.robHeadTag);
-  if (retireLoad) {
-    head <= ((static_cast<uint32_t>(head) + 1) & LQ_SEQ_MASK);
+  auto retiredHead = static_cast<uint32_t>(head);
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+    if (bool(commits[lane].valid) && retiredHead != static_cast<uint32_t>(tail) &&
+        static_cast<uint32_t>(LQqueue[retiredHead & LQ_MASK].robTag) == uint32_t(commits[lane].tag))
+      retiredHead = (retiredHead + 1) & LQ_SEQ_MASK;
   }
+  if (retiredHead != static_cast<uint32_t>(head)) head <= retiredHead;
 
   // 6. load response — the cycle-start FETCHING state proves this entry was
   //    already waiting for the response; stateAfter preserves store-forward

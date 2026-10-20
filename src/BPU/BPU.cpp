@@ -5,18 +5,25 @@
 
 #include "../include/ROB.hpp"
 
-uint32_t BPU::archWriteLane() const {
+uint32_t BPU::archWriteLane(unsigned lane) const {
   uint32_t top = static_cast<uint32_t>(tgt.archTopOfRAS);
-  const auto slot = robSlot(static_cast<uint32_t>(rob.robHeadTag));
-  if (static_cast<bool>(rob.robIsRet[slot]) && top > 0) --top;
+  for (unsigned i = 0; i < COMMIT_WIDTH; ++i) {
+    if (i <= lane && bool(commits[i].valid)) {
+      if (bool(commits[i].pop) && top > 0) --top;
+      if (i < lane && bool(commits[i].push) && top < RAS_CAP) ++top;
+    }
+  }
   return top;
 }
 
+bool BPU::archWrites(unsigned lane) const {
+  return bool(commits[lane].valid) && bool(commits[lane].push) && archWriteLane(lane) < RAS_CAP;
+}
+
 bool BPU::archWriteEnabled() const {
-  const RobTag head = static_cast<uint32_t>(rob.robHeadTag);
-  return !static_cast<bool>(squash.needSquash) && !static_cast<bool>(recovery.active) &&
-    static_cast<bool>(rob.robWillCommit) && static_cast<uint32_t>(rob.robTag[robSlot(head)]) == head &&
-    static_cast<bool>(rob.robIsCall[robSlot(head)]) && archWriteLane() < RAS_CAP;
+  bool write = false;
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) write |= archWrites(lane);
+  return write;
 }
 
 BPU::BPU() {
@@ -25,8 +32,18 @@ BPU::BPU() {
   tgt.archStorage.writeEnable = [this]() { return archWriteEnabled(); };
   tgt.archStorage.addr = []() { return 0u; };
   for (int i = 0; i < RAS_CAP; ++i) {
-    tgt.archStorage.writeMask[i] = [this, i]() { return archWriteLane() == unsigned(i); };
-    tgt.archStorage.writeData[i] = [this]() { return static_cast<uint32_t>(rob.robPC[robSlot(static_cast<uint32_t>(rob.robHeadTag))]) + 4u; };
+    tgt.archStorage.writeMask[i] = [this, i]() {
+      bool write = false;
+      for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
+        write |= archWrites(lane) && archWriteLane(lane) == unsigned(i);
+      return write;
+    };
+    tgt.archStorage.writeData[i] = [this, i]() {
+      uint32_t pc = 0;
+      for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
+        if (archWrites(lane) && archWriteLane(lane) == unsigned(i)) pc = uint32_t(commits[lane].pc) + 4u;
+      return pc;
+    };
   }
 }
 
@@ -360,19 +377,14 @@ void BPU::work() {
 
   // Commit is the architectural RAS baseline used for later ROB replay
   // (mirrors the main tree; CDB never participates).
-  if (!needSquash && !step.active && static_cast<bool>(rob.robWillCommit)) {
-    const RobTag headTag = static_cast<uint32_t>(rob.robHeadTag);
-    const uint32_t headSlot = robSlot(headTag);
-    if (headSlot < ROB_CAP &&
-        static_cast<uint32_t>(rob.robTag[headSlot]) == headTag) {
-      if (static_cast<bool>(rob.robIsRet[headSlot]) && archTop > 0)
-        --archTop;
-      if (static_cast<bool>(rob.robIsCall[headSlot]) && archTop < RAS_CAP) {
-        tgt.archValid[archTop] <= 1;
-        ++archTop;
-      }
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+    if (bool(commits[lane].valid)) {
+      if (bool(commits[lane].pop) && archTop > 0) --archTop;
+      if (bool(commits[lane].push) && archTop < RAS_CAP) ++archTop;
     }
   }
+  for (unsigned row = 0; row < RAS_CAP; ++row)
+    if (bool(tgt.archStorage.writeEnable) && bool(tgt.archStorage.writeMask[row])) tgt.archValid[row] <= 1;
 
   // Checkpoint allocation and squash rollback never coincide: the allocated
   // ckptId is always newer (ring distance >= 1), so bpCkpt reads never race.

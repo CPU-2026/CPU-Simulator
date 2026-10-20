@@ -1,4 +1,5 @@
 #pragma once
+#include "Commit.hpp"
 #include "SQ.hpp"
 #include "common.h"
 #include "module.h"
@@ -83,6 +84,7 @@ struct LQInputStoreNotifies {
   Wire<ROB_TAG_WIDTH> sanUnknownTag;
 };
 struct LQInput {
+  std::array<CommitPort, COMMIT_WIDTH> commits;
   LQInputSquash squash;
   LQInputIssue issue;
   LQInputCDB cdb;

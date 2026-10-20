@@ -16,6 +16,20 @@ bool ROB::isYounger(RobTag tag_a, RobTag tag_b) {
 ROB::ROB() { wire_output(); }
 
 void ROB::wire_output() {
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+    retirement[lane].valid = [this, lane]() { return lane < commitCount(); };
+    retirement[lane].tag = [this, lane]() { return commitTag(lane); };
+    retirement[lane].type = [this, lane]() { return uint32_t(ROBqueue[robSlot(commitTag(lane))].type); };
+    retirement[lane].rd = [this, lane]() { return uint32_t(ROBqueue[robSlot(commitTag(lane))].dest); };
+    retirement[lane].newPhy = [this, lane]() { return uint32_t(ROBqueue[robSlot(commitTag(lane))].newPhy); };
+    retirement[lane].oldPhy = [this, lane]() { return uint32_t(ROBqueue[robSlot(commitTag(lane))].oldPhy); };
+    retirement[lane].pc = [this, lane]() { return uint32_t(ROBqueue[robSlot(commitTag(lane))].pc); };
+    retirement[lane].halt = [this, lane]() { return uint32_t(ROBqueue[robSlot(commitTag(lane))].halt); };
+    retirement[lane].exception = [this, lane]() { return uint32_t(ROBqueue[robSlot(commitTag(lane))].exception); };
+    retirement[lane].pop = [this, lane]() { return uint32_t(ROBqueue[robSlot(commitTag(lane))].isRet); };
+    retirement[lane].push = [this, lane]() { return uint32_t(ROBqueue[robSlot(commitTag(lane))].isCall); };
+    retirement[lane].exits = [this, lane]() { return uint32_t(commitExit[lane]); };
+  }
   for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
     replayNarrow[lane].tag = [this, lane]() { return static_cast<uint32_t>(ROBqueue[replaySlot(lane)].tag); };
     replayNarrow[lane].rd = [this, lane]() { return static_cast<uint32_t>(ROBqueue[replaySlot(lane)].dest); };
@@ -132,6 +146,28 @@ bool ROB::willCommit() const {
   return !static_cast<bool>(squash.needSquash) ||
          isOlder(headTag, static_cast<uint32_t>(squash.SquashTag));
 }
+RobTag ROB::commitTag(unsigned lane) const {
+  RobTag tag = uint32_t(robHead);
+  for (unsigned i = 0; i < COMMIT_WIDTH; ++i)
+    if (i < lane) tag = robNextTag(tag);
+  return tag;
+}
+
+unsigned ROB::commitCount() const {
+  bool open = !bool(retirementBlocked) && !bool(squash.needSquash) &&
+      !bool(robHaltCommitted) && !bool(robTrapCommitted);
+  unsigned count = 0;
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+    const RobTag tag = commitTag(lane);
+    const auto &row = ROBqueue[robSlot(tag)];
+    if (open && matchesTag(tag) && bool(row.isCommitReady) &&
+        (uint32_t(row.type) != uint32_t(ROBType::STORE) || bool(commitStoreReady[lane]))) {
+      ++count;
+      open = !bool(row.halt) && !bool(row.exception) && !bool(commitExit[lane]);
+    } else open = false;
+  }
+  return count;
+}
 bool ROB::storeWillCommit() const {
   return willCommit() &&
          static_cast<uint32_t>(ROBqueue[robSlot(
@@ -146,7 +182,7 @@ void ROB::work() {
   const RobTag curHead = static_cast<uint32_t>(robHead);
   const RobTag curNext = static_cast<uint32_t>(next);
   const bool curEmpty = curHead == curNext;
-  const bool willCommitNow = willCommit();
+  const unsigned retiring = commitCount();
   const uint32_t issueSlot = robSlot(curNext);
 
   std::array<bool, ROB_CAP> readyWrite{};
@@ -234,16 +270,18 @@ void ROB::work() {
   if (nextWrite)
     next <= nextData;
 
-  // A strictly older head commit coexists with a younger squash.
-  if (willCommitNow) {
-    if (bool(ROBqueue[robSlot(curHead)].exception)) robTrapCommitted <= 1;
-    const uint32_t oldIdx = robSlot(curHead);
-    const bool oldHalt = static_cast<bool>(ROBqueue[oldIdx].halt);
-    const uint32_t oldDest = static_cast<uint32_t>(ROBqueue[oldIdx].dest);
-    robHead <= robNextTag(curHead);
-    if (oldHalt) {
-      robHaltCommitted <= true;
-      robHaltRd <= oldDest;
+  bool trap = false, halt = false;
+  uint32_t haltRd = 0;
+  RobTag retiredHead = curHead;
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+    if (lane < retiring) {
+      const auto &row = ROBqueue[robSlot(retiredHead)];
+      trap |= bool(row.exception);
+      if (bool(row.halt)) { halt = true; haltRd = uint32_t(row.dest); }
+      retiredHead = robNextTag(retiredHead);
     }
   }
+  if (retiring != 0) robHead <= retiredHead;
+  if (trap) robTrapCommitted <= 1;
+  if (halt) { robHaltCommitted <= 1; robHaltRd <= haltRd; }
 }

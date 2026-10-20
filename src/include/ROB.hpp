@@ -1,4 +1,5 @@
 #pragma once
+#include "Commit.hpp"
 #include "common.h"
 #include "concept.h"
 #include "module.h"
@@ -57,6 +58,8 @@ struct ROBInputSQ {
   Wire<ROB_CAP> epochMask;
 };
 struct ROBInput {
+  std::array<Wire<1>, COMMIT_WIDTH> commitExit;
+  std::array<Wire<1>, COMMIT_WIDTH> commitStoreReady;
   Wire<ROB_TAG_WIDTH> replayOffset{[]() { return 0u; }};
   Wire<1> retirementBlocked{[]() { return 0u; }};
   ROBInputSquash squash;
@@ -77,6 +80,7 @@ struct ROBOutputHeadView {
   Wire<2> headType;
 };
 struct ROBOutput {
+  std::array<CommitPort, COMMIT_WIDTH> retirement;
   ROBOutputHeadView headView;
   // Per-entry views consumed outside the ROB.
   struct Entry {
@@ -137,6 +141,8 @@ public:
   bool isEmpty() const;
   bool matchesTag(RobTag tag) const;
   bool willCommit() const;
+  unsigned commitCount() const;
+  RobTag commitTag(unsigned lane) const;
   bool storeWillCommit() const;
   bool isHaltCommitted() const;
   bool isTrapCommitted() const { return bool(robTrapCommitted); }
