@@ -1,4 +1,5 @@
 #pragma once
+#include "Commit.hpp"
 #include "common.h"
 #include "module.h"
 #include "Recovery.hpp"
@@ -42,6 +43,7 @@ struct PRFInputROB {
   Wire<PHY_TAG_WIDTH> robHeadOldPhy;
 };
 struct PRFInput {
+  std::array<CommitPort, COMMIT_WIDTH> commits;
   std::array<RecoveryNarrowPort, RECOVERY_WIDTH> replay;
   RecoveryInput recovery;
   PRFInputSquash squash;

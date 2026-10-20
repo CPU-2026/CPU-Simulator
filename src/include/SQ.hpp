@@ -1,4 +1,5 @@
 #pragma once
+#include "Commit.hpp"
 #include "common.h"
 #include "module.h"
 #include <array>
@@ -46,6 +47,7 @@ struct SQInputPRF {
   std::array<Wire<7>, STORERS_CAP> svMemIndex;
 };
 struct SQInput {
+  std::array<CommitPort, COMMIT_WIDTH> commits;
   SQInputSquash squash;
   SQInputIssue issue;
   SQInputMemDispatch memDispatch;

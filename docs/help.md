@@ -2,6 +2,9 @@
 
 构建/课程测试见[README](../README.md)，公共架构见[主树](../../README.md)。
 长用例使用Release；断言版务必同时启用`_DEBUG`并取消`NDEBUG`，不要覆盖已有仓库`code`。
+默认双提交；`-DCPU_COMMIT_WIDTH=1`可构建单提交兼容回归。该参数是C++编译宏，应放在CMake编译flags中。
+单提交测试同时给`data/course.py test --commit-width 1`，选择`benchmarks.md`中的历史单提交表；
+该测试参数不会修改二进制宽度。
 
 ## 基本类型
 
@@ -15,6 +18,8 @@
 
 位宽上限32 bit；宽SRT状态拆lo/hi。同步数组使用`std::array`，聚合反射上限64个直接成员。
 Register零初始化；非零复位状态通过隔离boot建立，不能靠构造赋新值绕过同步边界。
+批量退休也不能对同一Register重复赋值：RAT/RAS先合并掩码和年轻写优先级，
+PRF批量回收用局部FIFO游标，LQ/ROB分别计算最终head后写一次。
 
 ## 接线与更新纪律
 

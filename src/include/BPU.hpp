@@ -1,4 +1,5 @@
 #pragma once
+#include "Commit.hpp"
 #include "common.h"
 #include "module.h"
 #include "register.h"
@@ -65,6 +66,7 @@ struct BPUInputFetchTypeInfo {
   Wire<32> FetchJALTarget;
 };
 struct BPUInput {
+  std::array<CommitPort, COMMIT_WIDTH> commits;
   std::array<RecoveryRasPort, RECOVERY_WIDTH> replay;
    RecoveryInput recovery;
   BPUInputBRU bru;
@@ -148,7 +150,8 @@ struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   void work() override;
  private:
    bool archWriteEnabled() const;
-   uint32_t archWriteLane() const;
+   uint32_t archWriteLane(unsigned lane) const;
+   bool archWrites(unsigned lane) const;
   // Fetch-direction guard, verbatim from the retired FetchDecision::build.
   bool fetchAllowed() const;
   void wire_output();

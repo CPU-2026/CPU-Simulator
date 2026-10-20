@@ -17,7 +17,6 @@ void PRF::work() {
   // Cache frequently used Wire values as local combinational signals
   bool needSquash = static_cast<bool>(squash.needSquash);
   RobTag squashTag = static_cast<uint32_t>(squash.SquashTag);
-  bool robWillCommit = static_cast<bool>(rob.robWillCommit);
   bool issueValid = static_cast<bool>(issue.issueValid);
   bool issueAlloc = issueValid && static_cast<bool>(issue.issueAllocDest);
   uint8_t issuePhyVal = static_cast<uint32_t>(issue.issuePhy);
@@ -121,11 +120,12 @@ void PRF::work() {
   // ---- Commit: independent of squash when the head is strictly older ----
   // (robWillCommit already folds the age guard, same as the reference
   // willCommit(squash)). Its oldPhy is appended to the same recycle list.
-  if (robWillCommit && !static_cast<bool>(rob.robHeadIsHalt)) {
-    uint32_t hType = static_cast<uint32_t>(rob.robHeadType);
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+   if (bool(commits[lane].valid) && !bool(commits[lane].halt)) {
+    uint32_t hType = uint32_t(commits[lane].type);
     if (hType == static_cast<uint32_t>(ROBType::REGISTER) ||
         hType == static_cast<uint32_t>(ROBType::LINK)) {
-      uint32_t oldPhy = static_cast<uint32_t>(rob.robHeadOldPhy);
+      uint32_t oldPhy = uint32_t(commits[lane].oldPhy);
       if (oldPhy != static_cast<uint32_t>(InvalidPhy)) {
         recPhy[nRec] = oldPhy;
         nRec = nRec + 1u;
@@ -133,6 +133,7 @@ void PRF::work() {
     }
   }
   
+  }
   PrfSeq curTail = static_cast<PrfSeq>(static_cast<uint32_t>(tailSeq));
   for (int k = 0; k < ROB_CAP + 1; ++k) {
     if (static_cast<uint32_t>(k) >= nRec)

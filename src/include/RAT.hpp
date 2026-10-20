@@ -1,4 +1,5 @@
 #pragma once
+#include "Commit.hpp"
 #include "common.h"
 #include "module.h"
 #include "Recovery.hpp"
@@ -21,6 +22,7 @@ struct RATInputROB {
   std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> tag;
 };
 struct RATInput {
+  std::array<CommitPort, COMMIT_WIDTH> commits;
   std::array<RecoveryNarrowPort, RECOVERY_WIDTH> replay;
   RecoveryInput recovery;
   Wire<1> needSquash;

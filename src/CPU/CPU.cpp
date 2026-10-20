@@ -84,6 +84,30 @@ CPU::CPU(const Memory &mem) : SlaveModule(mem) {
 }
 
 void CPU::wire() {
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+    connectCommit(RATModule.commits[lane], ROBModule.retirement[lane]);
+    connectCommit(PRFModule.commits[lane], ROBModule.retirement[lane]);
+    connectCommit(LQModule.commits[lane], ROBModule.retirement[lane]);
+    connectCommit(SQModule.commits[lane], ROBModule.retirement[lane]);
+    connectCommit(BPUModule.commits[lane], ROBModule.retirement[lane]);
+    ROBModule.commitExit[lane] = [this, lane]() {
+      bool exits = false;
+      const auto tag = ROBModule.commitTag(lane);
+      for (int row = 0; row < SQ_CAP; ++row)
+        if (SQModule.isActive(row) && !SQModule.isCommitted(row) &&
+            SQModule.getRobTag(row) == tag && SQModule.isAddressReady(row))
+          exits |= SQModule.getAddress(row) == AXI_EXIT_ADDR;
+      return exits;
+    };
+    ROBModule.commitStoreReady[lane] = [this, lane]() {
+      bool ready = false;
+      const auto tag = ROBModule.commitTag(lane);
+      for (int row = 0; row < SQ_CAP; ++row)
+        ready |= SQModule.isActive(row) && !SQModule.isCommitted(row) &&
+            SQModule.getRobTag(row) == tag && SQModule.isReadyToCommit(row);
+      return ready;
+    };
+  }
   auto recoveryPort = [this](RecoveryInput &port) {
     port.active = [this]() { return static_cast<uint32_t>(recoveryActive); };
     port.beat = [this]() { return static_cast<uint32_t>(recoveryBeat); };
@@ -109,7 +133,8 @@ void CPU::wire() {
     BPUModule.replay[lane].push = [this, lane]() { return static_cast<uint32_t>(ROBModule.replayRas[lane].push); };
   }
   flushArbiter.broadcastBlocked = [this]() { return static_cast<bool>(recoveryActive) || static_cast<bool>(exitCommitted); };
-  ROBModule.retirementBlocked = [this]() { return static_cast<bool>(recoveryActive) || static_cast<bool>(flushArbiter.needSquash); };
+  ROBModule.retirementBlocked = [this]() { return !bool(initialized) || bool(exitCommitted) ||
+      bool(recoveryActive) || bool(flushArbiter.needSquash); };
   // Wire FetchUnit's input wires once. needSquash/SquashPC come straight from
   // FlushArbiter (single producer, via its combinational member accessor);
   // haltSignal from ICache's combinational predicate; FetchValid/PredictPC
@@ -344,7 +369,11 @@ void CPU::wire() {
     return static_cast<uint32_t>(ROBModule.headView.head);
   };
   MemArbiterModule.robStoreWillCommit = [this]() {
-    return ROBModule.storeWillCommit() ? 1u : 0u;
+    bool retiring = false;
+    for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
+      retiring |= bool(ROBModule.retirement[lane].valid) && !SQModule.isEmpty() &&
+          uint32_t(ROBModule.retirement[lane].tag) == SQModule.getRobTag(SQModule.getHead());
+    return retiring;
   };
   MemArbiterModule.loadValid = [this]() {
     return LQModule.LoadDetect() != 0xFFFFFFFF ? 1u : 0u;
@@ -2060,10 +2089,8 @@ void CPU::wire() {
 
 bool CPU::exitRetiring() const {
   bool retiring = false;
-  for (int i = 0; i < SQ_CAP; ++i)
-    if (!static_cast<bool>(exitCommitted) && SQModule.isActive(i) && SQModule.isAddressReady(i) &&
-        SQModule.getAddress(i) == AXI_EXIT_ADDR && SQModule.getRobTag(i) == static_cast<uint32_t>(ROBModule.headView.head) &&
-        ROBModule.willCommit()) retiring = true;
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
+    retiring |= bool(ROBModule.retirement[lane].valid) && bool(ROBModule.retirement[lane].exits);
   return retiring;
 }
 
@@ -2150,7 +2177,12 @@ void CPU::run(bool shuffle) {
     const uint32_t headAfter = static_cast<uint32_t>(ROBModule.headView.head);
     const bool haltAfter = ROBModule.isHaltCommitted();
     if (ROBModule.isTrapCommitted()) throw std::runtime_error("illegal instruction committed");
-    const uint32_t committed = headAfter != headBefore;
+    unsigned committed = 0;
+    RobTag cursor = headBefore;
+    for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+      if (cursor != headAfter) { ++committed; cursor = robNextTag(cursor); }
+    }
+    assert(cursor == headAfter);
     const bool haltCommitted = !haltBefore && haltAfter;
     assert(!haltCommitted || committed != 0);
     if (!ipcFrozen) {

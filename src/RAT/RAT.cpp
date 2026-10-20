@@ -3,17 +3,29 @@
 
 RAT::RAT() {
   archStorage.enable = [this]() {
-    return static_cast<bool>(needSquash) ||
-      (!static_cast<bool>(recovery.active) && static_cast<bool>(rob.willCommit) &&
-       static_cast<uint32_t>(rob.headDest) != 0 && static_cast<uint32_t>(rob.headNewPhy) != 0);
+    return bool(needSquash) || bool(archStorage.writeEnable);
   };
-  archStorage.writeEnable = [this]() { return !static_cast<bool>(needSquash) &&
-    !static_cast<bool>(recovery.active) && static_cast<bool>(rob.willCommit) &&
-    static_cast<uint32_t>(rob.headDest) != 0 && static_cast<uint32_t>(rob.headNewPhy) != 0; };
+  archStorage.writeEnable = [this]() {
+    bool write = false;
+    for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
+      write |= bool(commits[lane].valid) && uint32_t(commits[lane].rd) != 0 && uint32_t(commits[lane].newPhy) != 0;
+    return write;
+  };
   archStorage.addr = []() { return 0u; };
   for (int i = 0; i < REGISTER_CAP; ++i) {
-    archStorage.writeMask[i] = [this, i]() { return static_cast<uint32_t>(rob.headDest) == unsigned(i); };
-    archStorage.writeData[i] = [this]() { return static_cast<uint32_t>(rob.headNewPhy); };
+    archStorage.writeMask[i] = [this, i]() {
+      bool write = false;
+      for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
+        write |= bool(commits[lane].valid) && uint32_t(commits[lane].rd) == unsigned(i) && i != 0 && uint32_t(commits[lane].newPhy) != 0;
+      return write;
+    };
+    archStorage.writeData[i] = [this, i]() {
+      uint32_t phy = 0;
+      for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
+        if (bool(commits[lane].valid) && uint32_t(commits[lane].rd) == unsigned(i) && uint32_t(commits[lane].newPhy) != 0)
+          phy = uint32_t(commits[lane].newPhy);
+      return phy;
+    };
   }
 }
 
@@ -68,9 +80,6 @@ void RAT::work() {
                             static_cast<bool>(issueAllocDest);
   const uint32_t issueDestReg = static_cast<uint32_t>(issueDest);
   const uint32_t issuePhyReg = static_cast<uint32_t>(issuePhy);
-  const bool commit = static_cast<bool>(rob.willCommit);
-  const uint32_t commitDest = static_cast<uint32_t>(rob.headDest);
-  const uint32_t commitPhy = static_cast<uint32_t>(rob.headNewPhy);
 
   if (boot) {
     for (int i = 1; i < REGISTER_CAP; ++i) {
@@ -103,8 +112,7 @@ void RAT::work() {
         specRAT[i] <= issuePhyReg;
       }
 
-      if (!restore && commit && commitDest != 0 && commitPhy != InvalidPhy &&
-          static_cast<uint32_t>(i) == commitDest) {
+      if (bool(archStorage.writeEnable) && bool(archStorage.writeMask[i])) {
         archValid[i] <= 1;
       }
     }

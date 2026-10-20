@@ -297,8 +297,9 @@ void SQ::work() {
     headData = (static_cast<uint32_t>(head) + 1) & SQ_SEQ_MASK;
   }
 
-  if (static_cast<bool>(rob.storeWillCommit)) {
-    const RobTag storeTag = static_cast<uint32_t>(rob.robHeadTag);
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+   if (bool(commits[lane].valid) && uint32_t(commits[lane].type) == uint32_t(ROBType::STORE)) {
+    const RobTag storeTag = uint32_t(commits[lane].tag);
     for (int i = 0; i < SQ_CAP; ++i) {
       if (isActive(i) &&
           static_cast<uint32_t>(SQqueue[i].robTag) == storeTag &&
@@ -309,6 +310,7 @@ void SQ::work() {
     }
   }
 
+  }
   // flush on squash
   if (static_cast<bool>(squash.needSquash) &&
       static_cast<bool>(rob.squashTagMatch)) {
