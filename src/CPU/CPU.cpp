@@ -151,7 +151,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(BPUModule.outValid);
   };
   FetchUnitModule.PredictPC = [this]() {
-    return static_cast<uint32_t>(BPUModule.outPredictedPC);
+    return static_cast<uint32_t>(BPUModule.outPredPC);
   };
   FetchUnitModule.haltSignal = [this]() {
     return static_cast<bool>(ICacheModule.popConsume) && ICacheModule.isHaltSignal();
@@ -165,6 +165,9 @@ void CPU::wire() {
   FQModule.icacheReturnAccepted = [this]() {
     return static_cast<bool>(ICacheModule.popConsume);
   };
+  FQModule.icacheReturnValid1 = [this]() {
+    return static_cast<uint32_t>(ICacheModule.returnValid1());
+  };
   FQModule.icacheReturnRaw = [this]() { return ICacheModule.returnRaw(); };
   FQModule.icacheReturnPC = [this]() { return ICacheModule.returnPC(); };
   FQModule.icacheReturnPredictedPC = [this]() {
@@ -173,9 +176,12 @@ void CPU::wire() {
   FQModule.icacheReturnCkptId = [this]() {
     return ICacheModule.returnCkptId();
   };
-  FQModule.decodeCanAccept = [this]() {
-    return DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid));
+  FQModule.icacheReturnRaw1 = [this]() { return ICacheModule.returnRaw1(); };
+  FQModule.icacheReturnPC1 = [this]() { return ICacheModule.returnPC1(); };
+  FQModule.icacheReturnPredictedPC1 = [this]() {
+    return ICacheModule.returnPredictPC1();
   };
+  FQModule.decodePopCount = [this]() { return decodePopCount(); };
 
   // Wire the DecodeUnit's input wires once. fq* sample the converted
   // InstructBuffer's bridge accessors (_M_old); issueValid samples the
@@ -186,13 +192,19 @@ void CPU::wire() {
   DecodeUnitModule.issueValid = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.valid);
   };
-  DecodeUnitModule.fqEmpty = [this]() { return FQModule.isEmpty(); };
+  DecodeUnitModule.decodePushCount = [this]() { return decodePopCount(); };
   DecodeUnitModule.fqHeadRaw = [this]() { return FQModule.headRaw(); };
   DecodeUnitModule.fqHeadPc = [this]() { return FQModule.headpc(); };
   DecodeUnitModule.fqHeadPredictedPC = [this]() {
     return FQModule.headPredictedPC();
   };
   DecodeUnitModule.fqHeadCkptId = [this]() { return FQModule.headCkptId(); };
+  DecodeUnitModule.fqHeadRaw1 = [this]() { return FQModule.headRaw1(); };
+  DecodeUnitModule.fqHeadPc1 = [this]() { return FQModule.headpc1(); };
+  DecodeUnitModule.fqHeadPredictedPC1 = [this]() {
+    return FQModule.headPredictedPC1();
+  };
+  DecodeUnitModule.fqHeadCkptId1 = [this]() { return FQModule.headCkptId1(); };
   // Wire the instruction-side AXI adapter's input wires once.
   AXIFetchModule.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
@@ -233,11 +245,17 @@ void CPU::wire() {
   ICacheModule.fetchCkptId = [this]() {
     return static_cast<uint32_t>(BPUModule.outCkptId);
   };
+  ICacheModule.fetchValid1 = [this]() {
+    return static_cast<uint32_t>(BPUModule.outValid1);
+  };
+  ICacheModule.fetchPredictPC1 = [this]() {
+    return static_cast<uint32_t>(BPUModule.outPredictedPC1);
+  };
   ICacheModule.popConsume = [this]() {
     return !static_cast<bool>(recoveryActive) && !static_cast<bool>(flushArbiter.needSquash) && ICacheModule.isReturnReady() &&
            !static_cast<bool>(FetchUnitModule.haltFetched) &&
-           FQModule.canAccept(!FQModule.isEmpty() &&
-               DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid)));
+           FQModule.canAccept(ICacheModule.returnValid1() ? 2u : 1u,
+                              decodePopCount());
   };
   ICacheModule.lineReturn.valid = [this]() { return AXIFetchModule.retValid(); };
   ICacheModule.lineReturn.lineAddr = [this]() {
@@ -1884,8 +1902,10 @@ void CPU::wire() {
            static_cast<bool>(FetchUnitModule.haltSignal);
   };
   BPUModule.fetchCtx.fqCanAccept = [this]() {
-    return FQModule.canAccept(!FQModule.isEmpty() &&
-        DecodeUnitModule.canAccept(static_cast<bool>(IssueArbiterModule.core.valid)));
+    return FQModule.canAccept(1u, decodePopCount()) ? 1u : 0u;
+  };
+  BPUModule.fetchCtx.fqCanAccept2 = [this]() {
+    return FQModule.canAccept(2u, decodePopCount()) ? 1u : 0u;
   };
   BPUModule.fetchCtx.memCanAccept = [this]() {
     return !static_cast<bool>(recoveryActive) && !static_cast<bool>(exitCommitted) && static_cast<bool>(initialized) && (!ICacheModule.isRequestFull() || static_cast<bool>(ICacheModule.popConsume)) &&
@@ -1933,6 +1953,44 @@ void CPU::wire() {
   BPUModule.fetchInfo.FetchJALTarget = [this]() {
     return scanJump(FQModule.getLastValid(), FQModule.getLastRaw(),
                     FQModule.getLastPC())
+        .jalTarget;
+  };
+  BPUModule.fetchInfo.FetchValid1 = [this]() {
+    return scanJump(FQModule.getLastValid1(), FQModule.getLastRaw1(),
+                    FQModule.getLastPC1())
+                   .valid
+               ? 1u
+               : 0u;
+  };
+  BPUModule.fetchInfo.isFetchCall1 = [this]() {
+    return scanJump(FQModule.getLastValid1(), FQModule.getLastRaw1(),
+                    FQModule.getLastPC1())
+                   .isCall
+               ? 1u
+               : 0u;
+  };
+  BPUModule.fetchInfo.isFetchRet1 = [this]() {
+    return scanJump(FQModule.getLastValid1(), FQModule.getLastRaw1(),
+                    FQModule.getLastPC1())
+                   .isRet
+               ? 1u
+               : 0u;
+  };
+  BPUModule.fetchInfo.FetchJALTargetValid1 = [this]() {
+    return scanJump(FQModule.getLastValid1(), FQModule.getLastRaw1(),
+                    FQModule.getLastPC1())
+                   .jalTargetValid
+               ? 1u
+               : 0u;
+  };
+  BPUModule.fetchInfo.FetchPC1 = [this]() {
+    return scanJump(FQModule.getLastValid1(), FQModule.getLastRaw1(),
+                    FQModule.getLastPC1())
+        .pc;
+  };
+  BPUModule.fetchInfo.FetchJALTarget1 = [this]() {
+    return scanJump(FQModule.getLastValid1(), FQModule.getLastRaw1(),
+                    FQModule.getLastPC1())
         .jalTarget;
   };
 
@@ -2085,6 +2143,17 @@ void CPU::wire() {
         AGUModule.headRobTag());
     return r.valid ? static_cast<uint32_t>(r.value) : 0u;
   };
+}
+
+unsigned CPU::decodePopCount() const {
+  const bool issueValid = static_cast<bool>(IssueArbiterModule.core.valid);
+  const unsigned cap = DecodeUnitModule.pushCapacity(issueValid);
+  const unsigned avail = FQModule.count();
+  unsigned n = avail < cap ? avail : cap;
+  const unsigned limit = static_cast<unsigned>(ISSUE_WIDTH);
+  if (n > limit)
+    n = limit;
+  return n;
 }
 
 bool CPU::exitRetiring() const {

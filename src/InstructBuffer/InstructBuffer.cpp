@@ -9,25 +9,42 @@ void InstructBuffer::work() {
     head <= 0;
     tail <= 0;
     lastValid <= 0;
+    lastValid1 <= 0;
   } else {
-    // stage 2 push: exactly the ICache head-consumption handshake.
+    const unsigned pop = static_cast<uint32_t>(decodePopCount) & 0x3u;
+    const bool push1 = ISSUE_WIDTH >= 2 &&
+                       static_cast<bool>(icacheReturnValid1);
+    // stage 2 push: exactly the ICache head-consumption handshake (one or two
+    // instructions from the fetched group).
     if (static_cast<bool>(icacheReturnAccepted)) {
-      auto t = static_cast<uint32_t>(tail) & (FQ_CAP - 1);
-      entries[t].raw <= static_cast<uint32_t>(icacheReturnRaw);
-      entries[t].pc <= static_cast<uint32_t>(icacheReturnPC);
-      entries[t].predictedPC <=
+      const uint32_t t0 = static_cast<uint32_t>(tail) & (FQ_CAP - 1);
+      const uint32_t t1 = (t0 + 1) & (FQ_CAP - 1);
+      entries[t0].raw <= static_cast<uint32_t>(icacheReturnRaw);
+      entries[t0].pc <= static_cast<uint32_t>(icacheReturnPC);
+      entries[t0].predictedPC <=
           static_cast<uint32_t>(icacheReturnPredictedPC);
-      entries[t].ckptId <= static_cast<uint32_t>(icacheReturnCkptId);
-      tail <= ((static_cast<uint32_t>(tail) + 1) & FQ_SEQ_MASK);
+      entries[t0].ckptId <= static_cast<uint32_t>(icacheReturnCkptId);
+      if (push1) {
+        entries[t1].raw <= static_cast<uint32_t>(icacheReturnRaw1);
+        entries[t1].pc <= static_cast<uint32_t>(icacheReturnPC1);
+        entries[t1].predictedPC <=
+            static_cast<uint32_t>(icacheReturnPredictedPC1);
+        entries[t1].ckptId <= static_cast<uint32_t>(icacheReturnCkptId);
+      }
+      tail <= ((static_cast<uint32_t>(tail) + (push1 ? 2u : 1u)) & FQ_SEQ_MASK);
       lastValid <= 1;
       lastRaw <= static_cast<uint32_t>(icacheReturnRaw);
       lastPC <= static_cast<uint32_t>(icacheReturnPC);
+      lastValid1 <= (push1 ? 1u : 0u);
+      lastRaw1 <= static_cast<uint32_t>(icacheReturnRaw1);
+      lastPC1 <= static_cast<uint32_t>(icacheReturnPC1);
     } else {
       lastValid <= 0;
+      lastValid1 <= 0;
     }
-    // stage 1 pop: hand the head entry to the decoder when it can accept it
-    if (!isEmpty() && static_cast<bool>(decodeCanAccept)) {
-      head <= ((static_cast<uint32_t>(head) + 1) & FQ_SEQ_MASK);
+    // stage 1 pop: hand the head entries to the decoder.
+    if (pop > 0) {
+      head <= ((static_cast<uint32_t>(head) + pop) & FQ_SEQ_MASK);
     }
   }
 }

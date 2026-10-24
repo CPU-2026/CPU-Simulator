@@ -59,8 +59,20 @@ inline constexpr RobTag robNextTag(RobTag tag) {
 static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
 static_assert(ROB_TAG_WIDTH <= 8,
                "RobTag is uint8_t: packed tag must fit in 8 bits");
-constexpr int FQ_CAP = 2;
-constexpr int IQ_CAP = 2;
+// Superscalar width (W4: fetch & decode are widened; issue/rename/commit stay
+// single-width until W5/W6). Default 1 keeps the archived single-width golden
+// bit-identical; build with -DCPU_ISSUE_WIDTH=2 for the 2-wide front-end.
+// FQ/IQ depth scale with the width so the front-end can run ahead of the
+// still-single-issue backend without deadlocking.
+#ifndef CPU_ISSUE_WIDTH
+#define CPU_ISSUE_WIDTH 1
+#endif
+constexpr unsigned ISSUE_WIDTH = CPU_ISSUE_WIDTH;
+static_assert(ISSUE_WIDTH >= 1 && ISSUE_WIDTH <= 2,
+              "superscalar width supports 1..2");
+
+constexpr int FQ_CAP = 2 * static_cast<int>(ISSUE_WIDTH);
+constexpr int IQ_CAP = 2 * static_cast<int>(ISSUE_WIDTH);
 constexpr int FQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(FQ_CAP - 1));
 constexpr int IQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(IQ_CAP - 1));
 constexpr int FQ_SEQ_WIDTH = FQ_PTR_WIDTH + 1;

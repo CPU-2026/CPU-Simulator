@@ -47,9 +47,8 @@ BPU::BPU() {
   }
 }
 
-PredictInfo BPU::predict(uint32_t pc) const {
+PredictInfo BPU::predict(uint32_t pc, uint8_t ghr) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
-  const uint8_t ghr = static_cast<uint32_t>(dir.GHR);
   const uint32_t localIndex = p2 & (BHT_CAP - 1);
   const uint32_t globalIndex = (p2 ^ ghr) & (BHT_CAP - 1);
   const uint32_t selectorIndex = (p2 ^ ghr) & (SELECTOR_CAP - 1);
@@ -99,50 +98,65 @@ bool BPU::fetchAllowed() const {
          static_cast<bool>(fetchCtx.memCanAccept);
 }
 
-// ---- fetch-stage prediction bundle (retired FetchDecision::build).
-//      Each out net calls predict() once; re-runs stay bit-identical. ----
+// ---- fetch-stage prediction bundle (retired FetchDecision::build). ----
+//      lane0 = fetchCtx.pc, lane1 = pc+4 when ISSUE_WIDTH == 2 and lane0
+//      falls through within the same I$ line. Both lanes share one checkpoint;
+//      the GHR advances per predicted-taken conditional in the group. ----
+BPU::FetchGroup BPU::fetchGroup() const {
+  FetchGroup g;
+  if (!fetchAllowed())
+    return g;
+  const uint8_t ghr0 = static_cast<uint8_t>(static_cast<uint32_t>(dir.GHR));
+  const uint32_t pc0 = static_cast<uint32_t>(fetchCtx.pc);
+  const PredictInfo p0 = predict(pc0, ghr0);
+  g.valid0 = true;
+  g.pc0 = pc0;
+  g.predPC0 = static_cast<uint32_t>(p0.predictPC);
+  g.shift0 = p0.btbHit || p0.condSeen;
+  g.shiftValue0 = p0.btbHit ? (p0.unconditional ? true : p0.taken)
+                            : (p0.condSeen ? p0.taken : false);
+  const bool crossLine = (pc0 & 0x3Cu) == 0x3Cu;
+  if (ISSUE_WIDTH >= 2 && !g.shift0 && !crossLine &&
+      static_cast<bool>(fetchCtx.fqCanAccept2)) {
+    const uint32_t pc1 = pc0 + 4u;
+    const uint8_t ghr1 = g.shift0
+                             ? static_cast<uint8_t>(
+                                   (((static_cast<uint32_t>(ghr0) << 1) |
+                                     (g.shiftValue0 ? 1u : 0u)) &
+                                    HISTORY_MASK))
+                             : ghr0;
+    const PredictInfo p1 = predict(pc1, ghr1);
+    g.valid1 = true;
+    g.pc1 = pc1;
+    g.predPC1 = static_cast<uint32_t>(p1.predictPC);
+    g.shift1 = p1.btbHit || p1.condSeen;
+    g.shiftValue1 = p1.btbHit ? (p1.unconditional ? true : p1.taken)
+                              : (p1.condSeen ? p1.taken : false);
+    g.nextPC = g.predPC1;
+  } else {
+    g.nextPC = g.predPC0;
+  }
+  return g;
+}
+
 void BPU::wire_output() {
-  outPredPC = [this]() -> uint32_t {
-    if (!fetchAllowed())
-      return 0u;
-    const PredictInfo p =
-        predict(static_cast<uint32_t>(static_cast<uint32_t>(fetchCtx.pc)));
-    return p.taken ? static_cast<uint32_t>(p.predictPC)
-                   : static_cast<uint32_t>(fetchCtx.pc) + 4u;
+  outValid = [this]() -> uint32_t {
+    return fetchGroup().valid0 ? 1u : 0u;
   };
-  outPacked = [this]() -> uint32_t {
-    if (!fetchAllowed())
-      return 0u;
-    const PredictInfo p =
-        predict(static_cast<uint32_t>(static_cast<uint32_t>(fetchCtx.pc)));
-    // shift/shiftValue branch structure verbatim from build():
-    // btbHit wins over condSeen; unconditional forces shiftValue.
-    const bool shift = p.btbHit || p.condSeen;
-    const bool shiftValue = p.btbHit ? (p.unconditional ? true : p.taken)
-                                     : (p.condSeen ? p.taken : false);
-    // ckptId starts at packed bit 2 (shift/shiftValue own bits 0/1).
-    uint32_t v = (static_cast<uint32_t>(getNextCkptId()) & (CKPT_CAP - 1)) << 2;
-    if (shift)
-      v |= 1u << 0;
-    if (shiftValue)
-      v |= 1u << 1;
-    return v;
+  outValid1 = [this]() -> uint32_t {
+    return fetchGroup().valid1 ? 1u : 0u;
   };
-  outValid = [this]() -> uint32_t { return fetchAllowed() ? 1u : 0u; };
-  outPC = [this]() -> uint32_t {
-    return fetchAllowed() ? static_cast<uint32_t>(fetchCtx.pc) : 0u;
-  };
-  outPredictedPC = [this]() -> uint32_t {
-    return static_cast<uint32_t>(outPredPC);
-  };
-  outShift = [this]() -> uint32_t {
-    return (static_cast<uint32_t>(outPacked) >> 0) & 0x1u;
-  };
-  outShiftValue = [this]() -> uint32_t {
-    return (static_cast<uint32_t>(outPacked) >> 1) & 0x1u;
-  };
+  outPC = [this]() -> uint32_t { return fetchGroup().pc0; };
+  outPC1 = [this]() -> uint32_t { return fetchGroup().pc1; };
+  outPredictedPC = [this]() -> uint32_t { return fetchGroup().predPC0; };
+  outPredictedPC1 = [this]() -> uint32_t { return fetchGroup().predPC1; };
+  outPredPC = [this]() -> uint32_t { return fetchGroup().nextPC; };
+  outShift = [this]() -> uint32_t { return fetchGroup().shift0 ? 1u : 0u; };
+  outShiftValue = [this]() -> uint32_t { return fetchGroup().shiftValue0 ? 1u : 0u; };
+  outShift1 = [this]() -> uint32_t { return fetchGroup().shift1 ? 1u : 0u; };
+  outShiftValue1 = [this]() -> uint32_t { return fetchGroup().shiftValue1 ? 1u : 0u; };
   outCkptId = [this]() -> uint32_t {
-    return (static_cast<uint32_t>(outPacked) >> 2) & (CKPT_CAP - 1);
+    return fetchGroup().valid0 ? (static_cast<uint32_t>(getNextCkptId()) & (CKPT_CAP - 1)) : 0u;
   };
 }
 
@@ -336,6 +350,11 @@ void BPU::work() {
           static_cast<uint8_t>(((static_cast<uint32_t>(ghrLocal) << 1) |
                                 (static_cast<bool>(outShiftValue) ? 1u : 0u)) &
                                HISTORY_MASK);
+    if (static_cast<bool>(outValid1) && static_cast<bool>(outShift1))
+      ghrLocal =
+          static_cast<uint8_t>(((static_cast<uint32_t>(ghrLocal) << 1) |
+                                (static_cast<bool>(outShiftValue1) ? 1u : 0u)) &
+                               HISTORY_MASK);
     nextCkpt = (ckid + 1) & (CKPT_CAP - 1);
   }
 
@@ -350,25 +369,55 @@ void BPU::work() {
   }
 
   BTBWriteIntent fetchWriteIntent;
-  if (!step.active && static_cast<bool>(fetchInfo.FetchValid)) {
-    const uint32_t ra = static_cast<uint32_t>(fetchInfo.FetchPC) + 4;
-    if (!needSquash && static_cast<bool>(fetchInfo.isFetchRet) && specTop > 0)
-      --specTop;
-    if (!needSquash && static_cast<bool>(fetchInfo.isFetchCall) && specTop < RAS_CAP) {
-      specRAS[specTop++] = ra;
-    }
-    // Early training (BRU-port fetch side; same-line conflicts arbitrated at
-    // the write ports below, fetch highest).
-    const uint32_t fetchPC = static_cast<uint32_t>(fetchInfo.FetchPC);
-    const bool isFetchRet = static_cast<bool>(fetchInfo.isFetchRet);
-    fetchWriteIntent.lineWrite = true;
-    fetchWriteIntent.index = (fetchPC >> 2) & (BTB_CAP - 1);
-    fetchWriteIntent.actualPC = fetchPC;
-    fetchWriteIntent.unconditional = true;
-    fetchWriteIntent.isRet = isFetchRet;
-    fetchWriteIntent.targetWrite =
-        !isFetchRet && static_cast<bool>(fetchInfo.FetchJALTargetValid);
-    fetchWriteIntent.target = static_cast<uint32_t>(fetchInfo.FetchJALTarget);
+  if (!step.active) {
+    // RAS maintenance runs for every fetched jump in the group, in program
+    // order (lane0 then lane1) so return prediction stays exact. BTB early
+    // training uses the single fetch port (lane0 only): a lane1 jump is still
+    // trained at resolve time, costing at most one extra mispredict.
+    auto rasFetch = [&](bool valid, bool isRet, bool isCall, uint32_t pc) {
+      if (!valid)
+        return;
+      if (!needSquash && isRet && specTop > 0)
+        --specTop;
+      if (!needSquash && isCall && specTop < RAS_CAP)
+        specRAS[specTop++] = pc + 4u;
+    };
+    rasFetch(static_cast<bool>(fetchInfo.FetchValid),
+             static_cast<bool>(fetchInfo.isFetchRet),
+             static_cast<bool>(fetchInfo.isFetchCall),
+             static_cast<uint32_t>(fetchInfo.FetchPC));
+    if (ISSUE_WIDTH >= 2)
+      rasFetch(static_cast<bool>(fetchInfo.FetchValid1),
+               static_cast<bool>(fetchInfo.isFetchRet1),
+               static_cast<bool>(fetchInfo.isFetchCall1),
+               static_cast<uint32_t>(fetchInfo.FetchPC1));
+
+    // BTB early training: with !shift0, at most one lane per group is a jump
+    // (a lane0 jump degrades lane1), so a single fetch write port suffices.
+    // Prefer lane0; a lane1 jump is trained here only when lane0 is not.
+    auto btbFetch = [&](bool valid, bool isRet, bool jalTargetValid,
+                        uint32_t pc, uint32_t jalTarget) {
+      if (!valid)
+        return;
+      fetchWriteIntent.lineWrite = true;
+      fetchWriteIntent.index = (pc >> 2) & (BTB_CAP - 1);
+      fetchWriteIntent.actualPC = pc;
+      fetchWriteIntent.unconditional = true;
+      fetchWriteIntent.isRet = isRet;
+      fetchWriteIntent.targetWrite = !isRet && jalTargetValid;
+      fetchWriteIntent.target = jalTarget;
+    };
+    if (static_cast<bool>(fetchInfo.FetchValid))
+      btbFetch(true, static_cast<bool>(fetchInfo.isFetchRet),
+               static_cast<bool>(fetchInfo.FetchJALTargetValid),
+               static_cast<uint32_t>(fetchInfo.FetchPC),
+               static_cast<uint32_t>(fetchInfo.FetchJALTarget));
+    else if (ISSUE_WIDTH >= 2)
+      btbFetch(static_cast<bool>(fetchInfo.FetchValid1),
+               static_cast<bool>(fetchInfo.isFetchRet1),
+               static_cast<bool>(fetchInfo.FetchJALTargetValid1),
+               static_cast<uint32_t>(fetchInfo.FetchPC1),
+               static_cast<uint32_t>(fetchInfo.FetchJALTarget1));
   }
 
   // Pre-commit architectural baseline: like the main tree tick() (which reads

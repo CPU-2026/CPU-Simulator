@@ -107,31 +107,45 @@ void DecodeUnit::work() {
     if (static_cast<bool>(issueValid) && !isEmpty()) {
       head <= ((static_cast<uint32_t>(head) + 1) & IQ_SEQ_MASK);
     }
-    // stage 1 push: decode the InstructBuffer head when the queue can accept
-    // it
-    if (!static_cast<bool>(fqEmpty) && canAccept(static_cast<bool>(issueValid))) {
-      auto raw = static_cast<uint32_t>(fqHeadRaw);
+    // stage 1 push: decode up to decodePushCount FQ entries into the IQ.
+    const unsigned push = static_cast<uint32_t>(decodePushCount) & 0x3u;
+    auto decodeInto = [&](unsigned slot, uint32_t raw, uint32_t pc,
+                          uint32_t predictedPC, uint32_t ckptId) {
       Uop uop = Decoder::decode(static_cast<int32_t>(raw));
-      uop.pc = static_cast<uint32_t>(fqHeadPc);
-      uop.predictedPC =
-          static_cast<int32_t>(static_cast<uint32_t>(fqHeadPredictedPC));
-      uop.ckptId = static_cast<uint8_t>(static_cast<uint32_t>(fqHeadCkptId));
+      uop.pc = pc;
+      uop.predictedPC = static_cast<int32_t>(predictedPC);
+      uop.ckptId = static_cast<uint8_t>(ckptId);
       uop.isHalt = legacyHaltEnabled && (raw == 0x0ff00513);
-      auto t = static_cast<uint32_t>(tail) & (IQ_CAP - 1);
-      entries[t].type <= static_cast<uint32_t>(uop.type);
-      entries[t].opcode <= static_cast<uint32_t>(uop.opcode);
-      entries[t].funct3 <= static_cast<uint32_t>(uop.funct3);
-      entries[t].funct7 <= static_cast<uint32_t>(uop.funct7);
-      entries[t].rd <= static_cast<uint32_t>(uop.rd);
-      entries[t].rs1 <= static_cast<uint32_t>(uop.rs1);
-      entries[t].rs2 <= static_cast<uint32_t>(uop.rs2);
-      entries[t].imm <= static_cast<uint32_t>(uop.imm);
-      entries[t].pc <= static_cast<uint32_t>(uop.pc);
-      entries[t].isHalt <= static_cast<uint32_t>(uop.isHalt);
-      entries[t].allocDest <= static_cast<uint32_t>(uop.allocDest);
-      entries[t].predictedPC <= static_cast<uint32_t>(uop.predictedPC);
-      entries[t].ckptId <= static_cast<uint32_t>(uop.ckptId);
-      tail <= ((static_cast<uint32_t>(tail) + 1) & IQ_SEQ_MASK);
+      entries[slot].type <= static_cast<uint32_t>(uop.type);
+      entries[slot].opcode <= static_cast<uint32_t>(uop.opcode);
+      entries[slot].funct3 <= static_cast<uint32_t>(uop.funct3);
+      entries[slot].funct7 <= static_cast<uint32_t>(uop.funct7);
+      entries[slot].rd <= static_cast<uint32_t>(uop.rd);
+      entries[slot].rs1 <= static_cast<uint32_t>(uop.rs1);
+      entries[slot].rs2 <= static_cast<uint32_t>(uop.rs2);
+      entries[slot].imm <= static_cast<uint32_t>(uop.imm);
+      entries[slot].pc <= static_cast<uint32_t>(uop.pc);
+      entries[slot].isHalt <= static_cast<uint32_t>(uop.isHalt);
+      entries[slot].allocDest <= static_cast<uint32_t>(uop.allocDest);
+      entries[slot].predictedPC <= static_cast<uint32_t>(uop.predictedPC);
+      entries[slot].ckptId <= static_cast<uint32_t>(uop.ckptId);
+    };
+    if (push >= 1) {
+      const unsigned t0 = static_cast<uint32_t>(tail) & (IQ_CAP - 1);
+      decodeInto(t0, static_cast<uint32_t>(fqHeadRaw),
+                 static_cast<uint32_t>(fqHeadPc),
+                 static_cast<uint32_t>(fqHeadPredictedPC),
+                 static_cast<uint32_t>(fqHeadCkptId));
+    }
+    if (push >= 2) {
+      const unsigned t1 = (static_cast<uint32_t>(tail) + 1) & (IQ_CAP - 1);
+      decodeInto(t1, static_cast<uint32_t>(fqHeadRaw1),
+                 static_cast<uint32_t>(fqHeadPc1),
+                 static_cast<uint32_t>(fqHeadPredictedPC1),
+                 static_cast<uint32_t>(fqHeadCkptId1));
+    }
+    if (push > 0) {
+      tail <= ((static_cast<uint32_t>(tail) + push) & IQ_SEQ_MASK);
     }
   }
 }

@@ -20,6 +20,8 @@ struct ICacheInput {
   Wire<32> fetchPC; // Ungated PC: read-port backpressure must not depend on fetchValid.
   Wire<32> fetchPredictPC;
   Wire<CKPT_ID_WIDTH> fetchCkptId;
+  Wire<1> fetchValid1;
+  Wire<32> fetchPredictPC1;
   Wire<1> popConsume;
   LineReturn lineReturn; // Offered IMEM return, before the fillFire handshake.
 };
@@ -29,13 +31,19 @@ struct ICacheOutput {
     // valid marks the slot as occupied (window bitmap -> occupancy source);
     // ready marks the instruction as deliverable (hit or backfilled).
     // This split keeps placeholders inside the window so the derived-count
-    // scheme stays exact.
+    // scheme stays exact. A slot holds one fetch group: lane0 always valid
+    // when the slot is valid, lane1 valid only when ISSUE_WIDTH == 2 and the
+    // group did not degrade.
     Register<32> raw_inst;
     Register<32> PC;
     Register<32> predictPC;
     Register<CKPT_ID_WIDTH> ckptId;
     Register<1> valid;
     Register<1> ready;
+    Register<32> raw_inst1;
+    Register<32> PC1;
+    Register<32> predictPC1;
+    Register<1> valid1;
   };
   std::array<ICacheRequest, REQUEST_CAP> requestBuffer;
   Wire<1> fillFire;
@@ -100,12 +108,32 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
                : static_cast<uint32_t>(
                      requestBuffer[static_cast<uint32_t>(head)].raw_inst);
   }
+  auto returnRaw1() const {
+    if (!static_cast<bool>(requestBuffer[static_cast<uint32_t>(head)].valid1))
+      return 0u;
+    return headReadReady()
+               ? ICacheData.readLane(static_cast<uint32_t>(readLaneIndex) + 1)
+               : static_cast<uint32_t>(
+                     requestBuffer[static_cast<uint32_t>(head)].raw_inst1);
+  }
   auto returnPC() const {
     return static_cast<uint32_t>(requestBuffer[static_cast<uint32_t>(head)].PC);
+  }
+  auto returnPC1() const {
+    return static_cast<uint32_t>(requestBuffer[static_cast<uint32_t>(head)].PC1);
   }
   auto returnPredictPC() const {
     return static_cast<uint32_t>(
         requestBuffer[static_cast<uint32_t>(head)].predictPC);
+  }
+  auto returnPredictPC1() const {
+    return static_cast<uint32_t>(
+        requestBuffer[static_cast<uint32_t>(head)].predictPC1);
+  }
+  auto returnValid1() const {
+    return static_cast<bool>(requestBuffer[static_cast<uint32_t>(head)].valid1)
+               ? 1u
+               : 0u;
   }
   auto returnCkptId() const {
     return static_cast<uint32_t>(
@@ -156,7 +184,11 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
   // combinational predicate: the ICache head holds the halt instruction.
   // Member function (not a stored Register) so it is visible the same cycle.
   bool isHaltSignal() const {
-    return legacyHaltEnabled && isReturnReady() && returnRaw() == 0x0ff00513;
+    return legacyHaltEnabled && isReturnReady() &&
+           (returnRaw() == 0x0ff00513 ||
+            (static_cast<bool>(
+                 requestBuffer[static_cast<uint32_t>(head)].valid1) &&
+             returnRaw1() == 0x0ff00513));
   }
   void work() override;
 };

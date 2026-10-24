@@ -38,6 +38,7 @@ void ICache::work() {
     for (int i = 0; i < REQUEST_CAP; ++i) {
       requestBuffer[i].valid <= false;
       requestBuffer[i].ready <= false;
+      requestBuffer[i].valid1 <= false;
     }
     head <= 0;
     readIndex <= 0;
@@ -57,6 +58,7 @@ void ICache::work() {
       if (!replaceHead) {
         requestBuffer[oh].valid <= false;
         requestBuffer[oh].ready <= false;
+        requestBuffer[oh].valid1 <= false;
       }
       head <= ((oh + 1) & (REQUEST_CAP - 1));
     }
@@ -71,6 +73,8 @@ void ICache::work() {
       const uint32_t pc = static_cast<uint32_t>(requestBuffer[slot].PC);
       requestBuffer[slot].raw_inst <= static_cast<uint32_t>(
           lineReturn.data[(pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK]);
+      requestBuffer[slot].raw_inst1 <= static_cast<uint32_t>(
+          lineReturn.data[((pc + 4u) >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK]);
       requestBuffer[slot].ready <= true;
     }
     // Refill forwarding completes the new slot at the edge, without another
@@ -88,10 +92,15 @@ void ICache::work() {
       auto index = (oh + occ) & (REQUEST_CAP - 1);
       requestBuffer[index].raw_inst <= (forwarded ? static_cast<uint32_t>(
           lineReturn.data[(pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK]) : 0u);
+      requestBuffer[index].raw_inst1 <= (forwarded ? static_cast<uint32_t>(
+          lineReturn.data[((pc + 4u) >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK]) : 0u);
       requestBuffer[index].PC <= pc;
+      requestBuffer[index].PC1 <= pc + 4u;
       requestBuffer[index].predictPC <= static_cast<uint32_t>(fetchPredictPC);
+      requestBuffer[index].predictPC1 <= static_cast<uint32_t>(fetchPredictPC1);
       requestBuffer[index].ckptId <= static_cast<uint32_t>(fetchCkptId);
       requestBuffer[index].valid <= true;
+      requestBuffer[index].valid1 <= static_cast<bool>(fetchValid1);
       requestBuffer[index].ready <= forwarded;
       // host-only profile counters (never read by the datapath)
       if (isHit)
@@ -105,6 +114,11 @@ void ICache::work() {
       requestBuffer[static_cast<uint32_t>(readIndex)].ready <= true;
       requestBuffer[static_cast<uint32_t>(readIndex)].raw_inst <=
           ICacheData.readLane(static_cast<uint32_t>(readLaneIndex));
+      if (static_cast<bool>(
+              requestBuffer[static_cast<uint32_t>(readIndex)].valid1)) {
+        requestBuffer[static_cast<uint32_t>(readIndex)].raw_inst1 <=
+            ICacheData.readLane(static_cast<uint32_t>(readLaneIndex) + 1);
+      }
     }
     readValid <= (static_cast<bool>(fetchValid) &&
                   hit(static_cast<uint32_t>(fetchPC)) &&
