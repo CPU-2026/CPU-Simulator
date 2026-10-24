@@ -54,7 +54,8 @@ struct BPUInputFetchCtx {
   Wire<32> pc;          // FetchUnitModule.programCounter (_M_old)
   Wire<1> squashNeed;   // flushArbiter.needSquash
   Wire<1> haltFetched;  // Latched halt or HALT accepted this cycle.
-  Wire<1> fqCanAccept;  // FQ admission including same-cycle dequeue.
+  Wire<1> fqCanAccept;  // FQ admission for at least one entry.
+  Wire<1> fqCanAccept2; // FQ admission for a full 2-entry group.
   Wire<1> memCanAccept; // Request capacity and SRAM port allow a new fetch.
 };
 struct BPUInputFetchTypeInfo {
@@ -64,6 +65,14 @@ struct BPUInputFetchTypeInfo {
   Wire<1> FetchJALTargetValid;
   Wire<32> FetchPC;
   Wire<32> FetchJALTarget;
+  // Second lane of the fetch group (ISSUE_WIDTH == 2). Kept wired to 0 at
+  // width 1 so single-width behavior is bit-identical.
+  Wire<1> FetchValid1;
+  Wire<1> isFetchCall1;
+  Wire<1> isFetchRet1;
+  Wire<1> FetchJALTargetValid1;
+  Wire<32> FetchPC1;
+  Wire<32> FetchJALTarget1;
 };
 struct BPUInput {
   std::array<CommitPort, COMMIT_WIDTH> commits;
@@ -78,14 +87,18 @@ struct BPUInput {
 };
 
 struct BPUOutput {
-  Wire<32> outPredPC; // guarded (taken ? predictPC : pc+4)
-  Wire<32> outPacked;
-  Wire<1> outValid;
-  Wire<32> outPC;
-  Wire<32> outPredictedPC;
-  Wire<1> outShift;
-  Wire<1> outShiftValue;
-  Wire<CKPT_ID_WIDTH> outCkptId;
+  Wire<32> outPredPC; // group advance: next PC after the last valid lane
+  Wire<1> outValid;   // group valid (lane0 valid)
+  Wire<1> outValid1;  // lane1 valid (second instruction of the group)
+  Wire<32> outPC;     // lane0 PC
+  Wire<32> outPC1;    // lane1 PC
+  Wire<32> outPredictedPC;  // lane0 context predictPC
+  Wire<32> outPredictedPC1; // lane1 context predictPC
+  Wire<1> outShift;       // lane0 GHR shift
+  Wire<1> outShiftValue;  // lane0 GHR shift value
+  Wire<1> outShift1;      // lane1 GHR shift
+  Wire<1> outShiftValue1; // lane1 GHR shift value
+  Wire<CKPT_ID_WIDTH> outCkptId; // shared fetch checkpoint
 };
 
 struct RASEntry {
@@ -144,15 +157,27 @@ struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   uint8_t getGHR() const { return static_cast<uint32_t>(dir.GHR); }
   uint64_t getBranchTotal() const { return branchTotal; }
   uint64_t getBranchCorrect() const { return branchCorrect; }
-  PredictInfo predict(uint32_t pc) const;
+  PredictInfo predict(uint32_t pc, uint8_t ghr) const;
   BPUSnapshot snapshotCheckPoint() const;
   uint8_t getNextCkptId() const { return static_cast<uint32_t>(nextCkptId); }
   void work() override;
  private:
-   bool archWriteEnabled() const;
-   uint32_t archWriteLane(unsigned lane) const;
-   bool archWrites(unsigned lane) const;
+  bool archWriteEnabled() const;
+  uint32_t archWriteLane(unsigned lane) const;
+  bool archWrites(unsigned lane) const;
   // Fetch-direction guard, verbatim from the retired FetchDecision::build.
   bool fetchAllowed() const;
+  // One-cycle fetch-group prediction: lane0 = fetchCtx.pc, lane1 = pc+4 when
+  // ISSUE_WIDTH == 2 and lane0 falls through within the same I$ line. The two
+  // lanes share one checkpoint; the GHR advances per predicted-taken branch.
+  struct FetchGroup {
+    bool valid0 = false, valid1 = false;
+    uint32_t pc0 = 0, pc1 = 0;
+    uint32_t predPC0 = 0, predPC1 = 0;
+    bool shift0 = false, shift1 = false;
+    bool shiftValue0 = false, shiftValue1 = false;
+    uint32_t nextPC = 0;
+  };
+  FetchGroup fetchGroup() const;
   void wire_output();
 };

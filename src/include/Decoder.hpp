@@ -18,11 +18,15 @@ public:
 struct DecodeInput {
   Wire<1> needSquash;
   Wire<1> issueValid;
-  Wire<1> fqEmpty;
+  Wire<2> decodePushCount; // 0..2: entries decoded from FQ this cycle
   Wire<32> fqHeadRaw;
   Wire<32> fqHeadPc;
   Wire<32> fqHeadPredictedPC;
   Wire<CKPT_ID_WIDTH> fqHeadCkptId;
+  Wire<32> fqHeadRaw1;
+  Wire<32> fqHeadPc1;
+  Wire<32> fqHeadPredictedPC1;
+  Wire<CKPT_ID_WIDTH> fqHeadCkptId1;
 };
 
 struct UopEntry {
@@ -55,14 +59,19 @@ struct DecodeUnit : dark::Module<DecodeInput, IQOutput, IQInner> {
   void work() override;
 
   // bridge accessors: combinational reads of the committed (_M_old) state
+  unsigned count() const {
+    return (static_cast<uint32_t>(tail) - static_cast<uint32_t>(head)) &
+           IQ_SEQ_MASK;
+  }
   bool isEmpty() const {
-    return static_cast<uint32_t>(head) == static_cast<uint32_t>(tail);
+    return count() == 0u;
   }
   bool isFull() const {
-    return static_cast<uint32_t>(tail) ==
-           (static_cast<uint32_t>(head) ^ IQ_CAP);
+    return count() == static_cast<unsigned>(IQ_CAP);
   }
-  bool canAccept(bool willPop) const { return !isFull() || (willPop && !isEmpty()); }
+  unsigned pushCapacity(bool willPop) const {
+    return static_cast<unsigned>(IQ_CAP) - count() + (willPop ? 1u : 0u);
+  }
   RISC_V headType() const {
     return static_cast<RISC_V>(
         static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (IQ_CAP - 1)].type));

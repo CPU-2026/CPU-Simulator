@@ -17,11 +17,15 @@ struct InstructBufferEntry {
 struct FQInput {
   Wire<1> needSquash;
   Wire<1> icacheReturnAccepted; // Same handshake as ICache.popConsume.
+  Wire<1> icacheReturnValid1;   // lane1 of the fetched group is valid
   Wire<32> icacheReturnRaw;
   Wire<32> icacheReturnPC;
   Wire<32> icacheReturnPredictedPC;
   Wire<CKPT_ID_WIDTH> icacheReturnCkptId;
-  Wire<1> decodeCanAccept; // IQ admission including same-cycle actual issue.
+  Wire<32> icacheReturnRaw1;
+  Wire<32> icacheReturnPC1;
+  Wire<32> icacheReturnPredictedPC1;
+  Wire<2> decodePopCount; // 0..2: entries the decoder consumes this cycle
 };
 
 struct FQOutput {
@@ -32,6 +36,9 @@ struct FQOutput {
   Register<1> lastValid;
   Register<32> lastRaw;
   Register<32> lastPC;
+  Register<1> lastValid1;
+  Register<32> lastRaw1;
+  Register<32> lastPC1;
 };
 
 struct FQInner {
@@ -41,17 +48,17 @@ struct FQInner {
 struct InstructBuffer : dark::Module<FQInput, FQOutput, FQInner> {
   void work() override;
 
+  unsigned count() const {
+    return (static_cast<uint32_t>(tail) - static_cast<uint32_t>(head)) &
+           FQ_SEQ_MASK;
+  }
   // bridge accessors: combinational reads of the committed (_M_old) state
   // (renamed from FetchQueue; member aliases FQModule/FQ* kept for callers)
-  bool isFull() const {
-    return static_cast<uint32_t>(tail) ==
-           (static_cast<uint32_t>(head) ^ FQ_CAP);
-  }
-  bool isEmpty() const {
-    return static_cast<uint32_t>(head) == static_cast<uint32_t>(tail);
-  }
-  bool canAccept(bool willPop) const {
-    return !isFull() || (willPop && !isEmpty());
+  bool isFull() const { return count() == static_cast<unsigned>(FQ_CAP); }
+  bool isEmpty() const { return count() == 0u; }
+  // Capacity to absorb `push` new entries after `pop` this-cycle removals.
+  bool canAccept(unsigned push, unsigned pop) const {
+    return count() + push <= static_cast<unsigned>(FQ_CAP) + pop;
   }
   uint32_t getLastRaw() const {
     return static_cast<uint32_t>(lastRaw);
@@ -62,19 +69,44 @@ struct InstructBuffer : dark::Module<FQInput, FQOutput, FQInner> {
   bool getLastValid() const {
     return static_cast<bool>(lastValid);
   }
+  uint32_t getLastRaw1() const {
+    return static_cast<uint32_t>(lastRaw1);
+  }
+  uint32_t getLastPC1() const {
+    return static_cast<uint32_t>(lastPC1);
+  }
+  bool getLastValid1() const {
+    return static_cast<bool>(lastValid1);
+  }
   uint32_t headRaw() const {
     return static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (FQ_CAP - 1)].raw);
+  }
+  uint32_t headRaw1() const {
+    return static_cast<uint32_t>(
+        entries[(static_cast<uint32_t>(head) + 1) & (FQ_CAP - 1)].raw);
   }
   int headpc() const {
     return static_cast<int>(
         static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (FQ_CAP - 1)].pc));
   }
+  int headpc1() const {
+    return static_cast<int>(static_cast<uint32_t>(
+        entries[(static_cast<uint32_t>(head) + 1) & (FQ_CAP - 1)].pc));
+  }
   int32_t headPredictedPC() const {
     return static_cast<int32_t>(static_cast<uint32_t>(
         entries[static_cast<uint32_t>(head) & (FQ_CAP - 1)].predictedPC));
   }
+  int32_t headPredictedPC1() const {
+    return static_cast<int32_t>(static_cast<uint32_t>(
+        entries[(static_cast<uint32_t>(head) + 1) & (FQ_CAP - 1)].predictedPC));
+  }
   uint8_t headCkptId() const {
     return static_cast<uint8_t>(static_cast<uint32_t>(
         entries[static_cast<uint32_t>(head) & (FQ_CAP - 1)].ckptId));
+  }
+  uint8_t headCkptId1() const {
+    return static_cast<uint8_t>(static_cast<uint32_t>(
+        entries[(static_cast<uint32_t>(head) + 1) & (FQ_CAP - 1)].ckptId));
   }
 };
