@@ -38,7 +38,6 @@ void ICache::work() {
     for (int i = 0; i < FETCH_REQUEST_CAP; ++i) {
       requestBuffer[i].valid <= false;
       requestBuffer[i].ready <= false;
-      requestBuffer[i].valid1 <= false;
     }
     head <= 0;
     readIndex <= 0;
@@ -58,7 +57,6 @@ void ICache::work() {
       if (!replaceHead) {
         requestBuffer[oh].valid <= false;
         requestBuffer[oh].ready <= false;
-        requestBuffer[oh].valid1 <= false;
       }
       head <= ((oh + 1) & (FETCH_REQUEST_CAP - 1));
     }
@@ -69,6 +67,10 @@ void ICache::work() {
       auto cachelineIndex = (la >> ICACHE_OFFSET_BITS) & ICACHE_INDEX_MASK;
       blocks[cachelineIndex].valid <= true;
       blocks[cachelineIndex].tag <= la >> ICACHE_TAG_SHIFT;
+      uint32_t controlMask = 0;
+      for (unsigned word = 0; word < ICACHE_WORDS_PER_LINE; ++word)
+        if (isControl(uint32_t(lineReturn.data[word]))) controlMask |= 1u << word;
+      blocks[cachelineIndex].controlMask <= controlMask;
       const auto slot = refillSlot();
       const uint32_t pc = static_cast<uint32_t>(requestBuffer[slot].PC);
       requestBuffer[slot].raw_inst <= static_cast<uint32_t>(

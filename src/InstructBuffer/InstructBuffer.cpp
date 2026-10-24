@@ -29,7 +29,7 @@ void InstructBuffer::work() {
         entries[t1].pc <= static_cast<uint32_t>(icacheReturnPC1);
         entries[t1].predictedPC <=
             static_cast<uint32_t>(icacheReturnPredictedPC1);
-        entries[t1].ckptId <= static_cast<uint32_t>(icacheReturnCkptId);
+        entries[t1].ckptId <= ((uint32_t(icacheReturnCkptId) + 1) & (CKPT_CAP - 1));
       }
       tail <= ((static_cast<uint32_t>(tail) + (push1 ? 2u : 1u)) & FQ_SEQ_MASK);
       lastValid <= 1;

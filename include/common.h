@@ -265,7 +265,7 @@ static_assert(ICACHE_TAG_WIDTH > 0 && ICACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "ICache address split must leave a valid tag width");
 constexpr int REQUEST_CAP = 8;
 #ifndef CPU_FETCH_REQUEST_ENTRIES
-#define CPU_FETCH_REQUEST_ENTRIES 4
+#define CPU_FETCH_REQUEST_ENTRIES (4 >> (CPU_FETCH_WIDTH - 1))
 #endif
 constexpr int FETCH_REQUEST_CAP = CPU_FETCH_REQUEST_ENTRIES;
 static_assert(FETCH_REQUEST_CAP >= 2 && FETCH_REQUEST_CAP <= 8 && std::has_single_bit(uint32_t(FETCH_REQUEST_CAP)));
@@ -277,7 +277,7 @@ constexpr int DCACHE_REQUEST_BITS = REQUEST_CAP > 1
 constexpr int DCACHE_COUNT_BITS =
     std::bit_width(static_cast<uint32_t>(REQUEST_CAP));
 constexpr int CKPT_LIVE_MAX =
-    ROB_CAP + FETCH_REQUEST_CAP + FQ_CAP + IQ_CAP;
+    ROB_CAP + (FETCH_REQUEST_CAP << (FETCH_WIDTH - 1)) + FQ_CAP + IQ_CAP;
 static_assert(CKPT_CAP > 0 && (CKPT_CAP & (CKPT_CAP - 1)) == 0,
               "checkpoint wrap uses &(CKPT_CAP-1)");
 static_assert(CKPT_CAP >= CKPT_LIVE_MAX,
