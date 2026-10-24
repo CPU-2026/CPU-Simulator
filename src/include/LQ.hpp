@@ -10,6 +10,19 @@ struct AGU;
 struct RSUnit;
 struct ROB;
 struct DMEM;
+struct LoadAddressBypass {
+  bool valid = false;
+  uint8_t index = 0;
+  RobTag robTag = 0;
+  uint32_t address = 0;
+  bool forwarded = false;
+};
+struct LoadResultCandidate {
+  bool valid = false;
+  uint8_t index = 0;
+  RobTag robTag = 0;
+  uint32_t value = 0;
+};
 struct LQEntry {
   Register<ROB_TAG_WIDTH> robTag;
   Register<32> address;
@@ -100,6 +113,7 @@ struct LQInner {
   Register<LQ_SEQ_WIDTH> tail;
 };
 class LQ : public dark::Module<LQInput, LQInner> {
+  bool notificationMatches(int index, int lane) const;
   // (2026-09-01) The former private mutators (pushLoad/pop/writeAddress/
   // writeValue/writeValueIfFetching/setValueState/setCDBBroadcast/
   // applyStoreForward/flush) were inlined into work() as per-index write
@@ -130,6 +144,9 @@ public:
   auto getNBytes(int index) const -> int;
   bool isAddressReady(int index) const { return static_cast<bool>(LQqueue[index].isAddressReady); }
   int CDBDetect() const;
-  int LoadDetect() const;
+  LoadResultCandidate resultCandidate() const;
+  LoadAddressBypass addressBypass() const;
+  uint32_t requestAddress(int index, const LoadAddressBypass &event = {}) const;
+  int LoadDetect(const LoadAddressBypass &event = {}) const;
   void work() override;
 };

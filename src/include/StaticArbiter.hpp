@@ -120,6 +120,7 @@ struct DispatchArbInput {
   std::array<Wire<PHY_TAG_WIDTH>, DIVIDERS_CAP> divSrc1Tag, divSrc2Tag;
   std::array<Wire<ROB_TAG_WIDTH>, DIVIDERS_CAP> divRobTag;
   std::array<Wire<1>, PRF_CAP> prdReady; // PRF ready bitmap bus
+  std::array<Wire<1>, PRF_CAP> bypassReady; // Granted WB, Integer/Branch only.
   Wire<1> squashNeed;
   Wire<ROB_TAG_WIDTH> squashTag;
 };
@@ -151,7 +152,7 @@ private:
   };
   void wire_output();
   // prd_ready[tag] with P0 tied high (InvalidPhy=0 is permanently ready).
-  bool readyOf(uint32_t tag) const;
+  bool readyOf(uint32_t tag, bool bypass = false) const;
   // Folded priority chain (always_comb): req[i] = busy & rdy1 & rdy2, first
   // hit occupies, strictly-older replaces (equal tag keeps the earlier slot
   // -- dead logic in RTL since busy slots hold unique tags, kept verbatim).
@@ -159,7 +160,8 @@ private:
   WinResult selectOldest(const std::array<Wire<1>, N> &busy,
                          const std::array<Wire<PHY_TAG_WIDTH>, N> &src1Tag,
                          const std::array<Wire<PHY_TAG_WIDTH>, N> &src2Tag,
-                          const std::array<Wire<ROB_TAG_WIDTH>, N> &tags) const;
+                           const std::array<Wire<ROB_TAG_WIDTH>, N> &tags,
+                           bool bypass = false) const;
   WinResult aluSelect() const;
   WinResult bruSelect() const;
   WinResult mulSelect() const; // multiplyRS pool, same shape as aluSelect
@@ -200,6 +202,9 @@ struct IssueArbInputRob {
 };
 // Raw busy bitmaps: the module runs first-fit free-slot scans.
 struct IssueArbInputRs {
+  Wire<1> intReuseValid, brReuseValid;
+  Wire<4> intReuseSlot;
+  Wire<2> brReuseSlot;
   std::array<Wire<1>, INTEGERRS_CAP> intBusy;
   std::array<Wire<1>, LOADRS_CAP> loadBusy;
   std::array<Wire<1>, STORERS_CAP> saBusy;

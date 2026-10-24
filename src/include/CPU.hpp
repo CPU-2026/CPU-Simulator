@@ -77,7 +77,8 @@ class CPU {
   Register<ROB_TAG_WIDTH> recoveryOffset, recoveryCount, recoveryNextTag, recoveryBoundary;
   bool exitRetiring() const;
   bool memoryDispatchValid() const;
-  // 0..ISSUE_WIDTH: decoded uops moved FQ -> IQ this cycle (min of FQ
+  OperandWriteback grantedWritebacks() const;
+  // 0..DECODE_WIDTH: decoded uops moved FQ -> IQ this cycle (min of FQ
   // availability, IQ push capacity after the single-issue pop, and width).
   unsigned decodePopCount() const;
 public:

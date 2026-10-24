@@ -209,17 +209,25 @@ DCachePlan DCache::plan() const {
   }
   {
     uint8_t eligible = 0;
+    const bool continueHit = u(readValid) && way >= 0 && !p.fillBeat &&
+        request(u(readIndex)).op == Operation::Load && p.response == int(u(readIndex));
+    uint8_t lookupActive = activeMask();
+    if (!p.fillBeat && p.response >= 0)
+      lookupActive &= static_cast<uint8_t>(~(1u << p.response));
+    const int lookupFirst = oldestRequest(lookupActive);
     bool anyMiss = false;
     for (int m = 0; m < DCACHE_MSHR_CAP; ++m) anyMiss = anyMiss || u(misses[m].valid);
     for (int s = 0; s < REQUEST_CAP; ++s) {
       const auto r = request(s);
-      const bool blocked = !u(requests[s].active) || u(requests[s].ready) || miss(s) >= 0 || s == p.mergeSlot ||
+      const bool blocked = !u(requests[s].active) || (u(readValid) && u(readIndex) == uint32_t(s)) ||
+          u(requests[s].ready) || miss(s) >= 0 || s == p.mergeSlot ||
           r.address == AXI_EXIT_ADDR || setLocked(r.address) || storeHazard(s, false) || findMiss(r.address & ~DCACHE_OFFSET_MASK) >= 0 ||
-          (r.op == Operation::Store && s != first) || (u(requests[s].deferred) && (s != first || freeMiss() < 0)) || (!anyMiss && s != first);
+          (r.op == Operation::Store && s != first) || (u(requests[s].deferred) && (s != first || freeMiss() < 0)) ||
+          (!anyMiss && s != first && s != lookupFirst);
       if (!blocked) eligible |= 1u << s;
     }
     p.lookupCandidate = oldestRequest(eligible);
-    if (!u(readValid) && !p.fillBeat && p.store < 0) p.lookup = p.lookupCandidate;
+    if ((!u(readValid) || continueHit) && !p.fillBeat && p.store < 0) p.lookup = p.lookupCandidate;
   }
   uint8_t readable = 0, writable = 0;
   for (int m = 0; m < DCACHE_MSHR_CAP; ++m) if (u(misses[m].valid)) {

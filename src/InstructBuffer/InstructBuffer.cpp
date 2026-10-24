@@ -12,7 +12,7 @@ void InstructBuffer::work() {
     lastValid1 <= 0;
   } else {
     const unsigned pop = static_cast<uint32_t>(decodePopCount) & 0x3u;
-    const bool push1 = ISSUE_WIDTH >= 2 &&
+    const bool push1 = FETCH_WIDTH >= 2 &&
                        static_cast<bool>(icacheReturnValid1);
     // stage 2 push: exactly the ICache head-consumption handshake (one or two
     // instructions from the fetched group).

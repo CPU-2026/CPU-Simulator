@@ -77,5 +77,18 @@ struct PRF : public dark::Module<PRFInput, PRFInner> {
   int32_t getOperandValue(const Operand &op) const {
     return op.tag == InvalidPhy ? op.imm : getValue(op.tag);
   }
+  bool isOperandReady(const Operand &op, const OperandWriteback &ports) const {
+    bool ready = isOperandReady(op);
+    for (const auto &port : ports)
+      ready |= op.tag != InvalidPhy && port.valid && port.tag == op.tag;
+    return ready;
+  }
+  int32_t getOperandValue(const Operand &op, const OperandWriteback &ports) const {
+    if (isOperandReady(op)) return getOperandValue(op);
+    for (const auto &port : ports)
+      if (port.valid && port.tag == op.tag && op.tag != InvalidPhy)
+        return port.value;
+    return getOperandValue(op);
+  }
   void work() override;
 };

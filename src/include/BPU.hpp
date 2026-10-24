@@ -65,7 +65,7 @@ struct BPUInputFetchTypeInfo {
   Wire<1> FetchJALTargetValid;
   Wire<32> FetchPC;
   Wire<32> FetchJALTarget;
-  // Second lane of the fetch group (ISSUE_WIDTH == 2). Kept wired to 0 at
+  // Second lane of the fetch group (FETCH_WIDTH == 2). Kept wired to 0 at
   // width 1 so single-width behavior is bit-identical.
   Wire<1> FetchValid1;
   Wire<1> isFetchCall1;
@@ -106,7 +106,7 @@ struct RASEntry {
 };
 // Register-storage mirror of the comb-domain BTB line.
 struct BTBEntryReg {
-  Register<24> tag;
+  Register<BTB_TAG_WIDTH> tag;
   Register<30> target; // target[31:2], restored with << 2 on prediction
   Register<2> state; // 0: invalid, 1: conditional, 2: unconditional, 3: return
 };
@@ -168,7 +168,7 @@ struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   // Fetch-direction guard, verbatim from the retired FetchDecision::build.
   bool fetchAllowed() const;
   // One-cycle fetch-group prediction: lane0 = fetchCtx.pc, lane1 = pc+4 when
-  // ISSUE_WIDTH == 2 and lane0 falls through within the same I$ line. The two
+  // FETCH_WIDTH == 2 and lane0 falls through within the same I$ line. The two
   // lanes share one checkpoint; the GHR advances per predicted-taken branch.
   struct FetchGroup {
     bool valid0 = false, valid1 = false;
