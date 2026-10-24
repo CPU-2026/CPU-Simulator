@@ -60,7 +60,7 @@ PredictInfo BPU::predict(uint32_t pc, uint8_t ghr) const {
   const auto BTB_index = p2 & (BTB_CAP - 1);
   bool btbHit = static_cast<bool>(tgt.BTB[BTB_index].state) &&
                 static_cast<uint32_t>(tgt.BTB[BTB_index].tag) ==
-                    static_cast<uint32_t>(pc >> 8);
+                    static_cast<uint32_t>(pc >> BTB_TAG_SHIFT);
   bool taken = btbHit && directionTaken;
   if (btbHit && static_cast<uint32_t>(tgt.BTB[BTB_index].state) >= 2)
     taken = true;
@@ -99,7 +99,7 @@ bool BPU::fetchAllowed() const {
 }
 
 // ---- fetch-stage prediction bundle (retired FetchDecision::build). ----
-//      lane0 = fetchCtx.pc, lane1 = pc+4 when ISSUE_WIDTH == 2 and lane0
+//      lane0 = fetchCtx.pc, lane1 = pc+4 when FETCH_WIDTH == 2 and lane0
 //      falls through within the same I$ line. Both lanes share one checkpoint;
 //      the GHR advances per predicted-taken conditional in the group. ----
 BPU::FetchGroup BPU::fetchGroup() const {
@@ -116,7 +116,7 @@ BPU::FetchGroup BPU::fetchGroup() const {
   g.shiftValue0 = p0.btbHit ? (p0.unconditional ? true : p0.taken)
                             : (p0.condSeen ? p0.taken : false);
   const bool crossLine = (pc0 & 0x3Cu) == 0x3Cu;
-  if (ISSUE_WIDTH >= 2 && !g.shift0 && !crossLine &&
+  if (FETCH_WIDTH >= 2 && !g.shift0 && !crossLine &&
       static_cast<bool>(fetchCtx.fqCanAccept2)) {
     const uint32_t pc1 = pc0 + 4u;
     const uint8_t ghr1 = g.shift0
@@ -386,7 +386,7 @@ void BPU::work() {
              static_cast<bool>(fetchInfo.isFetchRet),
              static_cast<bool>(fetchInfo.isFetchCall),
              static_cast<uint32_t>(fetchInfo.FetchPC));
-    if (ISSUE_WIDTH >= 2)
+    if (FETCH_WIDTH >= 2)
       rasFetch(static_cast<bool>(fetchInfo.FetchValid1),
                static_cast<bool>(fetchInfo.isFetchRet1),
                static_cast<bool>(fetchInfo.isFetchCall1),
@@ -412,7 +412,7 @@ void BPU::work() {
                static_cast<bool>(fetchInfo.FetchJALTargetValid),
                static_cast<uint32_t>(fetchInfo.FetchPC),
                static_cast<uint32_t>(fetchInfo.FetchJALTarget));
-    else if (ISSUE_WIDTH >= 2)
+    else if (FETCH_WIDTH >= 2)
       btbFetch(static_cast<bool>(fetchInfo.FetchValid1),
                static_cast<bool>(fetchInfo.isFetchRet1),
                static_cast<bool>(fetchInfo.FetchJALTargetValid1),
@@ -476,7 +476,7 @@ void BPU::work() {
   //      target are arbitrated separately: a fetch write without a static JAL
   //      target must not shadow a same-line target trained by cdb/bru. ----
   auto writeBTBLine = [&](const BTBWriteIntent &intent) {
-    tgt.BTB[intent.index].tag <= (intent.actualPC >> 8);
+    tgt.BTB[intent.index].tag <= (intent.actualPC >> BTB_TAG_SHIFT);
     bool isUnconditional = intent.unconditional;
     bool isRet = intent.isRet;
     tgt.BTB[intent.index].state <= (isRet ? 3 : (isUnconditional ? 2 : 1));

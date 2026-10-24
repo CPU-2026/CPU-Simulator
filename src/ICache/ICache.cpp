@@ -35,7 +35,7 @@ ICache::ICache() {
 void ICache::work() {
   // stage 3 flush: clear the speculative request queue (cache lines kept)
   if (needSquash) {
-    for (int i = 0; i < REQUEST_CAP; ++i) {
+    for (int i = 0; i < FETCH_REQUEST_CAP; ++i) {
       requestBuffer[i].valid <= false;
       requestBuffer[i].ready <= false;
       requestBuffer[i].valid1 <= false;
@@ -52,7 +52,7 @@ void ICache::work() {
     // stage 2 pop: self-release once FQ consumed the ICache head
     // (write-own-only)
     const bool replaceHead = popE && static_cast<bool>(fetchValid) &&
-                             occ == REQUEST_CAP;
+                             occ == FETCH_REQUEST_CAP;
     if (popE) {
       assert(isReturnReady());
       if (!replaceHead) {
@@ -60,7 +60,7 @@ void ICache::work() {
         requestBuffer[oh].ready <= false;
         requestBuffer[oh].valid1 <= false;
       }
-      head <= ((oh + 1) & (REQUEST_CAP - 1));
+      head <= ((oh + 1) & (FETCH_REQUEST_CAP - 1));
     }
     // Complete exactly the live miss selected from old state. The same
     // fillFire consumes IMEM's return and grants the SRAM write port.
@@ -84,12 +84,12 @@ void ICache::work() {
       const bool forwarded = refillHit(pc);
       const bool isHit = hit(pc) || forwarded;
       if (isHit && !forwarded) {
-        readIndex <= static_cast<uint32_t>((head + occ) & (REQUEST_CAP - 1));
+        readIndex <= static_cast<uint32_t>((head + occ) & (FETCH_REQUEST_CAP - 1));
         readLaneIndex <= static_cast<uint32_t>(
             (fetchPC >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK);
       }
-      assert(occ < static_cast<uint32_t>(REQUEST_CAP) || replaceHead);
-      auto index = (oh + occ) & (REQUEST_CAP - 1);
+      assert(occ < static_cast<uint32_t>(FETCH_REQUEST_CAP) || replaceHead);
+      auto index = (oh + occ) & (FETCH_REQUEST_CAP - 1);
       requestBuffer[index].raw_inst <= (forwarded ? static_cast<uint32_t>(
           lineReturn.data[(pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK]) : 0u);
       requestBuffer[index].raw_inst1 <= (forwarded ? static_cast<uint32_t>(

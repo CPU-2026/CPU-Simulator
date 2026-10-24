@@ -6,10 +6,16 @@
 #include "tools.h"
 using RobTag = uint8_t;
 inline bool legacyHaltEnabled = false; // Host configuration for archived images only.
-constexpr int INTEGERRS_CAP = 2;
+#ifndef CPU_INT_RS_ENTRIES
+#define CPU_INT_RS_ENTRIES 4
+#endif
+#ifndef CPU_BRANCH_RS_ENTRIES
+#define CPU_BRANCH_RS_ENTRIES 4
+#endif
+constexpr int INTEGERRS_CAP = CPU_INT_RS_ENTRIES;
 constexpr int STORERS_CAP = 2;
 constexpr int LOADRS_CAP = 2;
-constexpr int BRANCHRS_CAP = 2;
+constexpr int BRANCHRS_CAP = CPU_BRANCH_RS_ENTRIES;
 constexpr int LQ_CAP = 8;
 constexpr int SQ_CAP = 8;
 constexpr int LQ_MASK = LQ_CAP - 1;
@@ -59,20 +65,32 @@ inline constexpr RobTag robNextTag(RobTag tag) {
 static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
 static_assert(ROB_TAG_WIDTH <= 8,
                "RobTag is uint8_t: packed tag must fit in 8 bits");
-// Superscalar width (W4: fetch & decode are widened; issue/rename/commit stay
-// single-width until W5/W6). Default 1 keeps the archived single-width golden
-// bit-identical; build with -DCPU_ISSUE_WIDTH=2 for the 2-wide front-end.
-// FQ/IQ depth scale with the width so the front-end can run ahead of the
-// still-single-issue backend without deadlocking.
-#ifndef CPU_ISSUE_WIDTH
-#define CPU_ISSUE_WIDTH 1
+// The old CPU_ISSUE_WIDTH macro described the experimental FRONTEND, not
+// rename/issue. Preserve that spelling only for old builds specifying neither
+// new width. Explicit new configurations must describe the stages separately.
+#if defined(CPU_ISSUE_WIDTH) && !defined(CPU_FETCH_WIDTH) && !defined(CPU_DECODE_WIDTH)
+#define CPU_FETCH_WIDTH CPU_ISSUE_WIDTH
+#define CPU_DECODE_WIDTH CPU_ISSUE_WIDTH
 #endif
-constexpr unsigned ISSUE_WIDTH = CPU_ISSUE_WIDTH;
-static_assert(ISSUE_WIDTH >= 1 && ISSUE_WIDTH <= 2,
-              "superscalar width supports 1..2");
-
-constexpr int FQ_CAP = 2 * static_cast<int>(ISSUE_WIDTH);
-constexpr int IQ_CAP = 2 * static_cast<int>(ISSUE_WIDTH);
+#ifndef CPU_FETCH_WIDTH
+#define CPU_FETCH_WIDTH 1
+#endif
+#ifndef CPU_DECODE_WIDTH
+#define CPU_DECODE_WIDTH 1
+#endif
+constexpr unsigned FETCH_WIDTH = CPU_FETCH_WIDTH;
+constexpr unsigned DECODE_WIDTH = CPU_DECODE_WIDTH;
+constexpr unsigned ISSUE_WIDTH = 1; // Rename/ROB/RS allocation remains scalar.
+static_assert(FETCH_WIDTH >= 1 && FETCH_WIDTH <= 2);
+static_assert(DECODE_WIDTH >= 1 && DECODE_WIDTH <= 2);
+#ifndef CPU_FQ_ENTRIES
+#define CPU_FQ_ENTRIES (CPU_DECODE_WIDTH << 1)
+#endif
+#ifndef CPU_IQ_ENTRIES
+#define CPU_IQ_ENTRIES (CPU_DECODE_WIDTH << 1)
+#endif
+constexpr int FQ_CAP = CPU_FQ_ENTRIES;
+constexpr int IQ_CAP = CPU_IQ_ENTRIES;
 constexpr int FQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(FQ_CAP - 1));
 constexpr int IQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(IQ_CAP - 1));
 constexpr int FQ_SEQ_WIDTH = FQ_PTR_WIDTH + 1;
@@ -94,7 +112,13 @@ constexpr int DIVIDERS_CAP = 1;
 // Dedicated LSQ address port consumes or cancels the old result every cycle.
 constexpr int AGU_CAP = 1;
 constexpr int BRU_CAP = 4;
-constexpr int BTB_CAP = 64;
+#ifndef CPU_BTB_ENTRIES
+#define CPU_BTB_ENTRIES 32
+#endif
+constexpr int BTB_CAP = CPU_BTB_ENTRIES;
+static_assert(BTB_CAP >= 2 && BTB_CAP <= 64 && std::has_single_bit(uint32_t(BTB_CAP)));
+constexpr int BTB_TAG_SHIFT = 2 + std::bit_width(uint32_t(BTB_CAP - 1));
+constexpr int BTB_TAG_WIDTH = 32 - BTB_TAG_SHIFT;
 constexpr int BHT_CAP = 1 << 8;
 constexpr int SELECTOR_CAP = 1 << 8;
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
@@ -111,7 +135,10 @@ constexpr uint16_t HISTORY_MASK = (1u << GHR_WIDTH) - 1;
 // Arch + speculative RAS pair (mirrors the main tree): the tops are
 // non-wrapping depths in [0, RAS_CAP]. Recovery restores the committed
 // baseline and replays the surviving ROB prefix through the squash tag.
-constexpr int RAS_CAP = 16;
+#ifndef CPU_RAS_ENTRIES
+#define CPU_RAS_ENTRIES 8
+#endif
+constexpr int RAS_CAP = CPU_RAS_ENTRIES;
 static_assert(RAS_CAP > 0 && RAS_CAP <= 0xFF,
               "RAS top is an 8-bit non-wrapping depth");
 constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
@@ -166,15 +193,12 @@ static_assert(prfSeqDistance(static_cast<PrfSeq>(PRF_CAP - 1),
 static_assert(prfSeqDistance(0,
                              static_cast<PrfSeq>(1 << PRF_INDEX_WIDTH)) ==
               PRF_CAP);
-static_assert(INTEGERRS_CAP > 0 &&
-              (INTEGERRS_CAP & (INTEGERRS_CAP - 1)) == 0);
+static_assert(INTEGERRS_CAP > 0 && INTEGERRS_CAP <= 16);
 static_assert(MULTIPLYRS_CAP > 0 &&
               (MULTIPLYRS_CAP & (MULTIPLYRS_CAP - 1)) == 0);
 static_assert(DIVIDERS_CAP > 0 &&
               (DIVIDERS_CAP & (DIVIDERS_CAP - 1)) == 0);
-static_assert(BRANCHRS_CAP > 0 &&
-              (BRANCHRS_CAP & (BRANCHRS_CAP - 1)) == 0 &&
-              BRANCHRS_CAP <= 4);
+static_assert(BRANCHRS_CAP > 0 && BRANCHRS_CAP <= 4);
 static_assert(LQ_CAP >= 2 && LQ_CAP <= 64 && (LQ_CAP & LQ_MASK) == 0);
 static_assert(SQ_CAP >= 2 && SQ_CAP <= 64 && (SQ_CAP & SQ_MASK) == 0);
 static_assert(MEMQ_SCAN_WINDOW <= SQ_CAP);
@@ -193,7 +217,16 @@ static_assert(ROB_CAP < (static_cast<uint32_t>(PRF_CAP) << 1),
 // always in 1..PRF_CAP-1 and 0 is unambiguous. Guarded by asserts in PRF::pop,
 // PRF::push, RAT mapping writers and IssueArbiter::resolveSrc.
 inline constexpr int InvalidPhy = 0;
-constexpr int IMEM_CAP = 8; // AXIFetch: one line per ICache request credit
+struct OperandWritePort {
+  bool valid = false;
+  uint8_t tag = 0;
+  int32_t value = 0;
+};
+using OperandWriteback = std::array<OperandWritePort, 2>;
+#ifndef CPU_AXI_FETCH_ENTRIES
+#define CPU_AXI_FETCH_ENTRIES 4
+#endif
+constexpr int IMEM_CAP = CPU_AXI_FETCH_ENTRIES;
 constexpr int CKPT_CAP = 32;
 // IDs are 0..CKPT_CAP-1 and CKPT_CAP is a power of two: derived width is exact.
 constexpr int CKPT_ID_WIDTH =
@@ -231,6 +264,11 @@ constexpr int ICACHE_WORD_BITS = ICACHE_WORDS_PER_LINE > 1
 static_assert(ICACHE_TAG_WIDTH > 0 && ICACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "ICache address split must leave a valid tag width");
 constexpr int REQUEST_CAP = 8;
+#ifndef CPU_FETCH_REQUEST_ENTRIES
+#define CPU_FETCH_REQUEST_ENTRIES 4
+#endif
+constexpr int FETCH_REQUEST_CAP = CPU_FETCH_REQUEST_ENTRIES;
+static_assert(FETCH_REQUEST_CAP >= 2 && FETCH_REQUEST_CAP <= 8 && std::has_single_bit(uint32_t(FETCH_REQUEST_CAP)));
 static_assert(REQUEST_CAP > 0 && REQUEST_CAP <= 128 &&
                   std::has_single_bit(static_cast<uint32_t>(REQUEST_CAP)),
               "DCache request queue must use power-of-two wrapping");
@@ -239,7 +277,7 @@ constexpr int DCACHE_REQUEST_BITS = REQUEST_CAP > 1
 constexpr int DCACHE_COUNT_BITS =
     std::bit_width(static_cast<uint32_t>(REQUEST_CAP));
 constexpr int CKPT_LIVE_MAX =
-    ROB_CAP + REQUEST_CAP + FQ_CAP + IQ_CAP;
+    ROB_CAP + FETCH_REQUEST_CAP + FQ_CAP + IQ_CAP;
 static_assert(CKPT_CAP > 0 && (CKPT_CAP & (CKPT_CAP - 1)) == 0,
               "checkpoint wrap uses &(CKPT_CAP-1)");
 static_assert(CKPT_CAP >= CKPT_LIVE_MAX,
@@ -334,7 +372,7 @@ constexpr int AXI_DEPTH = 16; // External Slave channels; not master line credit
 constexpr int AXI_DATA_CAP = 8;
 constexpr int AXI_ORDER_CAP = 16; // Preserve the RTL's 4-bit order-ring indices.
 static_assert(AXI_DATA_CAP >= (DCACHE_MSHR_CAP << 1));
-static_assert(IMEM_CAP == REQUEST_CAP);
+static_assert(IMEM_CAP >= FETCH_REQUEST_CAP && IMEM_CAP <= 8 && std::has_single_bit(uint32_t(IMEM_CAP)));
 constexpr int AXI_LATENCY = 10;
 constexpr uint32_t AXI_OKAY = 0;
 constexpr uint32_t AXI_SLVERR = 2;

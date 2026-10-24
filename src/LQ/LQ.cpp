@@ -68,7 +68,26 @@ auto LQ::getNBytes(int index) const -> int {
   return 1 << enc; // 0->1, 1->2, 2->4
 }
 
-int LQ::LoadDetect() const {
+LoadAddressBypass LQ::addressBypass() const {
+  LoadAddressBypass event{};
+  if (!bool(agu.isAGUEmpty) && !isStoreMem(uint32_t(agu.aguHeadMemIndex))) {
+    const auto index = memSlot(uint32_t(agu.aguHeadMemIndex));
+    const RobTag tag = uint32_t(agu.aguHeadRobTag);
+    if (matchesAddress(index, tag) &&
+        (!bool(squash.needSquash) || ROB::isOlder(tag, uint32_t(squash.SquashTag))))
+      event = {true, index, tag, uint32_t(agu.aguHeadValue), bool(agu.sqReplyValid)};
+  }
+  return event;
+}
+
+uint32_t LQ::requestAddress(int index, const LoadAddressBypass &event) const {
+  if (!isAddressReady(index) && event.valid && event.index == index &&
+      matchesAddress(index, event.robTag))
+    return event.address;
+  return getAddress(index);
+}
+
+int LQ::LoadDetect(const LoadAddressBypass &event) const {
   if (static_cast<uint32_t>(head) == static_cast<uint32_t>(tail))
     return 0xFFFFFFFF;
   int UnloadIndex = 0;
@@ -77,7 +96,10 @@ int LQ::LoadDetect() const {
     uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & LQ_MASK);
     if (!isActive(cur) || foundUnload)
       continue;
-    if (LQqueue[cur].isAddressReady &&
+    const bool earlyAddress = event.valid && event.index == cur &&
+        event.robTag == getRobTag(cur) &&
+        !(!bool(LQqueue[cur].isCDBBroadcast) && event.forwarded);
+    if ((bool(LQqueue[cur].isAddressReady) || earlyAddress) &&
         static_cast<uint32_t>(LQqueue[cur].valueState) ==
             static_cast<uint32_t>(ValueState::NOTREADY)) {
       foundUnload = true;
@@ -105,6 +127,53 @@ int LQ::CDBDetect() const {
     }
   }
   return detectedIndex;
+}
+
+bool LQ::notificationMatches(int index, int lane) const {
+  const bool addressLane = lane == STORERS_CAP;
+  const auto &n = storeNotifies;
+  const bool valid = addressLane ? bool(n.sanValid) : bool(n.snValid[lane]);
+  bool matches = false;
+  if (valid && isActive(index) && isAddressReady(index)) {
+    const RobTag tag = getRobTag(index);
+    const RobTag storeTag = addressLane ? uint32_t(n.sanStoreTag) : uint32_t(n.snStoreTag[lane]);
+    const uint32_t address = addressLane ? uint32_t(n.sanAddr) : uint32_t(n.snAddr[lane]);
+    const uint32_t bytes = addressLane ? uint32_t(n.sanNBytes) : uint32_t(n.snNBytes[lane]);
+    const bool known = addressLane ? bool(n.sanFoundKnownSame) : bool(n.snFoundKnownSame[lane]);
+    const RobTag knownTag = addressLane ? uint32_t(n.sanKnownTag) : uint32_t(n.snKnownTag[lane]);
+    const bool unknown = addressLane ? bool(n.sanFoundUnknown) : bool(n.snFoundUnknown[lane]);
+    const RobTag unknownTag = addressLane ? uint32_t(n.sanUnknownTag) : uint32_t(n.snUnknownTag[lane]);
+    matches = getAddress(index) == address && getNBytes(index) == bytes &&
+        ROB::isOlder(storeTag, tag) && !(known && ROB::isOlder(knownTag, tag)) &&
+        !(unknown && ROB::isOlder(unknownTag, tag));
+  }
+  return matches;
+}
+
+LoadResultCandidate LQ::resultCandidate() const {
+  LoadResultCandidate result{};
+  const int buffered = CDBDetect();
+  if (buffered >= 0)
+    result = {true, uint8_t(buffered), getRobTag(buffered), uint32_t(getValue(buffered))};
+  if (bool(loadResp.loadRespValid)) {
+    const auto index = memSlot(uint32_t(loadResp.loadRespMemIndex));
+    const RobTag tag = uint32_t(loadResp.loadRespRobTag);
+    if (matchesAddress(index, tag) && uint32_t(LQqueue[index].valueState) == uint32_t(ValueState::FETCHING) &&
+        !bool(LQqueue[index].isCDBBroadcast) &&
+        (!bool(squash.needSquash) || ROB::isOlder(tag, uint32_t(squash.SquashTag)))) {
+      bool forwardPriority = false;
+      for (int lane = 0; lane <= STORERS_CAP; ++lane)
+        forwardPriority |= notificationMatches(index, lane);
+      const auto event = addressBypass();
+      if (event.valid && event.index == index) forwardPriority = event.forwarded;
+      if (!forwardPriority && (!result.valid || ROB::isOlder(tag, result.robTag) ||
+          (tag == result.robTag && index < result.index)))
+        result = {true, index, tag, extendLoad(uint32_t(loadResp.loadRespValue), getNBytes(index), getIsUnsigned(index))};
+    }
+  }
+  if (result.valid && bool(squash.needSquash) &&
+      !ROB::isOlder(result.robTag, uint32_t(squash.SquashTag))) result.valid = false;
+  return result;
 }
 
 void LQ::work() {
@@ -174,7 +243,8 @@ void LQ::work() {
       uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & LQ_MASK);
       if (!isActive(cur))
         break;
-      if (LQqueue[cur].isAddressReady == 0)
+      if (LQqueue[cur].isAddressReady == 0 ||
+          uint32_t(LQqueue[cur].valueState) == uint32_t(ValueState::READY) || bool(LQqueue[cur].isCDBBroadcast))
         continue;
       if (static_cast<uint32_t>(LQqueue[cur].address) != n.addr ||
           getNBytes(cur) != n.nBytes)
@@ -206,7 +276,8 @@ void LQ::work() {
       uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & LQ_MASK);
       if (!isActive(cur))
         break;
-      if (LQqueue[cur].isAddressReady == 0)
+      if (LQqueue[cur].isAddressReady == 0 ||
+          uint32_t(LQqueue[cur].valueState) == uint32_t(ValueState::READY) || bool(LQqueue[cur].isCDBBroadcast))
         continue;
       if (static_cast<uint32_t>(LQqueue[cur].address) != n.addr ||
           getNBytes(cur) != n.nBytes)
@@ -234,7 +305,8 @@ void LQ::work() {
          ROB::isOlder(aguRobTag, static_cast<uint32_t>(squash.SquashTag)))) {
       LQqueue[index].address <= static_cast<uint32_t>(agu.aguHeadValue);
       LQqueue[index].isAddressReady <= true;
-      if (static_cast<bool>(agu.sqReplyValid)) {
+      if (bool(agu.sqReplyValid) && uint32_t(LQqueue[index].valueState) != uint32_t(ValueState::READY) &&
+          !bool(LQqueue[index].isCDBBroadcast)) {
         writeValueIntent(static_cast<int>(index), static_cast<uint32_t>(agu.sqReplyValue));
       }
     }

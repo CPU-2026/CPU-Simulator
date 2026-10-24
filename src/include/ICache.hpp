@@ -6,8 +6,8 @@
 #include <array>
 #include <cstdint>
 
-static_assert(REQUEST_CAP >= 2 && (REQUEST_CAP & (REQUEST_CAP - 1)) == 0);
-constexpr int ICACHE_REQUEST_BITS = std::bit_width(REQUEST_CAP - 1u);
+static_assert(FETCH_REQUEST_CAP >= 2 && (FETCH_REQUEST_CAP & (FETCH_REQUEST_CAP - 1)) == 0);
+constexpr int ICACHE_REQUEST_BITS = std::bit_width(FETCH_REQUEST_CAP - 1u);
 
 struct CacheLine {
   Register<1> valid;
@@ -32,7 +32,7 @@ struct ICacheOutput {
     // ready marks the instruction as deliverable (hit or backfilled).
     // This split keeps placeholders inside the window so the derived-count
     // scheme stays exact. A slot holds one fetch group: lane0 always valid
-    // when the slot is valid, lane1 valid only when ISSUE_WIDTH == 2 and the
+    // when the slot is valid, lane1 valid only when FETCH_WIDTH == 2 and the
     // group did not degrade.
     Register<32> raw_inst;
     Register<32> PC;
@@ -45,7 +45,7 @@ struct ICacheOutput {
     Register<32> predictPC1;
     Register<1> valid1;
   };
-  std::array<ICacheRequest, REQUEST_CAP> requestBuffer;
+  std::array<ICacheRequest, FETCH_REQUEST_CAP> requestBuffer;
   Wire<1> fillFire;
   Wire<1> readBlocked;
 };
@@ -72,11 +72,11 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
   // stored (same scheme as IMEM).
   uint32_t occupancy() const {
     uint32_t n = 0;
-    for (int i = 0; i < REQUEST_CAP; ++i)
+    for (int i = 0; i < FETCH_REQUEST_CAP; ++i)
       n += static_cast<bool>(requestBuffer[i].valid) ? 1u : 0u;
     return n;
   }
-  bool isRequestFull() const { return occupancy() == REQUEST_CAP; }
+  bool isRequestFull() const { return occupancy() == FETCH_REQUEST_CAP; }
   // Only the occupied head may bypass the request-slot register. Read data
   // and the saved slot/lane identity all come from the committed old state.
   bool headReadReady() const {
@@ -144,8 +144,8 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
     const uint32_t occ = occupancy();
     const bool offered = static_cast<bool>(lineReturn.valid);
     const uint32_t lineAddr = static_cast<uint32_t>(lineReturn.lineAddr);
-    for (int age = 0; age < REQUEST_CAP; ++age) {
-      const auto slot = (static_cast<uint32_t>(head) + age) & (REQUEST_CAP - 1);
+    for (int age = 0; age < FETCH_REQUEST_CAP; ++age) {
+      const auto slot = (static_cast<uint32_t>(head) + age) & (FETCH_REQUEST_CAP - 1);
       const uint32_t requestLine =
           static_cast<uint32_t>(requestBuffer[slot].PC) &
           ~ICACHE_OFFSET_MASK;
@@ -165,8 +165,8 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
     const uint32_t occ = occupancy();
     const bool offered = static_cast<bool>(lineReturn.valid);
     const uint32_t lineAddr = static_cast<uint32_t>(lineReturn.lineAddr);
-    for (int age = 0; age < REQUEST_CAP; ++age) {
-      const auto slot = (static_cast<uint32_t>(head) + age) & (REQUEST_CAP - 1);
+    for (int age = 0; age < FETCH_REQUEST_CAP; ++age) {
+      const auto slot = (static_cast<uint32_t>(head) + age) & (FETCH_REQUEST_CAP - 1);
       const uint32_t requestLine =
           static_cast<uint32_t>(requestBuffer[slot].PC) &
           ~ICACHE_OFFSET_MASK;

@@ -287,19 +287,16 @@ void CPU::wire() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
   LqCDBArbiterModule.lsqValid = [this]() {
-    return !static_cast<bool>(recoveryActive) && LQModule.CDBDetect() != -1 ? 1u : 0u;
+    return !bool(recoveryActive) && !bool(exitCommitted) && LQModule.resultCandidate().valid ? 1u : 0u;
   };
   LqCDBArbiterModule.lsqMemIndex = [this]() {
-    auto d = LQModule.CDBDetect();
-    return d != -1 ? static_cast<uint32_t>(d) : 0u;
+    return LQModule.resultCandidate().index;
   };
   LqCDBArbiterModule.lsqRobTag = [this]() {
-    auto d = LQModule.CDBDetect();
-    return d != -1 ? static_cast<uint32_t>(LQModule.getRobTag(d)) : 0u;
+    return LQModule.resultCandidate().robTag;
   };
   LqCDBArbiterModule.lsqValue = [this]() {
-    auto d = LQModule.CDBDetect();
-    return d != -1 ? static_cast<uint32_t>(LQModule.getValue(d)) : 0u;
+    return LQModule.resultCandidate().value;
   };
   LqCDBArbiterModule.squashNeed = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
@@ -394,35 +391,37 @@ void CPU::wire() {
     return retiring;
   };
   MemArbiterModule.loadValid = [this]() {
-    return LQModule.LoadDetect() != 0xFFFFFFFF ? 1u : 0u;
+    return LQModule.LoadDetect(LQModule.addressBypass()) != 0xFFFFFFFF ? 1u : 0u;
   };
   MemArbiterModule.loadIndex = [this]() {
-    auto d = LQModule.LoadDetect();
+    auto d = LQModule.LoadDetect(LQModule.addressBypass());
     return d != 0xFFFFFFFF ? static_cast<uint32_t>(d) : 0u;
   };
   MemArbiterModule.loadAddr = [this]() {
-    auto d = LQModule.LoadDetect();
-    return d != 0xFFFFFFFF ? static_cast<uint32_t>(LQModule.getAddress(d)) : 0u;
+    const auto event = LQModule.addressBypass();
+    auto d = LQModule.LoadDetect(event);
+    return d != 0xFFFFFFFF ? LQModule.requestAddress(d, event) : 0u;
   };
   MemArbiterModule.loadRobTag = [this]() {
-    auto d = LQModule.LoadDetect();
+    auto d = LQModule.LoadDetect(LQModule.addressBypass());
     return d != 0xFFFFFFFF ? static_cast<uint32_t>(LQModule.getRobTag(d)) : 0u;
   };
   MemArbiterModule.loadIsSigned = [this]() {
-    auto d = LQModule.LoadDetect();
+    auto d = LQModule.LoadDetect(LQModule.addressBypass());
     return d != 0xFFFFFFFF ? (LQModule.getIsUnsigned(d) ? 0u : 1u) : 0u;
   };
   MemArbiterModule.loadNEnc = [this]() {
-    auto d = LQModule.LoadDetect();
+    auto d = LQModule.LoadDetect(LQModule.addressBypass());
     if (d == 0xFFFFFFFF)
       return 0u;
     int n = LQModule.getNBytes(d);
     return static_cast<uint32_t>(n == 1 ? 0 : (n == 2 ? 1 : 2));
   };
   MemArbiterModule.loadCanSendToCache = [this]() {
-    auto d = LQModule.LoadDetect();
+    const auto event = LQModule.addressBypass();
+    auto d = LQModule.LoadDetect(event);
     return d != 0xFFFFFFFF && SQModule.canSendLoadToCache(
-        LQModule.getAddress(d), LQModule.getNBytes(d), LQModule.getRobTag(d))
+        LQModule.requestAddress(d, event), LQModule.getNBytes(d), LQModule.getRobTag(d))
                ? 1u
                : 0u;
   };
@@ -564,6 +563,9 @@ void CPU::wire() {
     DispatchArbiterModule.prdReady[i] = [this, i]() {
       return PRFModule.isReady(i) ? 1u : 0u;
     };
+    DispatchArbiterModule.bypassReady[i] = [this, i]() {
+      return PRFModule.isOperandReady(Operand{.tag = i, .imm = 0}, grantedWritebacks()) ? 1u : 0u;
+    };
   }
   DispatchArbiterModule.squashNeed = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
@@ -587,14 +589,14 @@ void CPU::wire() {
     const auto &d = DispatchArbiterModule.alu;
     return static_cast<bool>(d.valid)
                ? static_cast<uint32_t>(PRFModule.getOperandValue(
-                     RSModule.getIntSrc1(static_cast<uint32_t>(d.rsIndex))))
+                      RSModule.getIntSrc1(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()))
                : 0u;
   };
   ALUModule.src2Value = [this]() {
     const auto &d = DispatchArbiterModule.alu;
     return static_cast<bool>(d.valid)
                ? static_cast<uint32_t>(PRFModule.getOperandValue(
-                     RSModule.getIntSrc2(static_cast<uint32_t>(d.rsIndex))))
+                      RSModule.getIntSrc2(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()))
                : 0u;
   };
   ALUModule.op = [this]() {
@@ -752,14 +754,14 @@ void CPU::wire() {
     const auto &d = DispatchArbiterModule.bru;
     return static_cast<bool>(d.valid)
                ? static_cast<uint32_t>(PRFModule.getOperandValue(
-                     RSModule.getBrSrc1(static_cast<uint32_t>(d.rsIndex))))
+                      RSModule.getBrSrc1(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()))
                : 0u;
   };
   BRUModule.src2Value = [this]() {
     const auto &d = DispatchArbiterModule.bru;
     return static_cast<bool>(d.valid)
                ? static_cast<uint32_t>(PRFModule.getOperandValue(
-                     RSModule.getBrSrc2(static_cast<uint32_t>(d.rsIndex))))
+                      RSModule.getBrSrc2(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()))
                : 0u;
   };
   BRUModule.pc = [this]() {
@@ -971,6 +973,14 @@ void CPU::wire() {
       return RSModule.isIntFree(i) ? 0u : 1u;
     };
   }
+  IssueArbiterModule.rs.intReuseValid = [this]() {
+    return !bool(recoveryActive) && !bool(exitCommitted) && bool(DispatchArbiterModule.alu.valid) ? 1u : 0u;
+  };
+  IssueArbiterModule.rs.intReuseSlot = [this]() { return uint32_t(DispatchArbiterModule.alu.rsIndex); };
+  IssueArbiterModule.rs.brReuseValid = [this]() {
+    return !bool(recoveryActive) && !bool(exitCommitted) && bool(DispatchArbiterModule.bru.valid) ? 1u : 0u;
+  };
+  IssueArbiterModule.rs.brReuseSlot = [this]() { return uint32_t(DispatchArbiterModule.bru.rsIndex); };
   for (int i = 0; i < LOADRS_CAP; ++i) {
     IssueArbiterModule.rs.loadBusy[i] = [this, i]() {
       return RSModule.isLoadFree(i) ? 0u : 1u;
@@ -1513,7 +1523,7 @@ void CPU::wire() {
   LQModule.cdb.cdbMemIndex = [this]() {
     return static_cast<uint32_t>(LqCDBArbiterModule.memIndex);
   };
-  LQModule.agu.isAGUEmpty = [this]() { return static_cast<bool>(recoveryActive) || AGUModule.isEmpty(); };
+  LQModule.agu.isAGUEmpty = [this]() { return bool(recoveryActive) || bool(exitCommitted) || AGUModule.isEmpty(); };
   LQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };
   LQModule.agu.aguHeadRobTag = [this]() { return AGUModule.headRobTag(); };
   LQModule.agu.aguHeadValue = [this]() { return AGUModule.headValue(); };
@@ -2145,12 +2155,27 @@ void CPU::wire() {
   };
 }
 
+OperandWriteback CPU::grantedWritebacks() const {
+  OperandWriteback ports{};
+  if (!bool(recoveryActive) && !bool(exitCommitted)) {
+    const auto &alu = PRFModule.cdbOfALU;
+    const auto &shared = PRFModule.cdbOfShared;
+    const uint8_t aluPhy = uint32_t(alu.cdbNewPhy);
+    const uint8_t sharedPhy = uint32_t(shared.cdbNewPhy);
+    ports[0] = {bool(alu.cdbValid) && !bool(alu.cdbIsControl) && aluPhy != InvalidPhy,
+                aluPhy, int32_t(uint32_t(alu.cdbValue))};
+    ports[1] = {bool(shared.cdbValid) && sharedPhy != InvalidPhy,
+                sharedPhy, int32_t(uint32_t(shared.cdbValue))};
+  }
+  return ports;
+}
+
 unsigned CPU::decodePopCount() const {
   const bool issueValid = static_cast<bool>(IssueArbiterModule.core.valid);
   const unsigned cap = DecodeUnitModule.pushCapacity(issueValid);
   const unsigned avail = FQModule.count();
   unsigned n = avail < cap ? avail : cap;
-  const unsigned limit = static_cast<unsigned>(ISSUE_WIDTH);
+  const unsigned limit = static_cast<unsigned>(DECODE_WIDTH);
   if (n > limit)
     n = limit;
   return n;
@@ -2187,7 +2212,7 @@ void CPU::clock(bool shuffle) {
       for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) next = robNextTag(next);
       recoveryNextTag <= next;
       recoveryOffset <= (static_cast<uint32_t>(recoveryOffset) + RECOVERY_WIDTH);
-      if (static_cast<uint32_t>(recoveryBeat) == RECOVERY_BEATS - 1) recoveryActive <= 0;
+      if (uint32_t(recoveryOffset) + RECOVERY_WIDTH >= uint32_t(recoveryCount)) recoveryActive <= 0;
       else recoveryBeat <= (static_cast<uint32_t>(recoveryBeat) + 1u);
     }
   }

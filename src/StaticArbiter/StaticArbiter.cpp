@@ -80,8 +80,9 @@ void MemArbiter::wire_output() {
 // source tags itself. Selection is a folded priority chain; a grant gates on
 // destination admission and the squash point (squash suppresses valid only --
 // the selected idx/tag stay driven, consumers gate on valid).
-bool DispatchArbiter::readyOf(uint32_t tag) const {
-  return tag == InvalidPhy ? true : static_cast<bool>(prdReady[tag]);
+bool DispatchArbiter::readyOf(uint32_t tag, bool bypass) const {
+  return tag == InvalidPhy || (bypass ? static_cast<bool>(bypassReady[tag])
+                                      : static_cast<bool>(prdReady[tag]));
 }
 
 template <std::size_t N>
@@ -89,12 +90,12 @@ DispatchArbiter::WinResult DispatchArbiter::selectOldest(
     const std::array<Wire<1>, N> &busy,
     const std::array<Wire<PHY_TAG_WIDTH>, N> &src1Tag,
     const std::array<Wire<PHY_TAG_WIDTH>, N> &src2Tag,
-    const std::array<Wire<ROB_TAG_WIDTH>, N> &tags) const {
+    const std::array<Wire<ROB_TAG_WIDTH>, N> &tags, bool bypass) const {
   WinResult w{false, 0, 0};
   for (uint32_t i = 0; i < N; ++i) {
     bool req = static_cast<bool>(busy[i]) &&
-               readyOf(static_cast<uint32_t>(src1Tag[i])) &&
-               readyOf(static_cast<uint32_t>(src2Tag[i]));
+                readyOf(static_cast<uint32_t>(src1Tag[i]), bypass) &&
+                readyOf(static_cast<uint32_t>(src2Tag[i]), bypass);
     RobTag tag = static_cast<uint32_t>(tags[i]);
     if (req && (!w.v || ROB::isOlder(tag, w.tag)))
       w = {true, tag, i};
@@ -103,11 +104,11 @@ DispatchArbiter::WinResult DispatchArbiter::selectOldest(
 }
 
 DispatchArbiter::WinResult DispatchArbiter::aluSelect() const {
-  return selectOldest(intBusy, intSrc1Tag, intSrc2Tag, intRobTag);
+  return selectOldest(intBusy, intSrc1Tag, intSrc2Tag, intRobTag, true);
 }
 
 DispatchArbiter::WinResult DispatchArbiter::bruSelect() const {
-  return selectOldest(brBusy, brSrc1Tag, brSrc2Tag, brRobTag);
+  return selectOldest(brBusy, brSrc1Tag, brSrc2Tag, brRobTag, true);
 }
 
 DispatchArbiter::WinResult DispatchArbiter::mulSelect() const {
@@ -468,13 +469,13 @@ void IssueArbiter::wire_output() {
     for (int i = 0; i < INTEGERRS_CAP; i++)
       if (!static_cast<bool>(rs.intBusy[i]))
         return 1u;
-    return 0u;
+    return static_cast<bool>(rs.intReuseValid) ? 1u : 0u;
   };
   intSlot = [this]() -> uint32_t {
     for (int i = 0; i < INTEGERRS_CAP; i++)
       if (!static_cast<bool>(rs.intBusy[i]))
         return static_cast<uint32_t>(i);
-    return 0u;
+    return static_cast<bool>(rs.intReuseValid) ? static_cast<uint32_t>(rs.intReuseSlot) : 0u;
   };
   loadFree = [this]() -> uint32_t {
     for (int i = 0; i < LOADRS_CAP; i++)
@@ -516,13 +517,13 @@ void IssueArbiter::wire_output() {
     for (int i = 0; i < BRANCHRS_CAP; i++)
       if (!static_cast<bool>(rs.brBusy[i]))
         return 1u;
-    return 0u;
+    return static_cast<bool>(rs.brReuseValid) ? 1u : 0u;
   };
   brSlot = [this]() -> uint32_t {
     for (int i = 0; i < BRANCHRS_CAP; i++)
       if (!static_cast<bool>(rs.brBusy[i]))
         return static_cast<uint32_t>(i);
-    return 0u;
+    return static_cast<bool>(rs.brReuseValid) ? static_cast<uint32_t>(rs.brReuseSlot) : 0u;
   };
   mulFree = [this]() -> uint32_t {
     for (int i = 0; i < MULTIPLYRS_CAP; i++)

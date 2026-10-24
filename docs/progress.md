@@ -1,5 +1,15 @@
 # 模板状态
 
+当前默认单取指档已合入并与主树及真实RTL 1/1/2完成全部25例结果、独立RTL退休ISA、退休数/core/total一致。I$请求4、AXIFetch4、BTB32、RAS8；恢复按原存活ROB窗口终止，省略空beat。六perf IPC0.641865180802；vvadd/median/qsort主树与RTL完整运行段的已选关键事件MATCH。新默认golden严格复核25/25通过，期间126份生产输入与golden摘要不变。以下Load A/B/C数值是各阶段历史，不能代替当前值；双取指两档仍在隔离副本验收。
+
+Load B/C已合入：旧AGU对预留活动LQ行提前请求，完整SQ转发排除冗余读；合格Cache返回同拍参与原共享CDB，受阻正常捕获、授权只广播一次。B/C分别两树25/25＋8冒烟，真实CPU提前请求/完整转发/返回当拍广播及4份源码负向通过；两树模块专项含跨epoch年龄、错身份/取消、符号扩展、较老MUL争用后真实LQ捕获与下一拍只广播一次。当前六perf IPC0.600667659268；不是完整三端等价。
+
+Load A已合入：同步SRAM旧Load hit返回可与下一lookup重叠，Fill/Store优先和读旧态保持。默认两树断言25/25、8冒烟、实际CPU各14次重叠及两份串行化源码负向通过；新golden严格复核通过，六perf IPC0.580338190880。AGU提前请求/返回当拍CDB与前端同步仍待完成。
+
+RS阶段已合入：Integer/Branch各4项、两路授权WB旁路、满站离站复用，保持Register单写/统一sync。默认两软件断言构建25/25结果/退休/周期一致，原表留历史，新表按实测更新；专项/负向及仍未同步的RTL部分见[RS验收](../../../sync/RS-RTL-TO-SW-20261024.md)。
+
+2026-10-24新增独立`CPU_FETCH_WIDTH`/`CPU_DECODE_WIDTH`及FQ/IQ容量控制，默认保留原配置；旧`CPU_ISSUE_WIDTH`仅兼容前端设置，不表示双发射。RTL已加入可选真实双译码，但模板旧双取/共享CID算法及后端仍待按RTL同步，历史逐拍结论不覆盖当前工作区。实现与阶段验收见[实施记录](../../../sync/WIDTH-DECODE-SYNC-20261024.md)。
+
 模板迁移已完成，当前为全模块`work()/sync()`及跨模块Wire接线；不再混用Register与memcpy快照。
 最新RTL等价移植包括AXI主机8项信用、四槽恢复窗、D$共享取数、LQ raw读出扩展和字节重叠化简。
 
