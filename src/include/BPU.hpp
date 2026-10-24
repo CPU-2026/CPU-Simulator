@@ -57,6 +57,7 @@ struct BPUInputFetchCtx {
   Wire<1> fqCanAccept;  // FQ admission for at least one entry.
   Wire<1> fqCanAccept2; // FQ admission for a full 2-entry group.
   Wire<1> memCanAccept; // Request capacity and SRAM port allow a new fetch.
+  Wire<1> icacheHit, firstControl, secondControl;
 };
 struct BPUInputFetchTypeInfo {
   Wire<1> FetchValid;

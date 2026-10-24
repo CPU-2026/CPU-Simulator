@@ -17,6 +17,7 @@ python3 ../data/course.py smoke --binary /tmp/opencode/rv32-template/code
 
 断言版另建目录，追加`-DCMAKE_CXX_FLAGS=-D_DEBUG -DCMAKE_CXX_FLAGS_RELEASE='-O3 -UNDEBUG'`。
 golden只读[主树首张课程表](../docs/benchmarks.md)；25个课程镜像在`data/course-testcases/`。
+默认仍单取/单译码/双提交。可选`-DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=1/2`；2/1/2与2/2/2各25例已与主树及对应RTL结果/退休/core/total精确一致，但不能套用默认单取指golden。配置和边界见[宽度同步记录](../../sync/WIDTH-DECODE-SYNC-20261024.md)。
 程序SW写`0x80000000`，对应AXI B握手后退出；`RESULT_FULL=1`输出完整32-bit结果。
 
 ## 入口

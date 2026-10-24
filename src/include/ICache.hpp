@@ -12,6 +12,7 @@ constexpr int ICACHE_REQUEST_BITS = std::bit_width(FETCH_REQUEST_CAP - 1u);
 struct CacheLine {
   Register<1> valid;
   Register<ICACHE_TAG_WIDTH> tag;
+  Register<ICACHE_WORDS_PER_LINE> controlMask;
 };
 
 struct ICacheInput {
@@ -98,6 +99,15 @@ struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
            static_cast<uint32_t>(blocks[index].tag) ==
                 (addr >> ICACHE_TAG_SHIFT);
   }
+  static bool isControl(uint32_t raw) {
+    return (raw & 127u) == 0x63u || (raw & 127u) == 0x6fu ||
+           ((raw & 127u) == 0x67u && ((raw >> 12) & 7u) == 0);
+  }
+  bool firstControl(uint32_t pc) const {
+    return hit(pc) && ((uint32_t(blocks[(pc >> ICACHE_OFFSET_BITS) & ICACHE_INDEX_MASK].controlMask) >>
+                       ((pc >> 2) & ICACHE_WORD_INDEX_MASK)) & 1u);
+  }
+  bool secondControl(uint32_t pc) const { return !(pc & 4u) && firstControl(pc | 4u); }
   bool refillHit(uint32_t pc) const {
     return static_cast<bool>(fillFire) &&
            (pc & ~ICACHE_OFFSET_MASK) == static_cast<uint32_t>(lineReturn.lineAddr);

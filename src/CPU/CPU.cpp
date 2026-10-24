@@ -252,7 +252,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(BPUModule.outPredictedPC1);
   };
   ICacheModule.popConsume = [this]() {
-    return !static_cast<bool>(recoveryActive) && !static_cast<bool>(flushArbiter.needSquash) && ICacheModule.isReturnReady() &&
+    return frontendCanRun() && !static_cast<bool>(flushArbiter.needSquash) && ICacheModule.isReturnReady() &&
            !static_cast<bool>(FetchUnitModule.haltFetched) &&
            FQModule.canAccept(ICacheModule.returnValid1() ? 2u : 1u,
                               decodePopCount());
@@ -1912,13 +1912,16 @@ void CPU::wire() {
            static_cast<bool>(FetchUnitModule.haltSignal);
   };
   BPUModule.fetchCtx.fqCanAccept = [this]() {
-    return FQModule.canAccept(1u, decodePopCount()) ? 1u : 0u;
+    return FQModule.canAccept(ICacheModule.returnValid1() ? 2u : 1u, decodePopCount()) ? 1u : 0u;
   };
+  BPUModule.fetchCtx.icacheHit = [this]() { return ICacheModule.hit(uint32_t(FetchUnitModule.programCounter)); };
+  BPUModule.fetchCtx.firstControl = [this]() { return ICacheModule.firstControl(uint32_t(FetchUnitModule.programCounter)); };
+  BPUModule.fetchCtx.secondControl = [this]() { return ICacheModule.secondControl(uint32_t(FetchUnitModule.programCounter)); };
   BPUModule.fetchCtx.fqCanAccept2 = [this]() {
     return FQModule.canAccept(2u, decodePopCount()) ? 1u : 0u;
   };
   BPUModule.fetchCtx.memCanAccept = [this]() {
-    return !static_cast<bool>(recoveryActive) && !static_cast<bool>(exitCommitted) && static_cast<bool>(initialized) && (!ICacheModule.isRequestFull() || static_cast<bool>(ICacheModule.popConsume)) &&
+    return frontendCanRun() && static_cast<bool>(initialized) && (!ICacheModule.isRequestFull() || static_cast<bool>(ICacheModule.popConsume)) &&
            (!AXIFetchModule.isRequestFull() || ICacheModule.refillHit(
                static_cast<uint32_t>(FetchUnitModule.programCounter))) &&
            !static_cast<bool>(ICacheModule.readBlocked);
@@ -2170,7 +2173,15 @@ OperandWriteback CPU::grantedWritebacks() const {
   return ports;
 }
 
+bool CPU::frontendCanRun() const {
+  const uint32_t pc = uint32_t(FetchUnitModule.programCounter);
+  return !bool(exitCommitted) && (!bool(recoveryActive) ||
+      (FETCH_WIDTH == 2 && !legacyHaltEnabled && ICacheModule.hit(pc) &&
+       !ICacheModule.firstControl(pc) && !ICacheModule.secondControl(pc)));
+}
+
 unsigned CPU::decodePopCount() const {
+  if (!frontendCanRun() || bool(flushArbiter.needSquash)) return 0;
   const bool issueValid = static_cast<bool>(IssueArbiterModule.core.valid);
   const unsigned cap = DecodeUnitModule.pushCapacity(issueValid);
   const unsigned avail = FQModule.count();
@@ -2223,6 +2234,9 @@ void CPU::clock(bool shuffle) {
     AXIDataModule.work(); AXIBusModule.work(); SlaveModule.work();
     if (recovering && !frozen) {
       ICacheModule.work(); LQModule.work(); PRFModule.work(); BPUModule.work(); RATModule.work();
+      if (frontendCanRun()) {
+        FetchUnitModule.work(); FQModule.work(); DecodeUnitModule.work();
+      }
     }
     // Frozen sequential state holds, but ALL Wire caches still invalidate at
     // this edge. No transport/SRAM response is allowed to bypass sync().

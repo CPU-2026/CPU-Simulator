@@ -1,6 +1,7 @@
 # 后端
 
 当前恢复已按广播前原ROB存活窗口终止：每拍4槽，`offset + RECOVERY_WIDTH >= liveCount`时结束。同步基线读、至少一拍重放、取消后缀PRF回收、Register单写和所有模块统一sync保持；不再固定执行空beat。
+双取配置恢复期仅在当前PC为非控制流I$ hit时开放Fetch/FQ/IQ；RS/FU/ROB/FlushArbiter/CDB仍冻结，所有模块sync继续清Wire缓存。
 
 Load A/B/C已同步D$连续lookup、旧AGU结果提前请求及Load返回当拍CDB。返回须匹配旧活动FETCHING行/完整tag/未广播/flush，完整Store转发优先，按年龄竞争旧buffer和共享MUL/DIV；未授权仍正常捕获raw，下拍继续竞争，Register单写/统一sync保持。
 

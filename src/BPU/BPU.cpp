@@ -99,42 +99,31 @@ bool BPU::fetchAllowed() const {
 }
 
 // ---- fetch-stage prediction bundle (retired FetchDecision::build). ----
-//      lane0 = fetchCtx.pc, lane1 = pc+4 when FETCH_WIDTH == 2 and lane0
-//      falls through within the same I$ line. Both lanes share one checkpoint;
-//      the GHR advances per predicted-taken conditional in the group. ----
+//      I$ metadata truncates at the earliest CFI. One OLD predictor query is
+//      made for that CFI; both distinct CIDs capture the same OLD GHR. ----
 BPU::FetchGroup BPU::fetchGroup() const {
   FetchGroup g;
   if (!fetchAllowed())
     return g;
   const uint8_t ghr0 = static_cast<uint8_t>(static_cast<uint32_t>(dir.GHR));
   const uint32_t pc0 = static_cast<uint32_t>(fetchCtx.pc);
-  const PredictInfo p0 = predict(pc0, ghr0);
+  const bool second = FETCH_WIDTH == 2 && !legacyHaltEnabled && bool(fetchCtx.icacheHit) &&
+                      !(pc0 & 4u) && !bool(fetchCtx.firstControl);
+  const bool querySecond = second && bool(fetchCtx.secondControl);
+  const bool enabled = FETCH_WIDTH == 1 || legacyHaltEnabled || !bool(fetchCtx.icacheHit) ||
+                       bool(fetchCtx.firstControl) || querySecond;
+  const PredictInfo p0 = predict(pc0 | (querySecond ? 4u : 0u), ghr0);
   g.valid0 = true;
   g.pc0 = pc0;
-  g.predPC0 = static_cast<uint32_t>(p0.predictPC);
-  g.shift0 = p0.btbHit || p0.condSeen;
+  g.nextPC = enabled ? uint32_t(p0.predictPC) : pc0 + (second ? 8u : 4u);
+  g.predPC0 = second ? (pc0 | 4u) : g.nextPC;
+  g.shift0 = enabled && (p0.btbHit || p0.condSeen);
   g.shiftValue0 = p0.btbHit ? (p0.unconditional ? true : p0.taken)
                             : (p0.condSeen ? p0.taken : false);
-  const bool crossLine = (pc0 & 0x3Cu) == 0x3Cu;
-  if (FETCH_WIDTH >= 2 && !g.shift0 && !crossLine &&
-      static_cast<bool>(fetchCtx.fqCanAccept2)) {
-    const uint32_t pc1 = pc0 + 4u;
-    const uint8_t ghr1 = g.shift0
-                             ? static_cast<uint8_t>(
-                                   (((static_cast<uint32_t>(ghr0) << 1) |
-                                     (g.shiftValue0 ? 1u : 0u)) &
-                                    HISTORY_MASK))
-                             : ghr0;
-    const PredictInfo p1 = predict(pc1, ghr1);
+  if (second) {
     g.valid1 = true;
-    g.pc1 = pc1;
-    g.predPC1 = static_cast<uint32_t>(p1.predictPC);
-    g.shift1 = p1.btbHit || p1.condSeen;
-    g.shiftValue1 = p1.btbHit ? (p1.unconditional ? true : p1.taken)
-                              : (p1.condSeen ? p1.taken : false);
-    g.nextPC = g.predPC1;
-  } else {
-    g.nextPC = g.predPC0;
+    g.pc1 = pc0 | 4u;
+    g.predPC1 = g.nextPC;
   }
   return g;
 }
@@ -345,6 +334,7 @@ void BPU::work() {
     auto ckid = static_cast<uint32_t>(outCkptId);
     BPUSnapshot ckptSnap = snapshotCheckPoint();
     bpCkpt[ckid].GHR <= ckptSnap.GHR_snapshot;
+    if (bool(outValid1)) bpCkpt[(ckid + 1) & (CKPT_CAP - 1)].GHR <= ckptSnap.GHR_snapshot;
     if (static_cast<bool>(outShift))
       ghrLocal =
           static_cast<uint8_t>(((static_cast<uint32_t>(ghrLocal) << 1) |
@@ -355,7 +345,7 @@ void BPU::work() {
           static_cast<uint8_t>(((static_cast<uint32_t>(ghrLocal) << 1) |
                                 (static_cast<bool>(outShiftValue1) ? 1u : 0u)) &
                                HISTORY_MASK);
-    nextCkpt = (ckid + 1) & (CKPT_CAP - 1);
+    nextCkpt = (ckid + (bool(outValid1) ? 2u : 1u)) & (CKPT_CAP - 1);
   }
 
   // ---- Arch + speculative RAS local mirror (mirrors the main tree) ----

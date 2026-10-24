@@ -8,7 +8,7 @@
 
 ## 基本类型
 
-前端配置可直接用CMake cache：`-DCPU_FETCH_WIDTH=1 -DCPU_DECODE_WIDTH=2`，并可设置`CPU_FQ_ENTRIES`/`CPU_IQ_ENTRIES`。默认容量各为译码宽度两倍；仍单发射，旧`CPU_ISSUE_WIDTH`仅在未提供新宽度时兼容原前端设置。可选双取不是RTL等价实现，验收边界见[实施记录](../../../sync/WIDTH-DECODE-SYNC-20261024.md)。
+前端配置可直接用CMake cache：`-DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=2 -DCPU_COMMIT_WIDTH=2`，并可设置`CPU_FQ_ENTRIES`/`CPU_IQ_ENTRIES`。默认容量各为译码宽度两倍；仍单发射，旧`CPU_ISSUE_WIDTH`仅在未提供新宽度时兼容原前端设置。双取已同步RTL packet/逐指令CID/恢复期安全hit提前取指，2/1/2与2/2/2均25例三端周期相等；默认保持1/1/2，其他容量组合不能套用该结论，见[实施记录](../../../sync/WIDTH-DECODE-SYNC-20261024.md)。
 
 Integer/Branch默认各4项，容量参数为`CPU_INT_RS_ENTRIES`/`CPU_BRANCH_RS_ENTRIES`。只有这两池允许授权WB当拍派发及满站实际离站复用，其他池不能借此读取新的PRF值。
 
