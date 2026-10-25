@@ -127,6 +127,13 @@ bool ROB::isFull() const {
 bool ROB::isEmpty() const {
   return static_cast<uint32_t>(robHead) == static_cast<uint32_t>(next);
 }
+unsigned ROB::count() const {
+  return (static_cast<uint32_t>(next) - static_cast<uint32_t>(robHead)) &
+         ROB_TAG_MASK;
+}
+bool ROB::canAllocate(unsigned n) const {
+  return count() + n <= static_cast<unsigned>(ROB_CAP);
+}
 bool ROB::matchesTag(RobTag tag) const {
   const auto slot = robSlot(tag);
   const uint32_t headTag = static_cast<uint32_t>(robHead);
@@ -176,54 +183,68 @@ bool ROB::storeWillCommit() const {
 }
 
 void ROB::work() {
-  const bool issueValid = static_cast<bool>(issue.issueValid);
+  bool issueValid[ISSUE_WIDTH];
+  RobTag issueTag[ISSUE_WIDTH];
+  uint32_t issueSlotIdx[ISSUE_WIDTH];
+  {
+    RobTag t = static_cast<uint32_t>(next);
+    for (unsigned L = 0; L < ISSUE_WIDTH; ++L) {
+      issueValid[L] = static_cast<bool>(issue[L].issueValid);
+      issueTag[L] = t;
+      issueSlotIdx[L] = robSlot(t);
+      t = robNextTag(t);
+    }
+  }
+  bool anyIssue = false;
+  for (unsigned L = 0; L < ISSUE_WIDTH; ++L) anyIssue |= issueValid[L];
   const bool needSquash = static_cast<bool>(squash.needSquash);
   const RobTag squashTag = static_cast<uint32_t>(squash.SquashTag);
   const RobTag curHead = static_cast<uint32_t>(robHead);
   const RobTag curNext = static_cast<uint32_t>(next);
   const bool curEmpty = curHead == curNext;
   const unsigned retiring = commitCount();
-  const uint32_t issueSlot = robSlot(curNext);
 
   std::array<bool, ROB_CAP> readyWrite{};
   std::array<bool, ROB_CAP> readyData{};
 
   // The issue path must gate on fullness: a push into a full ROB silently
   // overwrites the head entry.
-  dark::debug::assert(!(issueValid && isFull()),
+  dark::debug::assert(!(issueValid[0] && isFull()),
                       "ROB push into a full ROB overwrites the head entry");
-  if (issueValid) {
-    const uint32_t q = issueSlot;
-    ROBqueue[q].tag <= curNext;
-    ROBqueue[q].type <= static_cast<uint32_t>(issue.entry.type);
-    readyWrite[q] = true;
-    readyData[q] = static_cast<bool>(issue.entry.isCommitReady);
-    ROBqueue[q].dest <= static_cast<uint32_t>(issue.entry.dest);
-    ROBqueue[q].halt <= static_cast<uint32_t>(issue.entry.halt);
-    ROBqueue[q].exception <= static_cast<uint32_t>(issue.entry.exception);
-    ROBqueue[q].isCall <= static_cast<uint32_t>(issue.entry.isCall);
-    ROBqueue[q].isRet <= static_cast<uint32_t>(issue.entry.isRet);
-    ROBqueue[q].ckptId <= static_cast<uint32_t>(issue.entry.ckptId);
-    ROBqueue[q].predictedPC <= static_cast<uint32_t>(issue.entry.predictedPC);
-    ROBqueue[q].pc <= static_cast<uint32_t>(issue.entry.pc);
-    ROBqueue[q].lqTailSnapshot <=
-        static_cast<uint32_t>(issue.entry.lqTailSnapshot);
-    ROBqueue[q].sqTailSnapshot <=
-        static_cast<uint32_t>(issue.entry.sqTailSnapshot);
-    ROBqueue[q].newPhy <= static_cast<uint32_t>(issue.entry.newPhy);
-    ROBqueue[q].oldPhy <= static_cast<uint32_t>(issue.entry.oldPhy);
+  for (unsigned L = 0; L < ISSUE_WIDTH; ++L) {
+    if (issueValid[L]) {
+      const uint32_t q = issueSlotIdx[L];
+      ROBqueue[q].tag <= issueTag[L];
+      ROBqueue[q].type <= static_cast<uint32_t>(issue[L].entry.type);
+      readyWrite[q] = true;
+      readyData[q] = static_cast<bool>(issue[L].entry.isCommitReady);
+      ROBqueue[q].dest <= static_cast<uint32_t>(issue[L].entry.dest);
+      ROBqueue[q].halt <= static_cast<uint32_t>(issue[L].entry.halt);
+      ROBqueue[q].exception <= static_cast<uint32_t>(issue[L].entry.exception);
+      ROBqueue[q].isCall <= static_cast<uint32_t>(issue[L].entry.isCall);
+      ROBqueue[q].isRet <= static_cast<uint32_t>(issue[L].entry.isRet);
+      ROBqueue[q].ckptId <= static_cast<uint32_t>(issue[L].entry.ckptId);
+      ROBqueue[q].predictedPC <= static_cast<uint32_t>(issue[L].entry.predictedPC);
+      ROBqueue[q].pc <= static_cast<uint32_t>(issue[L].entry.pc);
+      ROBqueue[q].lqTailSnapshot <=
+          static_cast<uint32_t>(issue[L].entry.lqTailSnapshot);
+      ROBqueue[q].sqTailSnapshot <=
+          static_cast<uint32_t>(issue[L].entry.sqTailSnapshot);
+      ROBqueue[q].newPhy <= static_cast<uint32_t>(issue[L].entry.newPhy);
+      ROBqueue[q].oldPhy <= static_cast<uint32_t>(issue[L].entry.oldPhy);
+    }
   }
 
   // Main-tree push happens before ready writes. Authenticate against the row
   // tag after that possible push, then collapse all ready sources to one port.
   auto matchesEffectiveTag = [&](RobTag tag) {
     const uint32_t slot = robSlot(tag);
-    if (slot >= ROB_CAP || (curEmpty && !issueValid))
+    if (slot >= ROB_CAP || (curEmpty && !anyIssue))
       return false;
-    const RobTag rowTag =
-        issueValid && slot == issueSlot
-            ? curNext
-            : static_cast<uint32_t>(ROBqueue[slot].tag);
+    RobTag rowTag = static_cast<uint32_t>(ROBqueue[slot].tag);
+    for (unsigned L = 0; L < ISSUE_WIDTH; ++L)
+      if (issueValid[L] && slot == issueSlotIdx[L])
+        rowTag = issueTag[L];
     return rowTag == tag;
   };
   auto markReady = [&](RobTag tag) {
@@ -261,8 +282,12 @@ void ROB::work() {
       ROBqueue[i].isCommitReady <= readyData[i];
   }
 
-  bool nextWrite = issueValid;
-  RobTag nextData = robNextTag(curNext);
+  unsigned issueCount = 0;
+  for (unsigned L = 0; L < ISSUE_WIDTH; ++L)
+    if (issueValid[L]) ++issueCount;
+  RobTag nextData = curNext;
+  for (unsigned L = 0; L < issueCount; ++L) nextData = robNextTag(nextData);
+  bool nextWrite = issueCount > 0;
   if (needSquash && matchesEffectiveTag(squashTag)) {
     nextWrite = true;
     nextData = robNextTag(squashTag);

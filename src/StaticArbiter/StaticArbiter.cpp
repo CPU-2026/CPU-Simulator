@@ -369,18 +369,15 @@ Operation decodeOp(uint32_t type, uint32_t opcode, uint32_t funct3,
 // Raw issue class of the decoded head, mirroring the former build() switch
 // (pre-resource-check). Note: I/U opcodes outside the handled families fall
 // to none (0), exactly like the original switch's fall-through default.
-uint32_t IssueArbiter::issueClass() const {
-  const uint32_t type = static_cast<uint32_t>(dec.type);
-  const uint32_t opcode = static_cast<uint32_t>(dec.opcode);
+uint32_t IssueArbiter::issueClass(const IssueArbInputDec &d) const {
+  const uint32_t type = static_cast<uint32_t>(d.type);
+  const uint32_t opcode = static_cast<uint32_t>(d.opcode);
   if (type == static_cast<uint32_t>(RISC_V::R))
     return 1u;
   if (type == static_cast<uint32_t>(RISC_V::M)) {
-    // funct3 0..3 -> multiplyRS (MUL branch, win 8); funct3 4..7 ->
-    // divideRS (DIV branch, win 9). The op is re-decoded here so the
-    // classification stays a pure function of the decoded head fields.
     const Operation mOp =
-        decodeOp(type, opcode, static_cast<uint32_t>(dec.funct3),
-                 static_cast<uint32_t>(dec.funct7));
+        decodeOp(type, opcode, static_cast<uint32_t>(d.funct3),
+                 static_cast<uint32_t>(d.funct7));
     return (mOp == Operation::DIV || mOp == Operation::DIVU ||
             mOp == Operation::REM || mOp == Operation::REMU)
                ? 9u
@@ -388,7 +385,7 @@ uint32_t IssueArbiter::issueClass() const {
   }
   if (type == static_cast<uint32_t>(RISC_V::I)) {
     if (opcode == 0x13u)
-      return static_cast<bool>(dec.isHalt) ? 2u : 1u;
+      return static_cast<bool>(d.isHalt) ? 2u : 1u;
     if (opcode == 0x67u)
       return 1u;
     if (opcode == 0x03u)
@@ -419,6 +416,16 @@ Operand IssueArbiter::resolveSrc(const IssueArbOperandView &v) const {
   return {.tag = static_cast<int>(static_cast<uint32_t>(v.phy)), .imm = 0};
 }
 
+Operand IssueArbiter::resolveSrcFwd(const IssueArbOperandView &v,
+                                    uint32_t srcReg, bool fwdAlloc,
+                                    uint32_t fwdDest, uint32_t fwdPhy) const {
+  // Intra-group RAW: lane1's source reads lane0's destination -> forward to
+  // lane0's new physical register (tag, not ready) instead of the old RAT.
+  if (fwdAlloc && srcReg == fwdDest)
+    return {.tag = static_cast<int>(fwdPhy), .imm = 0};
+  return resolveSrc(v);
+}
+
 // ---- Single issue port: `win` picks the branch, every Output field is a
 // small mux keyed on it. Failure paths reproduce the former default packet
 // field by field (IssuePacket{} defaults: valid=false, phy/oldPhy/newPhy=
@@ -427,23 +434,21 @@ Operand IssueArbiter::resolveSrc(const IssueArbOperandView &v) const {
 void IssueArbiter::wire_output() {
   // ---- branch parameters (pure functions of the decoded head) ----
   intImmAsVk = [this]() -> uint32_t {
-    // I-0x13 (non-halt) / JALR / Istar pass imm_as_vk=true; R passes false
-    if (issueClass() != 1u)
+    if (issueClass(dec) != 1u)
       return 0u;
     return static_cast<uint32_t>(dec.type) == static_cast<uint32_t>(RISC_V::R)
                ? 0u
                : 1u;
   };
   intIsControl = [this]() -> uint32_t {
-    return (issueClass() == 1u && static_cast<uint32_t>(dec.type) ==
+    return (issueClass(dec) == 1u && static_cast<uint32_t>(dec.type) ==
                                          static_cast<uint32_t>(RISC_V::I) &&
             static_cast<uint32_t>(dec.opcode) == 0x67u)
                ? 1u
                : 0u;
   };
   ujHasPC = [this]() -> uint32_t {
-    // AUIPC and JAL pass has_PC=true; LUI false
-    if (issueClass() != 6u)
+    if (issueClass(dec) != 6u)
       return 0u;
     const uint32_t type = static_cast<uint32_t>(dec.type);
     return (type == static_cast<uint32_t>(RISC_V::J) ||
@@ -452,7 +457,7 @@ void IssueArbiter::wire_output() {
                : 0u;
   };
   ujIsControl = [this]() -> uint32_t {
-    return (issueClass() == 6u && static_cast<uint32_t>(dec.type) ==
+    return (issueClass(dec) == 6u && static_cast<uint32_t>(dec.type) ==
                                          static_cast<uint32_t>(RISC_V::J))
                ? 1u
                : 0u;
@@ -463,8 +468,7 @@ void IssueArbiter::wire_output() {
         static_cast<uint32_t>(dec.funct3), static_cast<uint32_t>(dec.funct7)));
   };
 
-  // ---- first-fit free-slot scans over the busy bitmaps. free/slot split
-  // replaces the retired -1 sentinel. ----
+  // ---- first-fit free-slot scans over the busy bitmaps (lane0) ----
   intFree = [this]() -> uint32_t {
     for (int i = 0; i < INTEGERRS_CAP; i++)
       if (!static_cast<bool>(rs.intBusy[i]))
@@ -553,7 +557,7 @@ void IssueArbiter::wire_output() {
   win = [this]() -> uint32_t {
     if (static_cast<bool>(squashNeed) || static_cast<bool>(dec.isEmpty))
       return 0u;
-    const uint32_t cls = issueClass();
+    const uint32_t cls = issueClass(dec);
     const bool robFull = static_cast<bool>(rob.isFull);
     switch (cls) {
     case 1u: // INT
@@ -563,7 +567,6 @@ void IssueArbiter::wire_output() {
                  ? 1u
                  : 0u;
     case 2u: // HALT
-      // HALT still consumes a ROB slot: never push into a full ROB.
       return !robFull ? 2u : 0u;
     case 3u: // LOAD
       return (!robFull && !static_cast<bool>(lsq.lqFull) &&
@@ -586,9 +589,8 @@ void IssueArbiter::wire_output() {
                  ? 6u
                  : 0u;
     case 7u: // RV_INVALID
-      // The invalid row still consumes a ROB slot: never push when full.
       return !robFull ? 7u : 0u;
-    case 8u: // MUL (issue_Multiply: funct3 0..3)
+    case 8u: // MUL
       return (!robFull && static_cast<bool>(mulFree) &&
               (!static_cast<bool>(dec.allocDest) ||
                !static_cast<bool>(prf.freeListEmpty)) &&
@@ -596,7 +598,7 @@ void IssueArbiter::wire_output() {
                   static_cast<uint32_t>(Operation::OP_INVALID))
                  ? 8u
                  : 0u;
-    case 9u: // DIV (issue_Divide: funct3 4..7, dedicated divideRS)
+    case 9u: // DIV
       return (!robFull && static_cast<bool>(divFree) &&
               (!static_cast<bool>(dec.allocDest) ||
                !static_cast<bool>(prf.freeListEmpty)) &&
@@ -609,13 +611,11 @@ void IssueArbiter::wire_output() {
     }
   };
 
-  // ---- core fields ----
-  core.valid = [this]() -> uint32_t {
+  // ---- lane0 core fields ----
+  lane0.core.valid = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) != 0u ? 1u : 0u;
   };
-  core.allocDest = [this]() -> uint32_t {
-    // only the renaming branches (INT / LOAD / UJ / MUL / DIV) carry the
-    // allocDest block; HALT / STORE / BR / INVALID / none leave the default
+  lane0.core.allocDest = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w != 1u && w != 3u && w != 6u && w != 8u && w != 9u)
       return 0u;
@@ -624,7 +624,7 @@ void IssueArbiter::wire_output() {
                ? 1u
                : 0u;
   };
-  core.phy = [this]() -> uint32_t {
+  lane0.core.phy = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w != 1u && w != 3u && w != 6u && w != 8u && w != 9u)
       return static_cast<uint32_t>(InvalidPhy);
@@ -633,64 +633,53 @@ void IssueArbiter::wire_output() {
                ? static_cast<uint32_t>(prf.freePhy)
                : static_cast<uint32_t>(InvalidPhy);
   };
-  core.robTag = [this]() -> uint32_t {
+  lane0.core.robTag = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return ((w >= 1u && w <= 6u) || w == 8u || w == 9u)
                ? static_cast<uint32_t>(rob.nextTag)
                : 0u;
   };
-  core.isLoad = [this]() -> uint32_t {
+  lane0.core.isLoad = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 3u ? 1u : 0u;
   };
-  core.isStore = [this]() -> uint32_t {
+  lane0.core.isStore = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u ? 1u : 0u;
   };
-  core.isControl = [this]() -> uint32_t {
+  lane0.core.isControl = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return ((w == 1u && static_cast<bool>(intIsControl)) ||
             (w == 6u && static_cast<bool>(ujIsControl)))
                ? 1u
                : 0u;
   };
-  core.nBytes = [this]() -> uint32_t {
+  lane0.core.nBytes = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w != 3u && w != 4u)
       return 0u;
     const uint32_t f3 = static_cast<uint32_t>(dec.funct3);
-    if (w == 3u) { // load: 0->1, 1->2, 2->4, 4->1u, 5->2u, default 4
+    if (w == 3u) {
       switch (f3) {
-      case 0:
-        return 1u;
-      case 1:
-        return 2u;
-      case 2:
-        return 4u;
-      case 4:
-        return 1u;
-      case 5:
-        return 2u;
-      default:
-        return 4u;
+      case 0: return 1u;
+      case 1: return 2u;
+      case 2: return 4u;
+      case 4: return 1u;
+      case 5: return 2u;
+      default: return 4u;
       }
     }
-    switch (f3) { // store: 0->1, 1->2, 2->4, default 4
-    case 0:
-      return 1u;
-    case 1:
-      return 2u;
-    case 2:
-      return 4u;
-    default:
-      return 4u;
+    switch (f3) {
+    case 0: return 1u;
+    case 1: return 2u;
+    case 2: return 4u;
+    default: return 4u;
     }
   };
-  core.isUnsigned = [this]() -> uint32_t {
+  lane0.core.isUnsigned = [this]() -> uint32_t {
     const uint32_t f3 = static_cast<uint32_t>(dec.funct3);
     return (static_cast<uint32_t>(win) == 3u && (f3 == 4u || f3 == 5u)) ? 1u
                                                                         : 0u;
   };
-  core.pc = [this]() -> uint32_t {
-    // only the control-transfer paths store inst.pc into the packet
+  lane0.core.pc = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return ((w == 1u && static_cast<bool>(intIsControl)) ||
             (w == 6u && static_cast<bool>(ujIsControl)))
@@ -698,300 +687,294 @@ void IssueArbiter::wire_output() {
                : 0u;
   };
 
-  // ---- select group (RS sel contract: has-gated, slots 0-default) ----
-  // hasInteger covers BOTH integer issuers: INT (1) and UJ (6) -- the former
-  // issue_UandJ also pushes into the integer RS.
-  select.hasInteger = [this]() -> uint32_t {
+  // ---- lane0 select group ----
+  lane0.select.hasInteger = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return (w == 1u || w == 6u) ? 1u : 0u;
   };
-  select.hasLoad = [this]() -> uint32_t {
+  lane0.select.hasLoad = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 3u ? 1u : 0u;
   };
-  select.hasStore = [this]() -> uint32_t {
+  lane0.select.hasStore = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u ? 1u : 0u;
   };
-  select.hasBranch = [this]() -> uint32_t {
+  lane0.select.hasBranch = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 5u ? 1u : 0u;
   };
-  select.hasMultiply = [this]() -> uint32_t {
+  lane0.select.hasMultiply = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 8u ? 1u : 0u;
   };
-  select.integerSlot = [this]() -> uint32_t {
+  lane0.select.integerSlot = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return (w == 1u || w == 6u) ? static_cast<uint32_t>(intSlot) : 0u;
   };
-  select.loadSlot = [this]() -> uint32_t {
+  lane0.select.loadSlot = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 3u ? static_cast<uint32_t>(loadSlot)
                                             : 0u;
   };
-  select.storeAddrSlot = [this]() -> uint32_t {
+  lane0.select.storeAddrSlot = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u ? static_cast<uint32_t>(saSlot)
                                             : 0u;
   };
-  select.storeValueSlot = [this]() -> uint32_t {
+  lane0.select.storeValueSlot = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u ? static_cast<uint32_t>(svSlot)
                                             : 0u;
   };
-  select.branchSlot = [this]() -> uint32_t {
+  lane0.select.branchSlot = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 5u ? static_cast<uint32_t>(brSlot)
                                             : 0u;
   };
-  select.multiplySlot = [this]() -> uint32_t {
+  lane0.select.multiplySlot = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 8u ? static_cast<uint32_t>(mulSlot)
                                             : 0u;
   };
-  select.hasDivide = [this]() -> uint32_t {
+  lane0.select.hasDivide = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 9u ? 1u : 0u;
   };
-  select.divideSlot = [this]() -> uint32_t {
+  lane0.select.divideSlot = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 9u ? static_cast<uint32_t>(divSlot)
                                             : 0u;
   };
 
-  // ---- intP payload (INT and UJ branches share the integer RS push) ----
-  intP.op = [this]() -> uint32_t {
+  // ---- lane0 intP payload ----
+  lane0.intP.op = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return (w == 1u || w == 6u)
                ? static_cast<uint32_t>(opDec)
                : static_cast<uint32_t>(Operation::OP_INVALID);
   };
-  intP.s1Tag = [this]() -> uint32_t {
-    // INT: resolveSrc(rs1). UJ: has_PC writes InvPhy itself, !has_PC leaves
-    // the default -- both are InvPhy, so no extra mux needed here.
+  lane0.intP.s1Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 1u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s1).tag);
   };
-  intP.s1Imm = [this]() -> uint32_t {
+  lane0.intP.s1Imm = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w == 1u)
       return static_cast<uint32_t>(resolveSrc(rat.s1).imm);
-    if (w == 6u) // issue_UandJ: has_PC -> pc as s1 immediate
-      return static_cast<bool>(ujHasPC)
-                 ? static_cast<uint32_t>(dec.pc)
-                 : 0u;
+    if (w == 6u)
+      return static_cast<bool>(ujHasPC) ? static_cast<uint32_t>(dec.pc) : 0u;
     return 0u;
   };
-  intP.s2Tag = [this]() -> uint32_t {
+  lane0.intP.s2Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 1u)
       return static_cast<uint32_t>(InvalidPhy);
     if (static_cast<bool>(intImmAsVk))
       return static_cast<uint32_t>(InvalidPhy);
-    // every INT call site sets exactly one of imm_as_vk / has_rs2
     return static_cast<uint32_t>(resolveSrc(rat.s2).tag);
   };
-  intP.s2Imm = [this]() -> uint32_t {
+  lane0.intP.s2Imm = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w == 1u) {
       if (static_cast<bool>(intImmAsVk))
         return static_cast<uint32_t>(dec.imm);
       return static_cast<uint32_t>(resolveSrc(rat.s2).imm);
     }
-    if (w == 6u) // issue_UandJ: s2 is always the immediate
+    if (w == 6u)
       return static_cast<uint32_t>(dec.imm);
     return 0u;
   };
-  intP.robTag = [this]() -> uint32_t {
+  lane0.intP.robTag = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return (w == 1u || w == 6u) ? static_cast<uint32_t>(rob.nextTag) : 0u;
   };
 
-  // ---- loadP payload (LOAD branch) ----
-  loadP.op = [this]() -> uint32_t {
+  // ---- lane0 loadP payload ----
+  lane0.loadP.op = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 3u
                ? static_cast<uint32_t>(opDec)
                : static_cast<uint32_t>(Operation::OP_INVALID);
   };
-  loadP.s1Tag = [this]() -> uint32_t {
+  lane0.loadP.s1Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 3u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s1).tag);
   };
-  loadP.s1Imm = [this]() -> uint32_t {
+  lane0.loadP.s1Imm = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 3u)
       return 0u;
     return static_cast<uint32_t>(resolveSrc(rat.s1).imm);
   };
-  loadP.s2Tag = [this]() -> uint32_t {
-    return static_cast<uint32_t>(InvalidPhy); // unconditional in issue_Load
+  lane0.loadP.s2Tag = [this]() -> uint32_t {
+    return static_cast<uint32_t>(InvalidPhy);
   };
-  loadP.s2Imm = [this]() -> uint32_t {
+  lane0.loadP.s2Imm = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 3u ? static_cast<uint32_t>(dec.imm)
                                             : 0u;
   };
-  loadP.robTag = [this]() -> uint32_t {
+  lane0.loadP.robTag = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 3u
                ? static_cast<uint32_t>(rob.nextTag)
                : 0u;
   };
-  loadP.memIndex = [this]() -> uint32_t {
-    return static_cast<uint32_t>(win) == 3u ? (static_cast<uint32_t>(lsq.lqTail) & LQ_MASK)
-                                            : 0u;
+  lane0.loadP.memIndex = [this]() -> uint32_t {
+    return static_cast<uint32_t>(win) == 3u
+               ? (static_cast<uint32_t>(lsq.lqTail) & LQ_MASK)
+               : 0u;
   };
 
-  // ---- saP / svP payloads (STORE branch) ----
-  saP.op = [this]() -> uint32_t {
+  // ---- lane0 saP / svP payloads ----
+  lane0.saP.op = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u
                ? static_cast<uint32_t>(opDec)
                : static_cast<uint32_t>(Operation::OP_INVALID);
   };
-  saP.s1Tag = [this]() -> uint32_t {
+  lane0.saP.s1Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 4u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s1).tag);
   };
-  saP.s1Imm = [this]() -> uint32_t {
+  lane0.saP.s1Imm = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 4u)
       return 0u;
     return static_cast<uint32_t>(resolveSrc(rat.s1).imm);
   };
-  saP.s2Tag = [this]() -> uint32_t {
-    return static_cast<uint32_t>(InvalidPhy); // unconditional in issue_Store
+  lane0.saP.s2Tag = [this]() -> uint32_t {
+    return static_cast<uint32_t>(InvalidPhy);
   };
-  saP.s2Imm = [this]() -> uint32_t {
+  lane0.saP.s2Imm = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u ? static_cast<uint32_t>(dec.imm)
                                             : 0u;
   };
-  saP.robTag = [this]() -> uint32_t {
+  lane0.saP.robTag = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u
                ? static_cast<uint32_t>(rob.nextTag)
                : 0u;
   };
-  saP.memIndex = [this]() -> uint32_t {
+  lane0.saP.memIndex = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u
                ? ((static_cast<uint32_t>(lsq.sqTail) & SQ_MASK) |
                   static_cast<uint32_t>(MEM_STORE_BIT))
                : 0u;
   };
-  svP.dataTag = [this]() -> uint32_t {
+  lane0.svP.dataTag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 4u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s2).tag);
   };
-  svP.dataImm = [this]() -> uint32_t {
+  lane0.svP.dataImm = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 4u)
       return 0u;
     return static_cast<uint32_t>(resolveSrc(rat.s2).imm);
   };
-  svP.robTag = [this]() -> uint32_t {
+  lane0.svP.robTag = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u
                ? static_cast<uint32_t>(rob.nextTag)
                : 0u;
   };
-  svP.memIndex = [this]() -> uint32_t {
+  lane0.svP.memIndex = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 4u
                ? ((static_cast<uint32_t>(lsq.sqTail) & SQ_MASK) |
                   static_cast<uint32_t>(MEM_STORE_BIT))
                : 0u;
   };
 
-  // ---- brP payload (BR branch) ----
-  brP.op = [this]() -> uint32_t {
+  // ---- lane0 brP payload ----
+  lane0.brP.op = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 5u
                ? static_cast<uint32_t>(opDec)
                : static_cast<uint32_t>(Operation::OP_INVALID);
   };
-  brP.s1Tag = [this]() -> uint32_t {
+  lane0.brP.s1Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 5u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s1).tag);
   };
-  brP.s1Imm = [this]() -> uint32_t {
+  lane0.brP.s1Imm = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 5u)
       return 0u;
     return static_cast<uint32_t>(resolveSrc(rat.s1).imm);
   };
-  brP.s2Tag = [this]() -> uint32_t {
+  lane0.brP.s2Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 5u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s2).tag);
   };
-  brP.s2Imm = [this]() -> uint32_t {
+  lane0.brP.s2Imm = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 5u)
       return 0u;
     return static_cast<uint32_t>(resolveSrc(rat.s2).imm);
   };
-  brP.robTag = [this]() -> uint32_t {
+  lane0.brP.robTag = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 5u
                ? static_cast<uint32_t>(rob.nextTag)
                : 0u;
   };
-  brP.imm = [this]() -> uint32_t {
+  lane0.brP.imm = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 5u ? static_cast<uint32_t>(dec.imm)
                                             : 0u;
   };
-  brP.pc = [this]() -> uint32_t {
+  lane0.brP.pc = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 5u ? static_cast<uint32_t>(dec.pc)
                                             : 0u;
   };
 
-  // ---- mulP payload (MUL branch: two register sources, dest rename) ----
-  mulP.op = [this]() -> uint32_t {
+  // ---- lane0 mulP payload ----
+  lane0.mulP.op = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 8u
                ? static_cast<uint32_t>(opDec)
                : static_cast<uint32_t>(Operation::OP_INVALID);
   };
-  mulP.s1Tag = [this]() -> uint32_t {
+  lane0.mulP.s1Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 8u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s1).tag);
   };
-  mulP.s1Imm = [this]() -> uint32_t {
+  lane0.mulP.s1Imm = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 8u)
       return 0u;
     return static_cast<uint32_t>(resolveSrc(rat.s1).imm);
   };
-  mulP.s2Tag = [this]() -> uint32_t {
+  lane0.mulP.s2Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 8u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s2).tag);
   };
-  mulP.s2Imm = [this]() -> uint32_t {
+  lane0.mulP.s2Imm = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 8u)
       return 0u;
     return static_cast<uint32_t>(resolveSrc(rat.s2).imm);
   };
-  mulP.robTag = [this]() -> uint32_t {
+  lane0.mulP.robTag = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 8u
                ? static_cast<uint32_t>(rob.nextTag)
                : 0u;
   };
 
-  // ---- divP payload (DIV branch: identical shape to mulP) ----
-  divP.op = [this]() -> uint32_t {
+  // ---- lane0 divP payload ----
+  lane0.divP.op = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 9u
                ? static_cast<uint32_t>(opDec)
                : static_cast<uint32_t>(Operation::OP_INVALID);
   };
-  divP.s1Tag = [this]() -> uint32_t {
+  lane0.divP.s1Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 9u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s1).tag);
   };
-  divP.s1Imm = [this]() -> uint32_t {
+  lane0.divP.s1Imm = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 9u)
       return 0u;
     return static_cast<uint32_t>(resolveSrc(rat.s1).imm);
   };
-  divP.s2Tag = [this]() -> uint32_t {
+  lane0.divP.s2Tag = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 9u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(resolveSrc(rat.s2).tag);
   };
-  divP.s2Imm = [this]() -> uint32_t {
+  lane0.divP.s2Imm = [this]() -> uint32_t {
     if (static_cast<uint32_t>(win) != 9u)
       return 0u;
     return static_cast<uint32_t>(resolveSrc(rat.s2).imm);
   };
-  divP.robTag = [this]() -> uint32_t {
+  lane0.divP.robTag = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 9u
                ? static_cast<uint32_t>(rob.nextTag)
                : 0u;
   };
 
-  // ---- robEntry group ----
-  robEntry.type = [this]() -> uint32_t {
+  // ---- lane0 robEntry group ----
+  lane0.robEntry.type = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w == 1u)
       return static_cast<bool>(intIsControl)
@@ -1005,24 +988,22 @@ void IssueArbiter::wire_output() {
       return static_cast<uint32_t>(ROBType::STORE);
     if (w == 5u)
       return static_cast<uint32_t>(ROBType::BRANCH);
-    return static_cast<uint32_t>(ROBType::REGISTER); // 0/2/3/7/8/9 default
+    return static_cast<uint32_t>(ROBType::REGISTER);
   };
-  robEntry.isCommitReady = [this]() -> uint32_t {
+  lane0.robEntry.isCommitReady = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 2u || static_cast<uint32_t>(win) == 7u ? 1u : 0u;
   };
-  robEntry.dest = [this]() -> uint32_t {
+  lane0.robEntry.dest = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return (w == 1u || w == 2u || w == 3u || w == 6u || w == 8u || w == 9u)
                ? static_cast<uint32_t>(dec.rd)
                : 0u;
   };
-  robEntry.halt = [this]() -> uint32_t {
+  lane0.robEntry.halt = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 2u ? 1u : 0u;
   };
-  robEntry.exception = [this]() -> uint32_t { return static_cast<uint32_t>(win) == 7u; };
-  robEntry.isCall = [this]() -> uint32_t {
-    // RISC-V RAS hints (mirrors the main tree): link registers x1/x5.
-    // JALR call: rd is a link register; direct JAL call: rd is a link register.
+  lane0.robEntry.exception = [this]() -> uint32_t { return static_cast<uint32_t>(win) == 7u; };
+  lane0.robEntry.isCall = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     const uint32_t rd = static_cast<uint32_t>(dec.rd);
     const bool rdLink = (rd == 1u || rd == 5u);
@@ -1032,8 +1013,7 @@ void IssueArbiter::wire_output() {
         (w == 6u && static_cast<bool>(ujIsControl) && rdLink);
     return (jalrCall || jalCall) ? 1u : 0u;
   };
-  robEntry.isRet = [this]() -> uint32_t {
-    // User JALR RAS contract: link rs1 pops independently of link rd push.
+  lane0.robEntry.isRet = [this]() -> uint32_t {
     const uint32_t rs1 = static_cast<uint32_t>(dec.rs1);
     const bool rs1Link = (rs1 == 1u || rs1 == 5u);
     return (static_cast<uint32_t>(win) == 1u &&
@@ -1041,29 +1021,25 @@ void IssueArbiter::wire_output() {
                ? 1u
                : 0u;
   };
-  robEntry.ckptId = [this]() -> uint32_t {
+  lane0.robEntry.ckptId = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return (w >= 1u && w <= 9u)
                ? static_cast<uint32_t>(dec.ckptId)
                : 0u;
   };
-  robEntry.predictedPC = [this]() -> uint32_t {
-    // INT / HALT / BR / UJ / MUL / DIV retain predictedPC (LOAD/STORE
-    // leave 0)
+  lane0.robEntry.predictedPC = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return (w == 1u || w == 2u || w == 5u || w == 6u || w == 7u || w == 8u || w == 9u)
                ? static_cast<uint32_t>(dec.predictedPC)
                : 0u;
   };
-  robEntry.pc = [this]() -> uint32_t {
+  lane0.robEntry.pc = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return (w >= 1u && w <= 9u)
                ? static_cast<uint32_t>(dec.pc)
                : 0u;
   };
-  robEntry.lqTailSnapshot = [this]() -> uint32_t {
-    // LOAD keeps the include-self LQ recovery boundary.
-    // INT/UJ/BR/MUL/DIV and STORE use the raw LQ tail.
+  lane0.robEntry.lqTailSnapshot = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w == 1u || w == 4u || w == 5u || w == 6u || w == 8u || w == 9u)
       return static_cast<uint32_t>(lsq.lqTail);
@@ -1071,8 +1047,7 @@ void IssueArbiter::wire_output() {
       return static_cast<uint32_t>(lsq.lqTailSnapshot);
     return 0u;
   };
-  robEntry.sqTailSnapshot = [this]() -> uint32_t {
-    // STORE uses the include-self SQ snapshot; all other issuers the raw tail
+  lane0.robEntry.sqTailSnapshot = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w == 1u || w == 3u || w == 5u || w == 6u || w == 8u || w == 9u)
       return static_cast<uint32_t>(lsq.sqTail);
@@ -1080,9 +1055,7 @@ void IssueArbiter::wire_output() {
       return static_cast<uint32_t>(lsq.sqTailSnapshot);
     return 0u;
   };
-  robEntry.newPhy = [this]() -> uint32_t {
-    // renaming branches only (INT / LOAD / UJ / MUL / DIV); STORE/BR/HALT
-    // leave InvalidPhy
+  lane0.robEntry.newPhy = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w != 1u && w != 3u && w != 6u && w != 8u && w != 9u)
       return static_cast<uint32_t>(InvalidPhy);
@@ -1091,9 +1064,7 @@ void IssueArbiter::wire_output() {
                ? static_cast<uint32_t>(prf.freePhy)
                : static_cast<uint32_t>(InvalidPhy);
   };
-  robEntry.oldPhy = [this]() -> uint32_t {
-    // only INT / LOAD / UJ / MUL / DIV assign oldPhy (verbatim per-branch
-    // assignments)
+  lane0.robEntry.oldPhy = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     if (w != 1u && w != 3u && w != 6u && w != 8u && w != 9u)
       return static_cast<uint32_t>(InvalidPhy);
@@ -1101,4 +1072,729 @@ void IssueArbiter::wire_output() {
                ? static_cast<uint32_t>(rat.rdOldPhy)
                : static_cast<uint32_t>(InvalidPhy);
   };
+
+  // ===================== lane 1 (ISSUE_WIDTH == 2) =====================
+  if constexpr (ISSUE_WIDTH >= 2) {
+    // branch parameters for dec1
+    intImmAsVk1 = [this]() -> uint32_t {
+      if (issueClass(dec1) != 1u)
+        return 0u;
+      return static_cast<uint32_t>(dec1.type) == static_cast<uint32_t>(RISC_V::R)
+                 ? 0u
+                 : 1u;
+    };
+    intIsControl1 = [this]() -> uint32_t {
+      return (issueClass(dec1) == 1u && static_cast<uint32_t>(dec1.type) ==
+                                            static_cast<uint32_t>(RISC_V::I) &&
+              static_cast<uint32_t>(dec1.opcode) == 0x67u)
+                 ? 1u
+                 : 0u;
+    };
+    ujHasPC1 = [this]() -> uint32_t {
+      if (issueClass(dec1) != 6u)
+        return 0u;
+      const uint32_t type = static_cast<uint32_t>(dec1.type);
+      return (type == static_cast<uint32_t>(RISC_V::J) ||
+              static_cast<uint32_t>(dec1.opcode) == 0x17u)
+                 ? 1u
+                 : 0u;
+    };
+    ujIsControl1 = [this]() -> uint32_t {
+      return (issueClass(dec1) == 6u && static_cast<uint32_t>(dec1.type) ==
+                                            static_cast<uint32_t>(RISC_V::J))
+                 ? 1u
+                 : 0u;
+    };
+    opDec1 = [this]() -> uint32_t {
+      return static_cast<uint32_t>(decodeOp(
+          static_cast<uint32_t>(dec1.type), static_cast<uint32_t>(dec1.opcode),
+          static_cast<uint32_t>(dec1.funct3), static_cast<uint32_t>(dec1.funct7)));
+    };
+
+    // second-lane free-slot scans (a free slot != lane0's chosen slot, when
+    // lane0 actually consumed that pool).
+    intFree1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 1u || static_cast<uint32_t>(win) == 6u;
+      for (int i = 0; i < INTEGERRS_CAP; i++)
+        if (!static_cast<bool>(rs.intBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(intSlot)))
+          return 1u;
+      return 0u;
+    };
+    intSlot1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 1u || static_cast<uint32_t>(win) == 6u;
+      for (int i = 0; i < INTEGERRS_CAP; i++)
+        if (!static_cast<bool>(rs.intBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(intSlot)))
+          return static_cast<uint32_t>(i);
+      return 0u;
+    };
+    loadFree1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 3u;
+      for (int i = 0; i < LOADRS_CAP; i++)
+        if (!static_cast<bool>(rs.loadBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(loadSlot)))
+          return 1u;
+      return 0u;
+    };
+    loadSlot1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 3u;
+      for (int i = 0; i < LOADRS_CAP; i++)
+        if (!static_cast<bool>(rs.loadBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(loadSlot)))
+          return static_cast<uint32_t>(i);
+      return 0u;
+    };
+    saFree1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 4u;
+      for (int i = 0; i < STORERS_CAP; i++)
+        if (!static_cast<bool>(rs.saBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(saSlot)))
+          return 1u;
+      return 0u;
+    };
+    saSlot1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 4u;
+      for (int i = 0; i < STORERS_CAP; i++)
+        if (!static_cast<bool>(rs.saBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(saSlot)))
+          return static_cast<uint32_t>(i);
+      return 0u;
+    };
+    svFree1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 4u;
+      for (int i = 0; i < STORERS_CAP; i++)
+        if (!static_cast<bool>(rs.svBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(svSlot)))
+          return 1u;
+      return 0u;
+    };
+    svSlot1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 4u;
+      for (int i = 0; i < STORERS_CAP; i++)
+        if (!static_cast<bool>(rs.svBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(svSlot)))
+          return static_cast<uint32_t>(i);
+      return 0u;
+    };
+    brFree1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 5u;
+      for (int i = 0; i < BRANCHRS_CAP; i++)
+        if (!static_cast<bool>(rs.brBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(brSlot)))
+          return 1u;
+      return 0u;
+    };
+    brSlot1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 5u;
+      for (int i = 0; i < BRANCHRS_CAP; i++)
+        if (!static_cast<bool>(rs.brBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(brSlot)))
+          return static_cast<uint32_t>(i);
+      return 0u;
+    };
+    mulFree1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 8u;
+      for (int i = 0; i < MULTIPLYRS_CAP; i++)
+        if (!static_cast<bool>(rs.mulBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(mulSlot)))
+          return 1u;
+      return 0u;
+    };
+    mulSlot1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 8u;
+      for (int i = 0; i < MULTIPLYRS_CAP; i++)
+        if (!static_cast<bool>(rs.mulBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(mulSlot)))
+          return static_cast<uint32_t>(i);
+      return 0u;
+    };
+    divFree1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 9u;
+      for (int i = 0; i < DIVIDERS_CAP; i++)
+        if (!static_cast<bool>(rs.divBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(divSlot)))
+          return 1u;
+      return 0u;
+    };
+    divSlot1 = [this]() -> uint32_t {
+      const bool l0 = static_cast<uint32_t>(win) == 9u;
+      for (int i = 0; i < DIVIDERS_CAP; i++)
+        if (!static_cast<bool>(rs.divBusy[i]) &&
+            (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(divSlot)))
+          return static_cast<uint32_t>(i);
+      return 0u;
+    };
+
+    win1 = [this]() -> uint32_t {
+      // lane1 issues only when lane0 issued (in-order) and its own resources
+      // (after lane0's allocation) are available.
+      if (static_cast<uint32_t>(win) == 0u || static_cast<bool>(dec1.isEmpty))
+        return 0u;
+      const uint32_t cls = issueClass(dec1);
+      const bool robFull1 = static_cast<bool>(rob.isFull1);
+      switch (cls) {
+      case 1u: // INT
+        return (!robFull1 && static_cast<bool>(intFree1) &&
+                (!static_cast<bool>(dec1.allocDest) ||
+                 !static_cast<bool>(prf.freeListEmpty1)))
+                   ? 1u
+                   : 0u;
+      case 2u: // HALT
+        return !robFull1 ? 2u : 0u;
+      case 3u: // LOAD
+        return (!robFull1 && !static_cast<bool>(lsq.lqFull1) &&
+                static_cast<bool>(loadFree1) &&
+                (!static_cast<bool>(dec1.allocDest) ||
+                 !static_cast<bool>(prf.freeListEmpty1)))
+                   ? 3u
+                   : 0u;
+      case 4u: // STORE
+        return (!robFull1 && !static_cast<bool>(lsq.sqFull1) &&
+                static_cast<bool>(saFree1) && static_cast<bool>(svFree1))
+                   ? 4u
+                   : 0u;
+      case 5u: // BR
+        return (!robFull1 && static_cast<bool>(brFree1)) ? 5u : 0u;
+      case 6u: // UJ
+        return (!robFull1 && static_cast<bool>(intFree1) &&
+                (!static_cast<bool>(dec1.allocDest) ||
+                 !static_cast<bool>(prf.freeListEmpty1)))
+                   ? 6u
+                   : 0u;
+      case 7u: // RV_INVALID
+        return !robFull1 ? 7u : 0u;
+      case 8u: // MUL
+        return (!robFull1 && static_cast<bool>(mulFree1) &&
+                (!static_cast<bool>(dec1.allocDest) ||
+                 !static_cast<bool>(prf.freeListEmpty1)) &&
+                static_cast<uint32_t>(opDec1) !=
+                    static_cast<uint32_t>(Operation::OP_INVALID))
+                   ? 8u
+                   : 0u;
+      case 9u: // DIV
+        return (!robFull1 && static_cast<bool>(divFree1) &&
+                (!static_cast<bool>(dec1.allocDest) ||
+                 !static_cast<bool>(prf.freeListEmpty1)) &&
+                static_cast<uint32_t>(opDec1) !=
+                    static_cast<uint32_t>(Operation::OP_INVALID))
+                   ? 9u
+                   : 0u;
+      default:
+        return 0u;
+      }
+    };
+
+    // lane0's forwarding context is read directly via lane0.core / dec.
+
+    // ---- lane1 core fields ----
+    lane1.core.valid = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) != 0u ? 1u : 0u;
+    };
+    lane1.core.allocDest = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w != 1u && w != 3u && w != 6u && w != 8u && w != 9u)
+        return 0u;
+      return (static_cast<bool>(dec1.allocDest) &&
+              !static_cast<bool>(prf.freeListEmpty1))
+                 ? 1u
+                 : 0u;
+    };
+    lane1.core.phy = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w != 1u && w != 3u && w != 6u && w != 8u && w != 9u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return (static_cast<bool>(dec1.allocDest) &&
+              !static_cast<bool>(prf.freeListEmpty1))
+                 ? static_cast<uint32_t>(prf.freePhy1)
+                 : static_cast<uint32_t>(InvalidPhy);
+    };
+    lane1.core.robTag = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return ((w >= 1u && w <= 6u) || w == 8u || w == 9u)
+                 ? static_cast<uint32_t>(rob.nextTag1)
+                 : 0u;
+    };
+    lane1.core.isLoad = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 3u ? 1u : 0u;
+    };
+    lane1.core.isStore = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u ? 1u : 0u;
+    };
+    lane1.core.isControl = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return ((w == 1u && static_cast<bool>(intIsControl1)) ||
+              (w == 6u && static_cast<bool>(ujIsControl1)))
+                 ? 1u
+                 : 0u;
+    };
+    lane1.core.nBytes = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w != 3u && w != 4u)
+        return 0u;
+      const uint32_t f3 = static_cast<uint32_t>(dec1.funct3);
+      if (w == 3u) {
+        switch (f3) {
+        case 0: return 1u;
+        case 1: return 2u;
+        case 2: return 4u;
+        case 4: return 1u;
+        case 5: return 2u;
+        default: return 4u;
+        }
+      }
+      switch (f3) {
+      case 0: return 1u;
+      case 1: return 2u;
+      case 2: return 4u;
+      default: return 4u;
+      }
+    };
+    lane1.core.isUnsigned = [this]() -> uint32_t {
+      const uint32_t f3 = static_cast<uint32_t>(dec1.funct3);
+      return (static_cast<uint32_t>(win1) == 3u && (f3 == 4u || f3 == 5u)) ? 1u
+                                                                          : 0u;
+    };
+    lane1.core.pc = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return ((w == 1u && static_cast<bool>(intIsControl1)) ||
+              (w == 6u && static_cast<bool>(ujIsControl1)))
+                 ? static_cast<uint32_t>(dec1.pc)
+                 : 0u;
+    };
+
+    // ---- lane1 select group ----
+    lane1.select.hasInteger = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return (w == 1u || w == 6u) ? 1u : 0u;
+    };
+    lane1.select.hasLoad = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 3u ? 1u : 0u;
+    };
+    lane1.select.hasStore = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u ? 1u : 0u;
+    };
+    lane1.select.hasBranch = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 5u ? 1u : 0u;
+    };
+    lane1.select.hasMultiply = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 8u ? 1u : 0u;
+    };
+    lane1.select.integerSlot = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return (w == 1u || w == 6u) ? static_cast<uint32_t>(intSlot1) : 0u;
+    };
+    lane1.select.loadSlot = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 3u ? static_cast<uint32_t>(loadSlot1)
+                                               : 0u;
+    };
+    lane1.select.storeAddrSlot = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u ? static_cast<uint32_t>(saSlot1)
+                                               : 0u;
+    };
+    lane1.select.storeValueSlot = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u ? static_cast<uint32_t>(svSlot1)
+                                               : 0u;
+    };
+    lane1.select.branchSlot = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 5u ? static_cast<uint32_t>(brSlot1)
+                                               : 0u;
+    };
+    lane1.select.multiplySlot = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 8u ? static_cast<uint32_t>(mulSlot1)
+                                               : 0u;
+    };
+    lane1.select.hasDivide = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 9u ? 1u : 0u;
+    };
+    lane1.select.divideSlot = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 9u ? static_cast<uint32_t>(divSlot1)
+                                               : 0u;
+    };
+
+    // ---- lane1 intP payload (intra-group RAW forwarding) ----
+    lane1.intP.op = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return (w == 1u || w == 6u)
+                 ? static_cast<uint32_t>(opDec1)
+                 : static_cast<uint32_t>(Operation::OP_INVALID);
+    };
+    lane1.intP.s1Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 1u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.intP.s1Imm = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w == 1u)
+        return static_cast<uint32_t>(
+            resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                          static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+      if (w == 6u)
+        return static_cast<bool>(ujHasPC1) ? static_cast<uint32_t>(dec1.pc) : 0u;
+      return 0u;
+    };
+    lane1.intP.s2Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 1u)
+        return static_cast<uint32_t>(InvalidPhy);
+      if (static_cast<bool>(intImmAsVk1))
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.intP.s2Imm = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w == 1u) {
+        if (static_cast<bool>(intImmAsVk1))
+          return static_cast<uint32_t>(dec1.imm);
+        return static_cast<uint32_t>(
+            resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                          static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+      }
+      if (w == 6u)
+        return static_cast<uint32_t>(dec1.imm);
+      return 0u;
+    };
+    lane1.intP.robTag = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return (w == 1u || w == 6u) ? static_cast<uint32_t>(rob.nextTag1) : 0u;
+    };
+
+    // ---- lane1 loadP payload ----
+    lane1.loadP.op = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 3u
+                 ? static_cast<uint32_t>(opDec1)
+                 : static_cast<uint32_t>(Operation::OP_INVALID);
+    };
+    lane1.loadP.s1Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 3u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.loadP.s1Imm = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 3u)
+        return 0u;
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+    };
+    lane1.loadP.s2Tag = [this]() -> uint32_t {
+      return static_cast<uint32_t>(InvalidPhy);
+    };
+    lane1.loadP.s2Imm = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 3u ? static_cast<uint32_t>(dec1.imm)
+                                               : 0u;
+    };
+    lane1.loadP.robTag = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 3u
+                 ? static_cast<uint32_t>(rob.nextTag1)
+                 : 0u;
+    };
+    lane1.loadP.memIndex = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 3u
+                 ? (static_cast<uint32_t>(lsq.lqTail1) & LQ_MASK)
+                 : 0u;
+    };
+
+    // ---- lane1 saP / svP payloads ----
+    lane1.saP.op = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u
+                 ? static_cast<uint32_t>(opDec1)
+                 : static_cast<uint32_t>(Operation::OP_INVALID);
+    };
+    lane1.saP.s1Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 4u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.saP.s1Imm = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 4u)
+        return 0u;
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+    };
+    lane1.saP.s2Tag = [this]() -> uint32_t {
+      return static_cast<uint32_t>(InvalidPhy);
+    };
+    lane1.saP.s2Imm = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u ? static_cast<uint32_t>(dec1.imm)
+                                               : 0u;
+    };
+    lane1.saP.robTag = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u
+                 ? static_cast<uint32_t>(rob.nextTag1)
+                 : 0u;
+    };
+    lane1.saP.memIndex = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u
+                 ? ((static_cast<uint32_t>(lsq.sqTail1) & SQ_MASK) |
+                    static_cast<uint32_t>(MEM_STORE_BIT))
+                 : 0u;
+    };
+    lane1.svP.dataTag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 4u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.svP.dataImm = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 4u)
+        return 0u;
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+    };
+    lane1.svP.robTag = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u
+                 ? static_cast<uint32_t>(rob.nextTag1)
+                 : 0u;
+    };
+    lane1.svP.memIndex = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 4u
+                 ? ((static_cast<uint32_t>(lsq.sqTail1) & SQ_MASK) |
+                    static_cast<uint32_t>(MEM_STORE_BIT))
+                 : 0u;
+    };
+
+    // ---- lane1 brP payload ----
+    lane1.brP.op = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 5u
+                 ? static_cast<uint32_t>(opDec1)
+                 : static_cast<uint32_t>(Operation::OP_INVALID);
+    };
+    lane1.brP.s1Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 5u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.brP.s1Imm = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 5u)
+        return 0u;
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+    };
+    lane1.brP.s2Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 5u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.brP.s2Imm = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 5u)
+        return 0u;
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+    };
+    lane1.brP.robTag = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 5u
+                 ? static_cast<uint32_t>(rob.nextTag1)
+                 : 0u;
+    };
+    lane1.brP.imm = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 5u ? static_cast<uint32_t>(dec1.imm)
+                                               : 0u;
+    };
+    lane1.brP.pc = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 5u ? static_cast<uint32_t>(dec1.pc)
+                                               : 0u;
+    };
+
+    // ---- lane1 mulP payload ----
+    lane1.mulP.op = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 8u
+                 ? static_cast<uint32_t>(opDec1)
+                 : static_cast<uint32_t>(Operation::OP_INVALID);
+    };
+    lane1.mulP.s1Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 8u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.mulP.s1Imm = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 8u)
+        return 0u;
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+    };
+    lane1.mulP.s2Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 8u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.mulP.s2Imm = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 8u)
+        return 0u;
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+    };
+    lane1.mulP.robTag = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 8u
+                 ? static_cast<uint32_t>(rob.nextTag1)
+                 : 0u;
+    };
+
+    // ---- lane1 divP payload ----
+    lane1.divP.op = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 9u
+                 ? static_cast<uint32_t>(opDec1)
+                 : static_cast<uint32_t>(Operation::OP_INVALID);
+    };
+    lane1.divP.s1Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 9u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.divP.s1Imm = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 9u)
+        return 0u;
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s1, static_cast<uint32_t>(dec1.rs1), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+    };
+    lane1.divP.s2Tag = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 9u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).tag);
+    };
+    lane1.divP.s2Imm = [this]() -> uint32_t {
+      if (static_cast<uint32_t>(win1) != 9u)
+        return 0u;
+      return static_cast<uint32_t>(
+          resolveSrcFwd(rat1.s2, static_cast<uint32_t>(dec1.rs2), static_cast<bool>(lane0.core.allocDest),
+                        static_cast<uint32_t>(dec.rd), static_cast<uint32_t>(lane0.core.phy)).imm);
+    };
+    lane1.divP.robTag = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 9u
+                 ? static_cast<uint32_t>(rob.nextTag1)
+                 : 0u;
+    };
+
+    // ---- lane1 robEntry group (intra-group WAR: oldPhy follows lane0) ----
+    lane1.robEntry.type = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w == 1u)
+        return static_cast<bool>(intIsControl1)
+                   ? static_cast<uint32_t>(ROBType::LINK)
+                   : static_cast<uint32_t>(ROBType::REGISTER);
+      if (w == 6u)
+        return static_cast<bool>(ujIsControl1)
+                   ? static_cast<uint32_t>(ROBType::LINK)
+                   : static_cast<uint32_t>(ROBType::REGISTER);
+      if (w == 4u)
+        return static_cast<uint32_t>(ROBType::STORE);
+      if (w == 5u)
+        return static_cast<uint32_t>(ROBType::BRANCH);
+      return static_cast<uint32_t>(ROBType::REGISTER);
+    };
+    lane1.robEntry.isCommitReady = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 2u || static_cast<uint32_t>(win1) == 7u ? 1u : 0u;
+    };
+    lane1.robEntry.dest = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return (w == 1u || w == 2u || w == 3u || w == 6u || w == 8u || w == 9u)
+                 ? static_cast<uint32_t>(dec1.rd)
+                 : 0u;
+    };
+    lane1.robEntry.halt = [this]() -> uint32_t {
+      return static_cast<uint32_t>(win1) == 2u ? 1u : 0u;
+    };
+    lane1.robEntry.exception = [this]() -> uint32_t { return static_cast<uint32_t>(win1) == 7u; };
+    lane1.robEntry.isCall = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      const uint32_t rd = static_cast<uint32_t>(dec1.rd);
+      const bool rdLink = (rd == 1u || rd == 5u);
+      const bool jalrCall =
+          (w == 1u && static_cast<bool>(intIsControl1) && rdLink);
+      const bool jalCall =
+          (w == 6u && static_cast<bool>(ujIsControl1) && rdLink);
+      return (jalrCall || jalCall) ? 1u : 0u;
+    };
+    lane1.robEntry.isRet = [this]() -> uint32_t {
+      const uint32_t rs1 = static_cast<uint32_t>(dec1.rs1);
+      const bool rs1Link = (rs1 == 1u || rs1 == 5u);
+      return (static_cast<uint32_t>(win1) == 1u &&
+               static_cast<bool>(intIsControl1) && rs1Link)
+                 ? 1u
+                 : 0u;
+    };
+    lane1.robEntry.ckptId = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return (w >= 1u && w <= 9u)
+                 ? static_cast<uint32_t>(dec1.ckptId)
+                 : 0u;
+    };
+    lane1.robEntry.predictedPC = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return (w == 1u || w == 2u || w == 5u || w == 6u || w == 7u || w == 8u || w == 9u)
+                 ? static_cast<uint32_t>(dec1.predictedPC)
+                 : 0u;
+    };
+    lane1.robEntry.pc = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      return (w >= 1u && w <= 9u)
+                 ? static_cast<uint32_t>(dec1.pc)
+                 : 0u;
+    };
+    lane1.robEntry.lqTailSnapshot = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w == 1u || w == 4u || w == 5u || w == 6u || w == 8u || w == 9u)
+        return static_cast<uint32_t>(lsq.lqTail1);
+      if (w == 3u)
+        return static_cast<uint32_t>(lsq.lqTailSnapshot);
+      return 0u;
+    };
+    lane1.robEntry.sqTailSnapshot = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w == 1u || w == 3u || w == 5u || w == 6u || w == 8u || w == 9u)
+        return static_cast<uint32_t>(lsq.sqTail1);
+      if (w == 4u)
+        return static_cast<uint32_t>(lsq.sqTailSnapshot);
+      return 0u;
+    };
+    lane1.robEntry.newPhy = [this]() -> uint32_t {
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w != 1u && w != 3u && w != 6u && w != 8u && w != 9u)
+        return static_cast<uint32_t>(InvalidPhy);
+      return (static_cast<bool>(dec1.allocDest) &&
+              !static_cast<bool>(prf.freeListEmpty1))
+                 ? static_cast<uint32_t>(prf.freePhy1)
+                 : static_cast<uint32_t>(InvalidPhy);
+    };
+    lane1.robEntry.oldPhy = [this]() -> uint32_t {
+      // Intra-group WAR: lane1's old value of its dest is lane0's newPhy when
+      // both write the same register; otherwise the committed RAT mapping.
+      const uint32_t w = static_cast<uint32_t>(win1);
+      if (w != 1u && w != 3u && w != 6u && w != 8u && w != 9u)
+        return static_cast<uint32_t>(InvalidPhy);
+      if (!static_cast<bool>(dec1.allocDest))
+        return static_cast<uint32_t>(InvalidPhy);
+      if (static_cast<bool>(lane0.core.allocDest) && static_cast<uint32_t>(dec1.rd) == static_cast<uint32_t>(dec.rd))
+        return static_cast<uint32_t>(lane0.core.phy);
+      return static_cast<uint32_t>(rat1.rdOldPhy);
+    };
+  }
 }

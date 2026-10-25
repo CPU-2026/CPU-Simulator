@@ -21,16 +21,19 @@ struct RATInputROB {
   Wire<PHY_TAG_WIDTH> headNewPhy;
   std::array<Wire<ROB_TAG_WIDTH>, ROB_CAP> tag;
 };
+struct RATIssuePort {
+  Wire<1> valid;
+  Wire<PHY_TAG_WIDTH> phy;
+  Wire<5> dest;
+  Wire<1> allocDest;
+};
 struct RATInput {
   std::array<CommitPort, COMMIT_WIDTH> commits;
   std::array<RecoveryNarrowPort, RECOVERY_WIDTH> replay;
   RecoveryInput recovery;
   Wire<1> needSquash;
   Wire<ROB_TAG_WIDTH> SquashTag;
-  Wire<1> issueValid;
-  Wire<PHY_TAG_WIDTH> issuePhy;
-  Wire<5> issueDest;
-  Wire<1> issueAllocDest;
+  std::array<RATIssuePort, ISSUE_WIDTH> issue;
   RATInputROB rob;
 };
 struct RATInner {

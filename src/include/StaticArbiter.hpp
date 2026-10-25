@@ -199,6 +199,8 @@ struct IssueArbInputDec {
 struct IssueArbInputRob {
   Wire<1> isFull;
   Wire<ROB_TAG_WIDTH> nextTag;
+  Wire<1> isFull1;
+  Wire<ROB_TAG_WIDTH> nextTag1;
 };
 // Raw busy bitmaps: the module runs first-fit free-slot scans.
 struct IssueArbInputRs {
@@ -219,6 +221,8 @@ struct IssueArbInputRs {
 struct IssueArbInputPrf {
   Wire<1> freeListEmpty;
   Wire<PHY_TAG_WIDTH> freePhy;
+  Wire<1> freeListEmpty1;
+  Wire<PHY_TAG_WIDTH> freePhy1;
 };
 struct IssueArbInputLsq {
   Wire<1> lqFull, sqFull;
@@ -226,6 +230,9 @@ struct IssueArbInputLsq {
   Wire<SQ_SEQ_WIDTH> sqTail;
   Wire<LQ_SEQ_WIDTH> lqTailSnapshot;
   Wire<SQ_SEQ_WIDTH> sqTailSnapshot;
+  Wire<1> lqFull1, sqFull1;
+  Wire<LQ_SEQ_WIDTH> lqTail1;
+  Wire<SQ_SEQ_WIDTH> sqTail1;
 };
 // Raw RAT operand read; the ready->constant resolve lives in the module
 // (verbatim resolveSrc, gated exactly like the former per-branch call
@@ -241,11 +248,13 @@ struct IssueArbInputRat {
 };
 struct IssueArbInput {
   IssueArbInputDec dec;
+  IssueArbInputDec dec1;
   IssueArbInputRob rob;
   IssueArbInputRs rs;
   IssueArbInputPrf prf;
   IssueArbInputLsq lsq;
   IssueArbInputRat rat;
+  IssueArbInputRat rat1;
   Wire<1> squashNeed;
 };
 
@@ -257,10 +266,14 @@ struct IssueArbInput {
 //   1 INT  2 HALT  3 LOAD  4 STORE  5 BR  6 UJ  7 RV_INVALID  8 MUL  9 DIV
 struct IssueArbInner {
   Wire<4> win;
+  Wire<4> win1;
   // branch parameters (pure functions of dec.type/opcode)
   Wire<1> intImmAsVk, intIsControl;
   Wire<1> ujHasPC, ujIsControl;
   Wire<5> opDec; // decodeOp result, shared by the four payload groups
+  Wire<1> intImmAsVk1, intIsControl1;
+  Wire<1> ujHasPC1, ujIsControl1;
+  Wire<5> opDec1;
   // first-fit free-slot scans
   Wire<1> intFree;  Wire<4> intSlot;
   Wire<1> loadFree; Wire<2> loadSlot;
@@ -269,6 +282,13 @@ struct IssueArbInner {
   Wire<1> brFree;   Wire<2> brSlot;
   Wire<1> mulFree;  Wire<2> mulSlot;
   Wire<1> divFree;  Wire<2> divSlot;
+  Wire<1> intFree1;  Wire<4> intSlot1;
+  Wire<1> loadFree1; Wire<2> loadSlot1;
+  Wire<1> saFree1;   Wire<3> saSlot1;
+  Wire<1> svFree1;   Wire<3> svSlot1;
+  Wire<1> brFree1;   Wire<2> brSlot1;
+  Wire<1> mulFree1;  Wire<2> mulSlot1;
+  Wire<1> divFree1;  Wire<2> divSlot1;
 };
 
 // ---- Output: per-consumer field groups. Field names match the retired
@@ -354,7 +374,7 @@ struct IssueArbOutRobEntry {
   Wire<SQ_SEQ_WIDTH> sqTailSnapshot;
   Wire<PHY_TAG_WIDTH> newPhy, oldPhy;
 };
-struct IssueArbOutput {
+struct IssueArbLaneOutput {
   IssueArbOutputCore core;
   IssueArbOutputSelect select;
   IssueArbOutIntP intP;
@@ -365,6 +385,10 @@ struct IssueArbOutput {
   IssueArbOutMulP mulP;
   IssueArbOutDivP divP;
   IssueArbOutRobEntry robEntry;
+};
+struct IssueArbOutput {
+  IssueArbLaneOutput lane0;
+  IssueArbLaneOutput lane1; // ISSUE_WIDTH == 2; unwired at width 1
 };
 
 // Stateless issue arbiter (pure combinational, zero flip-flops): selects at
@@ -380,7 +404,12 @@ private:
   void wire_output();
   // Raw issue class of the decoded head (pre-resource-check), mirroring the
   // former build() switch; class codes as in IssueArbInner.win.
-  uint32_t issueClass() const;
+  uint32_t issueClass(const IssueArbInputDec &d) const;
   // Verbatim from the former resolveSrc: register source -> Operand.
   Operand resolveSrc(const IssueArbOperandView &v) const;
+  // Resolve with intra-group RAW forwarding: if srcReg == fwdDest (and the
+  // previous lane allocates), forward to fwdPhy (not-ready tag). Else fall
+  // back to resolveSrc over the committed RAT view.
+  Operand resolveSrcFwd(const IssueArbOperandView &v, uint32_t srcReg,
+                        bool fwdAlloc, uint32_t fwdDest, uint32_t fwdPhy) const;
 };

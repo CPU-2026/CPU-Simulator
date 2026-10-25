@@ -189,8 +189,11 @@ void CPU::wire() {
   DecodeUnitModule.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
-  DecodeUnitModule.issueValid = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.valid);
+  DecodeUnitModule.issuePopCount = [this]() {
+    uint32_t n = static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
+    if constexpr (ISSUE_WIDTH >= 2)
+      n += static_cast<uint32_t>(IssueArbiterModule.lane1.core.valid);
+    return n;
   };
   DecodeUnitModule.decodePushCount = [this]() { return decodePopCount(); };
   DecodeUnitModule.fqHeadRaw = [this]() { return FQModule.headRaw(); };
@@ -833,23 +836,23 @@ void CPU::wire() {
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
   };
-  PRFModule.issue.issueValid = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.valid);
+  PRFModule.issue[0].issueValid = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
   };
-  PRFModule.issue.issuePhy = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.phy);
+  PRFModule.issue[0].issuePhy = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.phy);
   };
-  PRFModule.issue.issueAllocDest = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.allocDest);
+  PRFModule.issue[0].issueAllocDest = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.allocDest);
   };
-  PRFModule.issue.issuePC = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.pc);
+  PRFModule.issue[0].issuePC = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.pc);
   };
-  PRFModule.issue.issueIsControl = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.isControl);
+  PRFModule.issue[0].issueIsControl = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.isControl);
   };
-  PRFModule.issue.issueCkptId = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.ckptId);
+  PRFModule.issue[0].issueCkptId = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.ckptId);
   };
   PRFModule.rob.robWillCommit = [this]() {
     return ROBModule.willCommit() ? 1u : 0u;
@@ -877,17 +880,17 @@ void CPU::wire() {
   RATModule.SquashTag = [this]() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
-  RATModule.issueValid = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.valid);
+  RATModule.issue[0].valid = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
   };
-  RATModule.issuePhy = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.phy);
+  RATModule.issue[0].phy = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.phy);
   };
-  RATModule.issueDest = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.dest);
+  RATModule.issue[0].dest = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.dest);
   };
-  RATModule.issueAllocDest = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.allocDest);
+  RATModule.issue[0].allocDest = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.allocDest);
   };
   RATModule.rob.isEmpty = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.isEmpty);
@@ -1065,178 +1068,178 @@ void CPU::wire() {
   // DispatchArbiter's grants; squash reads FlushArbiter; the storeValue
   // ready-release reads PRF readiness over this RS's own committed data.
   RSModule.sel.valid = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.valid);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
   };
   RSModule.sel.hasInteger = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.hasInteger);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasInteger);
   };
   RSModule.sel.hasLoad = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.hasLoad);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasLoad);
   };
   RSModule.sel.hasStore = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.hasStore);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasStore);
   };
   RSModule.sel.hasBranch = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.hasBranch);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasBranch);
   };
   RSModule.sel.hasMultiply = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.hasMultiply);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasMultiply);
   };
   RSModule.sel.hasDivide = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.hasDivide);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasDivide);
   };
   RSModule.sel.integerSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.integerSlot);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.integerSlot);
   };
   RSModule.sel.loadSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.loadSlot);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.loadSlot);
   };
   RSModule.sel.storeAddrSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.storeAddrSlot);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.storeAddrSlot);
   };
   RSModule.sel.storeValueSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.storeValueSlot);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.storeValueSlot);
   };
   RSModule.sel.branchSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.branchSlot);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.branchSlot);
   };
   RSModule.sel.multiplySlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.multiplySlot);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.multiplySlot);
   };
   RSModule.sel.divideSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.select.divideSlot);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.divideSlot);
   };
   RSModule.data.intP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.intP.op);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.op);
   };
   RSModule.data.intP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.intP.s1Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.s1Tag);
   };
   RSModule.data.intP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.intP.s1Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.s1Imm);
   };
   RSModule.data.intP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.intP.s2Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.s2Tag);
   };
   RSModule.data.intP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.intP.s2Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.s2Imm);
   };
   RSModule.data.intP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.intP.robTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.robTag);
   };
   RSModule.data.loadP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.loadP.op);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.op);
   };
   RSModule.data.loadP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.loadP.s1Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.s1Tag);
   };
   RSModule.data.loadP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.loadP.s1Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.s1Imm);
   };
   RSModule.data.loadP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.loadP.s2Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.s2Tag);
   };
   RSModule.data.loadP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.loadP.s2Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.s2Imm);
   };
   RSModule.data.loadP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.loadP.robTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.robTag);
   };
   RSModule.data.loadP.memIndex = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.loadP.memIndex);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.memIndex);
   };
   RSModule.data.saP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.saP.op);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.op);
   };
   RSModule.data.saP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.saP.s1Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.s1Tag);
   };
   RSModule.data.saP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.saP.s1Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.s1Imm);
   };
   RSModule.data.saP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.saP.s2Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.s2Tag);
   };
   RSModule.data.saP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.saP.s2Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.s2Imm);
   };
   RSModule.data.saP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.saP.robTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.robTag);
   };
   RSModule.data.saP.memIndex = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.saP.memIndex);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.memIndex);
   };
   RSModule.data.svP.dataTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.svP.dataTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.svP.dataTag);
   };
   RSModule.data.svP.dataImm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.svP.dataImm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.svP.dataImm);
   };
   RSModule.data.svP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.svP.robTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.svP.robTag);
   };
   RSModule.data.svP.memIndex = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.svP.memIndex);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.svP.memIndex);
   };
   RSModule.data.brP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.brP.op);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.op);
   };
   RSModule.data.brP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.brP.s1Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.s1Tag);
   };
   RSModule.data.brP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.brP.s1Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.s1Imm);
   };
   RSModule.data.brP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.brP.s2Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.s2Tag);
   };
   RSModule.data.brP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.brP.s2Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.s2Imm);
   };
   RSModule.data.brP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.brP.robTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.robTag);
   };
   RSModule.data.brP.imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.brP.imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.imm);
   };
   RSModule.data.brP.pc = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.brP.pc);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.pc);
   };
   RSModule.data.mulP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.mulP.op);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.op);
   };
   RSModule.data.mulP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.mulP.s1Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.s1Tag);
   };
   RSModule.data.mulP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.mulP.s1Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.s1Imm);
   };
   RSModule.data.mulP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.mulP.s2Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.s2Tag);
   };
   RSModule.data.mulP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.mulP.s2Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.s2Imm);
   };
   RSModule.data.mulP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.mulP.robTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.robTag);
   };
   RSModule.data.divP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.divP.op);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.op);
   };
   RSModule.data.divP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.divP.s1Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.s1Tag);
   };
   RSModule.data.divP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.divP.s1Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.s1Imm);
   };
   RSModule.data.divP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.divP.s2Tag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.s2Tag);
   };
   RSModule.data.divP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.divP.s2Imm);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.s2Imm);
   };
   RSModule.data.divP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.divP.robTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.robTag);
   };
   RSModule.dispatch.aluValid = [this]() {
     return static_cast<bool>(DispatchArbiterModule.alu.valid);
@@ -1496,23 +1499,23 @@ void CPU::wire() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
   LQModule.issue.issueValid = [this]() {
-    return (static_cast<bool>(IssueArbiterModule.core.valid) &&
-            static_cast<bool>(IssueArbiterModule.core.isLoad))
+    return (static_cast<bool>(IssueArbiterModule.lane0.core.valid) &&
+            static_cast<bool>(IssueArbiterModule.lane0.core.isLoad))
                ? 1u
                : 0u;
   };
   LQModule.issue.issueLoad = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.isLoad);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.isLoad);
   };
   LQModule.issue.issueTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.robTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.robTag);
   };
   LQModule.issue.issueBytes = [this]() {
-    const uint32_t n = static_cast<uint32_t>(IssueArbiterModule.core.nBytes);
+    const uint32_t n = static_cast<uint32_t>(IssueArbiterModule.lane0.core.nBytes);
     return (n == 1 ? 0u : (n == 2 ? 1u : 2u));
   };
   LQModule.issue.issueIsUnsigned = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.isUnsigned);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.isUnsigned);
   };
   LQModule.cdb.lsqSetCDB = [this]() {
     // lqCDB.valid already embeds the squash guard on the lsq candidate
@@ -1642,19 +1645,19 @@ void CPU::wire() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
   SQModule.issue.issueValid = [this]() {
-    return (!static_cast<bool>(exitCommitted) && static_cast<bool>(IssueArbiterModule.core.valid) &&
-            static_cast<bool>(IssueArbiterModule.core.isStore))
+    return (!static_cast<bool>(exitCommitted) && static_cast<bool>(IssueArbiterModule.lane0.core.valid) &&
+            static_cast<bool>(IssueArbiterModule.lane0.core.isStore))
                ? 1u
                : 0u;
   };
   SQModule.issue.issueStore = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.isStore);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.isStore);
   };
   SQModule.issue.issueTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.robTag);
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.robTag);
   };
   SQModule.issue.issueBytes = [this]() {
-    const uint32_t n = static_cast<uint32_t>(IssueArbiterModule.core.nBytes);
+    const uint32_t n = static_cast<uint32_t>(IssueArbiterModule.lane0.core.nBytes);
     return (n == 1 ? 0u : (n == 2 ? 1u : 2u));
   };
   SQModule.memDispatch.memDispatchValid = [this]() {
@@ -1737,48 +1740,48 @@ void CPU::wire() {
   ROBModule.sq.epochMask = [this]() {
     return static_cast<uint32_t>(SQModule.completion.epochMask);
   };
-  ROBModule.issue.issueValid = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.core.valid);
+  ROBModule.issue[0].issueValid = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
   };
-  ROBModule.issue.entry.type = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.type);
+  ROBModule.issue[0].entry.type = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.type);
   };
-  ROBModule.issue.entry.isCommitReady = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.isCommitReady);
+  ROBModule.issue[0].entry.isCommitReady = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.isCommitReady);
   };
-  ROBModule.issue.entry.dest = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.dest);
+  ROBModule.issue[0].entry.dest = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.dest);
   };
-  ROBModule.issue.entry.halt = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.halt);
+  ROBModule.issue[0].entry.halt = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.halt);
   };
-  ROBModule.issue.entry.exception = [this]() { return uint32_t(IssueArbiterModule.robEntry.exception); };
-  ROBModule.issue.entry.isCall = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.isCall);
+  ROBModule.issue[0].entry.exception = [this]() { return uint32_t(IssueArbiterModule.lane0.robEntry.exception); };
+  ROBModule.issue[0].entry.isCall = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.isCall);
   };
-  ROBModule.issue.entry.isRet = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.isRet);
+  ROBModule.issue[0].entry.isRet = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.isRet);
   };
-  ROBModule.issue.entry.ckptId = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.ckptId);
+  ROBModule.issue[0].entry.ckptId = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.ckptId);
   };
-  ROBModule.issue.entry.predictedPC = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.predictedPC);
+  ROBModule.issue[0].entry.predictedPC = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.predictedPC);
   };
-  ROBModule.issue.entry.pc = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.pc);
+  ROBModule.issue[0].entry.pc = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.pc);
   };
-  ROBModule.issue.entry.lqTailSnapshot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.lqTailSnapshot);
+  ROBModule.issue[0].entry.lqTailSnapshot = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.lqTailSnapshot);
   };
-  ROBModule.issue.entry.sqTailSnapshot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.sqTailSnapshot);
+  ROBModule.issue[0].entry.sqTailSnapshot = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.sqTailSnapshot);
   };
-  ROBModule.issue.entry.newPhy = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.newPhy);
+  ROBModule.issue[0].entry.newPhy = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.newPhy);
   };
-  ROBModule.issue.entry.oldPhy = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.oldPhy);
+  ROBModule.issue[0].entry.oldPhy = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.oldPhy);
   };
 
   // ---- Wire FlushArbiter's Input Wires (detection lives here, reads
@@ -2182,7 +2185,7 @@ bool CPU::frontendCanRun() const {
 
 unsigned CPU::decodePopCount() const {
   if (!frontendCanRun() || bool(flushArbiter.needSquash)) return 0;
-  const bool issueValid = static_cast<bool>(IssueArbiterModule.core.valid);
+  const bool issueValid = static_cast<bool>(IssueArbiterModule.lane0.core.valid);
   const unsigned cap = DecodeUnitModule.pushCapacity(issueValid);
   const unsigned avail = FQModule.count();
   unsigned n = avail < cap ? avail : cap;
