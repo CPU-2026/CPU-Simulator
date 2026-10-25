@@ -63,7 +63,7 @@ struct ROBInput {
   Wire<ROB_TAG_WIDTH> replayOffset{[]() { return 0u; }};
   Wire<1> retirementBlocked{[]() { return 0u; }};
   ROBInputSquash squash;
-  ROBInputIssue issue;
+  std::array<ROBInputIssue, ISSUE_WIDTH> issue;
   ROBInputCDBAlu cdbOfALU;
   ROBInputCDBShared cdbOfShared;
   ROBInputBRU bru;
@@ -139,6 +139,8 @@ public:
   static bool isYounger(RobTag tag_a, RobTag tag_b);
   bool isFull() const;
   bool isEmpty() const;
+  unsigned count() const;
+  bool canAllocate(unsigned n) const; // at least n free slots
   bool matchesTag(RobTag tag) const;
   bool willCommit() const;
   unsigned commitCount() const;

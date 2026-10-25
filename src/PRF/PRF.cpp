@@ -17,11 +17,18 @@ void PRF::work() {
   // Cache frequently used Wire values as local combinational signals
   bool needSquash = static_cast<bool>(squash.needSquash);
   RobTag squashTag = static_cast<uint32_t>(squash.SquashTag);
-  bool issueValid = static_cast<bool>(issue.issueValid);
-  bool issueAlloc = issueValid && static_cast<bool>(issue.issueAllocDest);
-  uint8_t issuePhyVal = static_cast<uint32_t>(issue.issuePhy);
-  bool issueIsCtrl = static_cast<bool>(issue.issueIsControl);
-  uint32_t issuePCVal = static_cast<uint32_t>(issue.issuePC);
+  bool issueValid[ISSUE_WIDTH];
+  bool issueAlloc[ISSUE_WIDTH];
+  uint8_t issuePhyVal[ISSUE_WIDTH];
+  bool issueIsCtrl[ISSUE_WIDTH];
+  uint32_t issuePCVal[ISSUE_WIDTH];
+  for (unsigned L = 0; L < ISSUE_WIDTH; ++L) {
+    issueValid[L] = static_cast<bool>(issue[L].issueValid);
+    issueAlloc[L] = issueValid[L] && static_cast<bool>(issue[L].issueAllocDest);
+    issuePhyVal[L] = static_cast<uint32_t>(issue[L].issuePhy);
+    issueIsCtrl[L] = static_cast<bool>(issue[L].issueIsControl);
+    issuePCVal[L] = static_cast<uint32_t>(issue[L].issuePC);
+  }
 
   // Two result write ports. Renaming keeps their destinations distinct.
   bool cdbWriteAlu = false;
@@ -67,28 +74,30 @@ void PRF::work() {
   // ---- Issue: squash owns recovery; only a non-squash cycle can pop. ----
   uint32_t curHead = static_cast<uint32_t>(headSeq);
   uint32_t nextHead = curHead;
-  bool doPop = false;
-  uint8_t popPhy = 0;
+  unsigned popCount = 0;
   if (!needSquash && !static_cast<bool>(recovery.active)) {
-    if (issueValid) {
-      if (issueAlloc) {
-        assert(curHead != static_cast<uint32_t>(tailSeq));
-        popPhy = static_cast<uint32_t>(
-            freeList[prfSlot(static_cast<PrfSeq>(curHead))]);
+    for (unsigned L = 0; L < ISSUE_WIDTH; ++L) {
+      if (issueAlloc[L]) {
+        const uint8_t popPhy = static_cast<uint32_t>(
+            freeList[prfSlot(static_cast<PrfSeq>(nextHead))]);
         assert(popPhy != InvalidPhy);
-        assert(popPhy == issuePhyVal);
-        nextHead = prfSeqNext(static_cast<PrfSeq>(curHead));
-        doPop = true;
+        assert(popPhy == issuePhyVal[L]);
+        nextHead = prfSeqNext(static_cast<PrfSeq>(nextHead));
+        ++popCount;
       }
     }
   }
-  if (doPop) {
+  if (popCount != 0u) {
     headSeq <= nextHead;
-    if (issueIsCtrl) {
-      PhysicalRegs[issuePhyVal].ready <= true;
-      PhysicalRegs[issuePhyVal].value <= issuePCVal + 4;
-    } else {
-      PhysicalRegs[issuePhyVal].ready <= false;
+    for (unsigned L = 0; L < ISSUE_WIDTH; ++L) {
+      if (issueAlloc[L]) {
+        if (issueIsCtrl[L]) {
+          PhysicalRegs[issuePhyVal[L]].ready <= true;
+          PhysicalRegs[issuePhyVal[L]].value <= issuePCVal[L] + 4;
+        } else {
+          PhysicalRegs[issuePhyVal[L]].ready <= false;
+        }
+      }
     }
   }
 

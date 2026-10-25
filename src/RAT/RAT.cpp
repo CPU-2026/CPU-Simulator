@@ -76,10 +76,15 @@ void RAT::work() {
                       "RAT squash tag is not in the live ROB window");
 #endif
 
-  const bool issueHasDest = static_cast<bool>(issueValid) &&
-                            static_cast<bool>(issueAllocDest);
-  const uint32_t issueDestReg = static_cast<uint32_t>(issueDest);
-  const uint32_t issuePhyReg = static_cast<uint32_t>(issuePhy);
+  bool issueHasDest[ISSUE_WIDTH];
+  uint32_t issueDestReg[ISSUE_WIDTH];
+  uint32_t issuePhyReg[ISSUE_WIDTH];
+  for (unsigned L = 0; L < ISSUE_WIDTH; ++L) {
+    issueHasDest[L] = static_cast<bool>(issue[L].valid) &&
+                      static_cast<bool>(issue[L].allocDest);
+    issueDestReg[L] = static_cast<uint32_t>(issue[L].dest);
+    issuePhyReg[L] = static_cast<uint32_t>(issue[L].phy);
+  }
 
   if (boot) {
     for (int i = 1; i < REGISTER_CAP; ++i) {
@@ -108,8 +113,19 @@ void RAT::work() {
     replayOpen <= open;
   } else {
     for (int i = 0; i < REGISTER_CAP; ++i) {
-      if (!restore && issueHasDest && static_cast<uint32_t>(i) == issueDestReg) {
-        specRAT[i] <= issuePhyReg;
+      if (!restore) {
+        // Merge the ISSUE_WIDTH rename ports: the younger lane wins on a same
+        // destination, and each specRAT entry is written at most once.
+        uint32_t finalPhy = 0;
+        bool hasWrite = false;
+        for (unsigned L = 0; L < ISSUE_WIDTH; ++L) {
+          if (issueHasDest[L] && static_cast<uint32_t>(i) == issueDestReg[L]) {
+            finalPhy = issuePhyReg[L];
+            hasWrite = true;
+          }
+        }
+        if (hasWrite)
+          specRAT[i] <= finalPhy;
       }
 
       if (bool(archStorage.writeEnable) && bool(archStorage.writeMask[i])) {

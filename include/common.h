@@ -6,16 +6,11 @@
 #include "tools.h"
 using RobTag = uint8_t;
 inline bool legacyHaltEnabled = false; // Host configuration for archived images only.
-#ifndef CPU_INT_RS_ENTRIES
-#define CPU_INT_RS_ENTRIES 4
-#endif
-#ifndef CPU_BRANCH_RS_ENTRIES
-#define CPU_BRANCH_RS_ENTRIES 4
-#endif
-constexpr int INTEGERRS_CAP = CPU_INT_RS_ENTRIES;
+
+constexpr int INTEGERRS_CAP = 4;
 constexpr int STORERS_CAP = 2;
 constexpr int LOADRS_CAP = 2;
-constexpr int BRANCHRS_CAP = CPU_BRANCH_RS_ENTRIES;
+constexpr int BRANCHRS_CAP = 4;
 constexpr int LQ_CAP = 8;
 constexpr int SQ_CAP = 8;
 constexpr int LQ_MASK = LQ_CAP - 1;
@@ -65,32 +60,14 @@ inline constexpr RobTag robNextTag(RobTag tag) {
 static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
 static_assert(ROB_TAG_WIDTH <= 8,
                "RobTag is uint8_t: packed tag must fit in 8 bits");
-// The old CPU_ISSUE_WIDTH macro described the experimental FRONTEND, not
-// rename/issue. Preserve that spelling only for old builds specifying neither
-// new width. Explicit new configurations must describe the stages separately.
-#if defined(CPU_ISSUE_WIDTH) && !defined(CPU_FETCH_WIDTH) && !defined(CPU_DECODE_WIDTH)
-#define CPU_FETCH_WIDTH CPU_ISSUE_WIDTH
-#define CPU_DECODE_WIDTH CPU_ISSUE_WIDTH
-#endif
-#ifndef CPU_FETCH_WIDTH
-#define CPU_FETCH_WIDTH 1
-#endif
-#ifndef CPU_DECODE_WIDTH
-#define CPU_DECODE_WIDTH 1
-#endif
-constexpr unsigned FETCH_WIDTH = CPU_FETCH_WIDTH;
-constexpr unsigned DECODE_WIDTH = CPU_DECODE_WIDTH;
-constexpr unsigned ISSUE_WIDTH = 1; // Rename/ROB/RS allocation remains scalar.
+constexpr unsigned FETCH_WIDTH = 1;
+constexpr unsigned DECODE_WIDTH = 1;
+constexpr unsigned ISSUE_WIDTH = 1;
 static_assert(FETCH_WIDTH >= 1 && FETCH_WIDTH <= 2);
 static_assert(DECODE_WIDTH >= 1 && DECODE_WIDTH <= 2);
-#ifndef CPU_FQ_ENTRIES
-#define CPU_FQ_ENTRIES (CPU_DECODE_WIDTH << 1)
-#endif
-#ifndef CPU_IQ_ENTRIES
-#define CPU_IQ_ENTRIES (CPU_DECODE_WIDTH << 1)
-#endif
-constexpr int FQ_CAP = CPU_FQ_ENTRIES;
-constexpr int IQ_CAP = CPU_IQ_ENTRIES;
+static_assert(ISSUE_WIDTH >= 1 && ISSUE_WIDTH <= 2);
+constexpr int FQ_CAP = DECODE_WIDTH << 1;
+constexpr int IQ_CAP = DECODE_WIDTH << 1;
 constexpr int FQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(FQ_CAP - 1));
 constexpr int IQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(IQ_CAP - 1));
 constexpr int FQ_SEQ_WIDTH = FQ_PTR_WIDTH + 1;
@@ -101,10 +78,6 @@ static_assert((1u << FQ_PTR_WIDTH) == static_cast<uint32_t>(FQ_CAP));
 static_assert((1u << IQ_PTR_WIDTH) == static_cast<uint32_t>(IQ_CAP));
 constexpr int REGISTER_CAP = 32;
 constexpr int FLUSHARBITER_CAP = 4;
-// ALU result buffer: ONE slot.  It is a transparent stage -- a slot occupied
-// this cycle is released in the same cycle it is presented (the dedicated
-// aluCDB drains it, or the squash flush kills it) -- so the buffer can both
-// drain a result and accept a new op per cycle while holding a single slot.
 constexpr int ALU_CAP = 1;
 constexpr int MUL_CAP = 1; // Final register of the three-stage elastic MUL.
 constexpr int MULTIPLYRS_CAP = 1;
@@ -112,10 +85,7 @@ constexpr int DIVIDERS_CAP = 1;
 // Dedicated LSQ address port consumes or cancels the old result every cycle.
 constexpr int AGU_CAP = 1;
 constexpr int BRU_CAP = 4;
-#ifndef CPU_BTB_ENTRIES
-#define CPU_BTB_ENTRIES 32
-#endif
-constexpr int BTB_CAP = CPU_BTB_ENTRIES;
+constexpr int BTB_CAP = 32;
 static_assert(BTB_CAP >= 2 && BTB_CAP <= 64 && std::has_single_bit(uint32_t(BTB_CAP)));
 constexpr int BTB_TAG_SHIFT = 2 + std::bit_width(uint32_t(BTB_CAP - 1));
 constexpr int BTB_TAG_WIDTH = 32 - BTB_TAG_SHIFT;
@@ -135,10 +105,7 @@ constexpr uint16_t HISTORY_MASK = (1u << GHR_WIDTH) - 1;
 // Arch + speculative RAS pair (mirrors the main tree): the tops are
 // non-wrapping depths in [0, RAS_CAP]. Recovery restores the committed
 // baseline and replays the surviving ROB prefix through the squash tag.
-#ifndef CPU_RAS_ENTRIES
-#define CPU_RAS_ENTRIES 8
-#endif
-constexpr int RAS_CAP = CPU_RAS_ENTRIES;
+constexpr int RAS_CAP = 8;
 static_assert(RAS_CAP > 0 && RAS_CAP <= 0xFF,
               "RAS top is an 8-bit non-wrapping depth");
 constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
@@ -223,10 +190,7 @@ struct OperandWritePort {
   int32_t value = 0;
 };
 using OperandWriteback = std::array<OperandWritePort, 2>;
-#ifndef CPU_AXI_FETCH_ENTRIES
-#define CPU_AXI_FETCH_ENTRIES 4
-#endif
-constexpr int IMEM_CAP = CPU_AXI_FETCH_ENTRIES;
+constexpr int IMEM_CAP = 4;
 constexpr int CKPT_CAP = 32;
 // IDs are 0..CKPT_CAP-1 and CKPT_CAP is a power of two: derived width is exact.
 constexpr int CKPT_ID_WIDTH =
@@ -264,10 +228,7 @@ constexpr int ICACHE_WORD_BITS = ICACHE_WORDS_PER_LINE > 1
 static_assert(ICACHE_TAG_WIDTH > 0 && ICACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "ICache address split must leave a valid tag width");
 constexpr int REQUEST_CAP = 8;
-#ifndef CPU_FETCH_REQUEST_ENTRIES
-#define CPU_FETCH_REQUEST_ENTRIES (4 >> (CPU_FETCH_WIDTH - 1))
-#endif
-constexpr int FETCH_REQUEST_CAP = CPU_FETCH_REQUEST_ENTRIES;
+constexpr int FETCH_REQUEST_CAP = 4 >> (FETCH_WIDTH - 1);
 static_assert(FETCH_REQUEST_CAP >= 2 && FETCH_REQUEST_CAP <= 8 && std::has_single_bit(uint32_t(FETCH_REQUEST_CAP)));
 static_assert(REQUEST_CAP > 0 && REQUEST_CAP <= 128 &&
                   std::has_single_bit(static_cast<uint32_t>(REQUEST_CAP)),

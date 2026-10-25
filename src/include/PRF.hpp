@@ -49,7 +49,7 @@ struct PRFInput {
   PRFInputSquash squash;
   PRFInputCDBAlu cdbOfALU;
   PRFInputCDBShared cdbOfShared;
-  PRFInputIssue issue;
+  std::array<PRFInputIssue, ISSUE_WIDTH> issue;
   PRFInputROB rob;
 };
 struct PRFInner {
@@ -62,6 +62,11 @@ struct PRFInner {
 struct PRF : public dark::Module<PRFInput, PRFInner> {
   bool isFreeListEmpty() const { return headSeq == tailSeq; }
   PrfSeq getHeadSeq() const { return static_cast<uint32_t>(headSeq); }
+  PrfSeq getTailSeq() const { return static_cast<uint32_t>(tailSeq); }
+  bool hasFree(unsigned n) const {
+    return prfSeqDistance(static_cast<uint32_t>(headSeq),
+                          static_cast<uint32_t>(tailSeq)) >= n;
+  }
   uint8_t getFreeListSlot(PrfSeq seq) const {
     return static_cast<uint32_t>(freeList[prfSlot(seq)]);
   }

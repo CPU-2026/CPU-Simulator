@@ -103,9 +103,10 @@ void DecodeUnit::work() {
     head <= 0;
     tail <= 0;
   } else {
-    // stage 2 pop: release the head uop once the issue arbiter consumed it
-    if (static_cast<bool>(issueValid) && !isEmpty()) {
-      head <= ((static_cast<uint32_t>(head) + 1) & IQ_SEQ_MASK);
+    // stage 2 pop: release the head uop(s) once the issue arbiter consumed them
+    const unsigned pop = static_cast<uint32_t>(issuePopCount) & 0x3u;
+    if (pop > 0 && !isEmpty()) {
+      head <= ((static_cast<uint32_t>(head) + pop) & IQ_SEQ_MASK);
     }
     // stage 1 push: decode up to decodePushCount FQ entries into the IQ.
     const unsigned push = static_cast<uint32_t>(decodePushCount) & 0x3u;
