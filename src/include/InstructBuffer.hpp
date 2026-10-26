@@ -25,7 +25,7 @@ struct FQInput {
   Wire<32> icacheReturnRaw1;
   Wire<32> icacheReturnPC1;
   Wire<32> icacheReturnPredictedPC1;
-  Wire<2> decodePopCount; // 0..2: entries the decoder consumes this cycle
+  Wire<DECODE_COUNT_WIDTH> decodePopCount;
 };
 
 struct FQOutput {
@@ -56,6 +56,9 @@ struct InstructBuffer : dark::Module<FQInput, FQOutput, FQInner> {
   // (renamed from FetchQueue; member aliases FQModule/FQ* kept for callers)
   bool isFull() const { return count() == static_cast<unsigned>(FQ_CAP); }
   bool isEmpty() const { return count() == 0u; }
+  const InstructBufferEntry &entryAt(unsigned offset) const {
+    return entries[(static_cast<uint32_t>(head) + offset) & (FQ_CAP - 1)];
+  }
   // Capacity to absorb `push` new entries after `pop` this-cycle removals.
   bool canAccept(unsigned push, unsigned pop) const {
     return count() + push <= static_cast<unsigned>(FQ_CAP) + pop;

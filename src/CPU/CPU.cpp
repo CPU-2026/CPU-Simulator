@@ -190,9 +190,9 @@ void CPU::wire() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
   DecodeUnitModule.issuePopCount = [this]() {
-    uint32_t n = static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
-    if constexpr (ISSUE_WIDTH >= 2)
-      n += static_cast<uint32_t>(IssueArbiterModule.lane1.core.valid);
+    uint32_t n = 0;
+    for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane)
+      n += uint32_t(IssueArbiterModule.outputAt(lane).core.valid);
     return n;
   };
   DecodeUnitModule.decodePushCount = [this]() { return decodePopCount(); };
@@ -208,6 +208,14 @@ void CPU::wire() {
     return FQModule.headPredictedPC1();
   };
   DecodeUnitModule.fqHeadCkptId1 = [this]() { return FQModule.headCkptId1(); };
+  if constexpr (DECODE_WIDTH == 4) {
+    for (unsigned lane = 2; lane < DECODE_WIDTH; ++lane) {
+      DecodeUnitModule.fqExtraRaw[lane - 2] = [this, lane]() { return uint32_t(FQModule.entryAt(lane).raw); };
+      DecodeUnitModule.fqExtraPc[lane - 2] = [this, lane]() { return uint32_t(FQModule.entryAt(lane).pc); };
+      DecodeUnitModule.fqExtraPredictedPC[lane - 2] = [this, lane]() { return uint32_t(FQModule.entryAt(lane).predictedPC); };
+      DecodeUnitModule.fqExtraCkptId[lane - 2] = [this, lane]() { return uint32_t(FQModule.entryAt(lane).ckptId); };
+    }
+  }
   // Wire the instruction-side AXI adapter's input wires once.
   AXIFetchModule.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
@@ -836,24 +844,6 @@ void CPU::wire() {
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(ROBModule.entry.newPhy[robSlot(tag)]);
   };
-  PRFModule.issue[0].issueValid = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
-  };
-  PRFModule.issue[0].issuePhy = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.phy);
-  };
-  PRFModule.issue[0].issueAllocDest = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.allocDest);
-  };
-  PRFModule.issue[0].issuePC = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.pc);
-  };
-  PRFModule.issue[0].issueIsControl = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.isControl);
-  };
-  PRFModule.issue[0].issueCkptId = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.ckptId);
-  };
   PRFModule.rob.robWillCommit = [this]() {
     return ROBModule.willCommit() ? 1u : 0u;
   };
@@ -879,18 +869,6 @@ void CPU::wire() {
   };
   RATModule.SquashTag = [this]() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
-  };
-  RATModule.issue[0].valid = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
-  };
-  RATModule.issue[0].phy = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.phy);
-  };
-  RATModule.issue[0].dest = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.dest);
-  };
-  RATModule.issue[0].allocDest = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.allocDest);
   };
   RATModule.rob.isEmpty = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.isEmpty);
@@ -1067,180 +1045,7 @@ void CPU::wire() {
   // the IssueArbiter's Output groups; dispatch release reads the
   // DispatchArbiter's grants; squash reads FlushArbiter; the storeValue
   // ready-release reads PRF readiness over this RS's own committed data.
-  RSModule.sel.valid = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
-  };
-  RSModule.sel.hasInteger = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasInteger);
-  };
-  RSModule.sel.hasLoad = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasLoad);
-  };
-  RSModule.sel.hasStore = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasStore);
-  };
-  RSModule.sel.hasBranch = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasBranch);
-  };
-  RSModule.sel.hasMultiply = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasMultiply);
-  };
-  RSModule.sel.hasDivide = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.hasDivide);
-  };
-  RSModule.sel.integerSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.integerSlot);
-  };
-  RSModule.sel.loadSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.loadSlot);
-  };
-  RSModule.sel.storeAddrSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.storeAddrSlot);
-  };
-  RSModule.sel.storeValueSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.storeValueSlot);
-  };
-  RSModule.sel.branchSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.branchSlot);
-  };
-  RSModule.sel.multiplySlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.multiplySlot);
-  };
-  RSModule.sel.divideSlot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.select.divideSlot);
-  };
-  RSModule.data.intP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.op);
-  };
-  RSModule.data.intP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.s1Tag);
-  };
-  RSModule.data.intP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.s1Imm);
-  };
-  RSModule.data.intP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.s2Tag);
-  };
-  RSModule.data.intP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.s2Imm);
-  };
-  RSModule.data.intP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.intP.robTag);
-  };
-  RSModule.data.loadP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.op);
-  };
-  RSModule.data.loadP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.s1Tag);
-  };
-  RSModule.data.loadP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.s1Imm);
-  };
-  RSModule.data.loadP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.s2Tag);
-  };
-  RSModule.data.loadP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.s2Imm);
-  };
-  RSModule.data.loadP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.robTag);
-  };
-  RSModule.data.loadP.memIndex = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.loadP.memIndex);
-  };
-  RSModule.data.saP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.op);
-  };
-  RSModule.data.saP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.s1Tag);
-  };
-  RSModule.data.saP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.s1Imm);
-  };
-  RSModule.data.saP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.s2Tag);
-  };
-  RSModule.data.saP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.s2Imm);
-  };
-  RSModule.data.saP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.robTag);
-  };
-  RSModule.data.saP.memIndex = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.saP.memIndex);
-  };
-  RSModule.data.svP.dataTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.svP.dataTag);
-  };
-  RSModule.data.svP.dataImm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.svP.dataImm);
-  };
-  RSModule.data.svP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.svP.robTag);
-  };
-  RSModule.data.svP.memIndex = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.svP.memIndex);
-  };
-  RSModule.data.brP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.op);
-  };
-  RSModule.data.brP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.s1Tag);
-  };
-  RSModule.data.brP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.s1Imm);
-  };
-  RSModule.data.brP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.s2Tag);
-  };
-  RSModule.data.brP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.s2Imm);
-  };
-  RSModule.data.brP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.robTag);
-  };
-  RSModule.data.brP.imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.imm);
-  };
-  RSModule.data.brP.pc = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.brP.pc);
-  };
-  RSModule.data.mulP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.op);
-  };
-  RSModule.data.mulP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.s1Tag);
-  };
-  RSModule.data.mulP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.s1Imm);
-  };
-  RSModule.data.mulP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.s2Tag);
-  };
-  RSModule.data.mulP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.s2Imm);
-  };
-  RSModule.data.mulP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.mulP.robTag);
-  };
-  RSModule.data.divP.op = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.op);
-  };
-  RSModule.data.divP.s1Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.s1Tag);
-  };
-  RSModule.data.divP.s1Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.s1Imm);
-  };
-  RSModule.data.divP.s2Tag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.s2Tag);
-  };
-  RSModule.data.divP.s2Imm = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.s2Imm);
-  };
-  RSModule.data.divP.robTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.divP.robTag);
-  };
+  wireIssue();
   RSModule.dispatch.aluValid = [this]() {
     return static_cast<bool>(DispatchArbiterModule.alu.valid);
   };
@@ -1498,25 +1303,6 @@ void CPU::wire() {
   LQModule.squash.SquashTag = [this]() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
-  LQModule.issue.issueValid = [this]() {
-    return (static_cast<bool>(IssueArbiterModule.lane0.core.valid) &&
-            static_cast<bool>(IssueArbiterModule.lane0.core.isLoad))
-               ? 1u
-               : 0u;
-  };
-  LQModule.issue.issueLoad = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.isLoad);
-  };
-  LQModule.issue.issueTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.robTag);
-  };
-  LQModule.issue.issueBytes = [this]() {
-    const uint32_t n = static_cast<uint32_t>(IssueArbiterModule.lane0.core.nBytes);
-    return (n == 1 ? 0u : (n == 2 ? 1u : 2u));
-  };
-  LQModule.issue.issueIsUnsigned = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.isUnsigned);
-  };
   LQModule.cdb.lsqSetCDB = [this]() {
     // lqCDB.valid already embeds the squash guard on the lsq candidate
     // (LqCDBArbiter passes only candidates older than the squash point), so
@@ -1644,22 +1430,6 @@ void CPU::wire() {
   SQModule.squash.SquashTag = [this]() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
-  SQModule.issue.issueValid = [this]() {
-    return (!static_cast<bool>(exitCommitted) && static_cast<bool>(IssueArbiterModule.lane0.core.valid) &&
-            static_cast<bool>(IssueArbiterModule.lane0.core.isStore))
-               ? 1u
-               : 0u;
-  };
-  SQModule.issue.issueStore = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.isStore);
-  };
-  SQModule.issue.issueTag = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.robTag);
-  };
-  SQModule.issue.issueBytes = [this]() {
-    const uint32_t n = static_cast<uint32_t>(IssueArbiterModule.lane0.core.nBytes);
-    return (n == 1 ? 0u : (n == 2 ? 1u : 2u));
-  };
   SQModule.memDispatch.memDispatchValid = [this]() {
     return memoryDispatchValid() ? 1u : 0u;
   };
@@ -1739,49 +1509,6 @@ void CPU::wire() {
   };
   ROBModule.sq.epochMask = [this]() {
     return static_cast<uint32_t>(SQModule.completion.epochMask);
-  };
-  ROBModule.issue[0].issueValid = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.core.valid);
-  };
-  ROBModule.issue[0].entry.type = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.type);
-  };
-  ROBModule.issue[0].entry.isCommitReady = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.isCommitReady);
-  };
-  ROBModule.issue[0].entry.dest = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.dest);
-  };
-  ROBModule.issue[0].entry.halt = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.halt);
-  };
-  ROBModule.issue[0].entry.exception = [this]() { return uint32_t(IssueArbiterModule.lane0.robEntry.exception); };
-  ROBModule.issue[0].entry.isCall = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.isCall);
-  };
-  ROBModule.issue[0].entry.isRet = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.isRet);
-  };
-  ROBModule.issue[0].entry.ckptId = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.ckptId);
-  };
-  ROBModule.issue[0].entry.predictedPC = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.predictedPC);
-  };
-  ROBModule.issue[0].entry.pc = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.pc);
-  };
-  ROBModule.issue[0].entry.lqTailSnapshot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.lqTailSnapshot);
-  };
-  ROBModule.issue[0].entry.sqTailSnapshot = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.sqTailSnapshot);
-  };
-  ROBModule.issue[0].entry.newPhy = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.newPhy);
-  };
-  ROBModule.issue[0].entry.oldPhy = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.lane0.robEntry.oldPhy);
   };
 
   // ---- Wire FlushArbiter's Input Wires (detection lives here, reads
@@ -2161,6 +1888,226 @@ void CPU::wire() {
   };
 }
 
+void CPU::wireIssue() {
+  // Constructor-time wiring only. Captures refer to persistent module ports,
+  // not to a per-cycle packet or a next-state copy.
+  auto connect = [](auto &input, const auto &output) {
+    input = [&output]() { return static_cast<uint32_t>(output); };
+  };
+  auto operands = [&](auto &input, const auto &output) {
+    connect(input.op, output.op);
+    connect(input.s1Tag, output.s1Tag);
+    connect(input.s1Imm, output.s1Imm);
+    connect(input.s2Tag, output.s2Tag);
+    connect(input.s2Imm, output.s2Imm);
+    connect(input.robTag, output.robTag);
+  };
+  for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+    const auto &out = IssueArbiterModule.outputAt(lane);
+    auto &prf = PRFModule.issue[lane];
+    connect(prf.issueValid, out.core.valid);
+    connect(prf.issueAllocDest, out.core.allocDest);
+    connect(prf.issuePhy, out.core.phy);
+    connect(prf.issuePC, out.core.pc);
+    connect(prf.issueIsControl, out.core.isControl);
+    connect(prf.issueCkptId, out.robEntry.ckptId);
+
+    auto &rat = RATModule.issue[lane];
+    connect(rat.valid, out.core.valid);
+    connect(rat.allocDest, out.core.allocDest);
+    connect(rat.dest, out.robEntry.dest);
+    connect(rat.phy, out.core.phy);
+
+    auto &rob = ROBModule.issue[lane];
+    connect(rob.issueValid, out.core.valid);
+    connect(rob.entry.type, out.robEntry.type);
+    connect(rob.entry.isCommitReady, out.robEntry.isCommitReady);
+    connect(rob.entry.dest, out.robEntry.dest);
+    connect(rob.entry.halt, out.robEntry.halt);
+    connect(rob.entry.exception, out.robEntry.exception);
+    connect(rob.entry.isCall, out.robEntry.isCall);
+    connect(rob.entry.isRet, out.robEntry.isRet);
+    connect(rob.entry.ckptId, out.robEntry.ckptId);
+    connect(rob.entry.predictedPC, out.robEntry.predictedPC);
+    connect(rob.entry.pc, out.robEntry.pc);
+    connect(rob.entry.lqTailSnapshot, out.robEntry.lqTailSnapshot);
+    connect(rob.entry.sqTailSnapshot, out.robEntry.sqTailSnapshot);
+    connect(rob.entry.newPhy, out.robEntry.newPhy);
+    connect(rob.entry.oldPhy, out.robEntry.oldPhy);
+
+    auto &rs = RSModule.issue[lane];
+    connect(rs.sel.valid, out.core.valid);
+    connect(rs.sel.hasInteger, out.select.hasInteger);
+    connect(rs.sel.hasLoad, out.select.hasLoad);
+    connect(rs.sel.hasStore, out.select.hasStore);
+    connect(rs.sel.hasBranch, out.select.hasBranch);
+    connect(rs.sel.hasMultiply, out.select.hasMultiply);
+    connect(rs.sel.hasDivide, out.select.hasDivide);
+    connect(rs.sel.integerSlot, out.select.integerSlot);
+    connect(rs.sel.loadSlot, out.select.loadSlot);
+    connect(rs.sel.storeAddrSlot, out.select.storeAddrSlot);
+    connect(rs.sel.storeValueSlot, out.select.storeValueSlot);
+    connect(rs.sel.branchSlot, out.select.branchSlot);
+    connect(rs.sel.multiplySlot, out.select.multiplySlot);
+    connect(rs.sel.divideSlot, out.select.divideSlot);
+    operands(rs.data.intP, out.intP);
+    operands(rs.data.loadP, out.loadP);
+    connect(rs.data.loadP.memIndex, out.loadP.memIndex);
+    operands(rs.data.saP, out.saP);
+    connect(rs.data.saP.memIndex, out.saP.memIndex);
+    connect(rs.data.svP.dataTag, out.svP.dataTag);
+    connect(rs.data.svP.dataImm, out.svP.dataImm);
+    connect(rs.data.svP.robTag, out.svP.robTag);
+    connect(rs.data.svP.memIndex, out.svP.memIndex);
+    operands(rs.data.brP, out.brP);
+    connect(rs.data.brP.imm, out.brP.imm);
+    connect(rs.data.brP.pc, out.brP.pc);
+    operands(rs.data.mulP, out.mulP);
+    operands(rs.data.divP, out.divP);
+
+    auto &load = LQModule.issue[lane];
+    connect(load.issueValid, out.core.valid);
+    connect(load.issueLoad, out.core.isLoad);
+    connect(load.issueTag, out.core.robTag);
+    connect(load.issueIsUnsigned, out.core.isUnsigned);
+    load.issueBytes = [&out]() {
+      const uint32_t n = uint32_t(out.core.nBytes);
+      return n == 1 ? 0u : (n == 2 ? 1u : 2u);
+    };
+    auto &store = SQModule.issue[lane];
+    connect(store.issueValid, out.core.valid);
+    connect(store.issueStore, out.core.isStore);
+    connect(store.issueTag, out.core.robTag);
+    store.issueBytes = [&out]() {
+      const uint32_t n = uint32_t(out.core.nBytes);
+      return n == 1 ? 0u : (n == 2 ? 1u : 2u);
+    };
+  }
+
+  if constexpr (ISSUE_WIDTH == 4) {
+    for (unsigned lane = 0; lane < 4; ++lane) {
+      auto &dec = IssueArbiterModule.wideDec[lane];
+      dec.isEmpty = [this, lane]() { return DecodeUnitModule.count() <= lane; };
+      auto field = [this, lane](auto &wire, auto member) {
+        wire = [this, lane, member]() { return uint32_t(DecodeUnitModule.entryAt(lane).*member); };
+      };
+      field(dec.type, &UopEntry::type); field(dec.opcode, &UopEntry::opcode);
+      field(dec.funct3, &UopEntry::funct3); field(dec.funct7, &UopEntry::funct7);
+      field(dec.rd, &UopEntry::rd); field(dec.rs1, &UopEntry::rs1); field(dec.rs2, &UopEntry::rs2);
+      field(dec.imm, &UopEntry::imm); field(dec.pc, &UopEntry::pc);
+      field(dec.isHalt, &UopEntry::isHalt); field(dec.allocDest, &UopEntry::allocDest);
+      field(dec.predictedPC, &UopEntry::predictedPC); field(dec.ckptId, &UopEntry::ckptId);
+      auto source = [this, lane](auto &view, auto member) {
+        view.phy = [this, lane, member]() { return RATModule.readRAT_PRF(uint32_t(DecodeUnitModule.entryAt(lane).*member)); };
+        view.ready = [this, lane, member]() {
+          const unsigned reg = uint32_t(DecodeUnitModule.entryAt(lane).*member);
+          return reg == 0 || PRFModule.isReady(RATModule.readRAT_PRF(reg));
+        };
+        view.value = [this, lane, member]() {
+          const unsigned reg = uint32_t(DecodeUnitModule.entryAt(lane).*member);
+          return reg == 0 ? 0u : uint32_t(PRFModule.getValue(RATModule.readRAT_PRF(reg)));
+        };
+      };
+      source(IssueArbiterModule.wideRat[lane].s1, &UopEntry::rs1);
+      source(IssueArbiterModule.wideRat[lane].s2, &UopEntry::rs2);
+      IssueArbiterModule.wideRat[lane].rdOldPhy = [this, lane]() {
+        return RATModule.readRAT_PRF(uint32_t(DecodeUnitModule.entryAt(lane).rd));
+      };
+      IssueArbiterModule.wideFreePhy[lane] = [this, lane]() {
+        PrfSeq seq = PRFModule.getHeadSeq();
+        for (unsigned rank = 0; rank < lane; ++rank) seq = prfSeqNext(seq);
+        return PRFModule.getFreeListSlot(seq);
+      };
+    }
+    IssueArbiterModule.physicalCredits = [this]() { return prfSeqDistance(PRFModule.getHeadSeq(), PRFModule.getTailSeq()); };
+    IssueArbiterModule.robCredits = [this]() { return ROB_CAP - ROBModule.count(); };
+    IssueArbiterModule.loadCredits = [this]() {
+      unsigned credits = 0;
+      for (unsigned n = 1; n <= LQ_CAP; ++n) if (LQModule.canAllocate(n)) credits = n;
+      return credits;
+    };
+    IssueArbiterModule.storeCredits = [this]() {
+      unsigned credits = 0;
+      for (unsigned n = 1; n <= SQ_CAP; ++n) if (SQModule.canAllocate(n)) credits = n;
+      return credits;
+    };
+    auto rows = [this](auto &wire, unsigned capacity, auto isFree, unsigned pool) {
+      wire = [this, capacity, isFree, pool]() {
+        uint32_t mask = 0;
+        for (unsigned row = 0; row < capacity; ++row) {
+          bool available = (RSModule.*isFree)(row);
+          if (pool == 0) available |= bool(DispatchArbiterModule.alu.valid) && uint32_t(DispatchArbiterModule.alu.rsIndex) == row;
+          if (pool == 3) available |= bool(DispatchArbiterModule.bru.valid) && uint32_t(DispatchArbiterModule.bru.rsIndex) == row;
+          if (pool == 4) available |= bool(DispatchArbiterModule.agu.valid) &&
+              uint32_t(DispatchArbiterModule.agu.rsType) == uint32_t(RSType::Load) && uint32_t(DispatchArbiterModule.agu.rsIndex) == row;
+          if (available) mask |= 1u << row;
+        }
+        return mask;
+      };
+    };
+    rows(IssueArbiterModule.availableRows[0], INTEGERRS_CAP, &RSUnit::isIntFree, 0);
+    rows(IssueArbiterModule.availableRows[1], MULTIPLYRS_CAP, &RSUnit::isMulFree, 1);
+    rows(IssueArbiterModule.availableRows[2], DIVIDERS_CAP, &RSUnit::isDivFree, 2);
+    rows(IssueArbiterModule.availableRows[3], BRANCHRS_CAP, &RSUnit::isBrFree, 3);
+    rows(IssueArbiterModule.availableRows[4], LOADRS_CAP, &RSUnit::isLoadFree, 4);
+    rows(IssueArbiterModule.availableRows[5], STORERS_CAP, &RSUnit::isSaFree, 5);
+    rows(IssueArbiterModule.availableRows[6], STORERS_CAP, &RSUnit::isSvFree, 6);
+  } else if constexpr (ISSUE_WIDTH == 2) {
+    auto &dec = IssueArbiterModule.dec1;
+    dec.isEmpty = [this]() { return DecodeUnitModule.count() < 2u; };
+    dec.type = [this]() { return uint32_t(DecodeUnitModule.headType1()); };
+    dec.opcode = [this]() { return DecodeUnitModule.headOpcode1(); };
+    dec.funct3 = [this]() { return DecodeUnitModule.headFunct31(); };
+    dec.funct7 = [this]() { return DecodeUnitModule.headFunct71(); };
+    dec.rd = [this]() { return DecodeUnitModule.headRd1(); };
+    dec.rs1 = [this]() { return DecodeUnitModule.headRs11(); };
+    dec.rs2 = [this]() { return DecodeUnitModule.headRs21(); };
+    dec.imm = [this]() { return uint32_t(DecodeUnitModule.headImm1()); };
+    dec.pc = [this]() { return DecodeUnitModule.headPc1(); };
+    dec.isHalt = [this]() { return DecodeUnitModule.headIsHalt1(); };
+    dec.allocDest = [this]() { return DecodeUnitModule.headAllocDest1(); };
+    dec.predictedPC = [this]() { return uint32_t(DecodeUnitModule.headPredictedPC1()); };
+    dec.ckptId = [this]() { return DecodeUnitModule.headCkptId1(); };
+
+    auto &rat = IssueArbiterModule.rat1;
+    rat.s1.ready = [this]() { return RATModule.readOperand(DecodeUnitModule.headRs11()).ready; };
+    rat.s1.phy = [this]() { return RATModule.readOperand(DecodeUnitModule.headRs11()).phyRegIndex; };
+    rat.s1.value = [this]() { return uint32_t(RATModule.readOperand(DecodeUnitModule.headRs11()).value); };
+    rat.s2.ready = [this]() { return RATModule.readOperand(DecodeUnitModule.headRs21()).ready; };
+    rat.s2.phy = [this]() { return RATModule.readOperand(DecodeUnitModule.headRs21()).phyRegIndex; };
+    rat.s2.value = [this]() { return uint32_t(RATModule.readOperand(DecodeUnitModule.headRs21()).value); };
+    rat.rdOldPhy = [this]() { return RATModule.readRAT_PRF(DecodeUnitModule.headRd1()); };
+
+    // Old-state budgets minus lane0's actual allocation. No retirement/free
+    // bypass, and no dependency on the younger lane's decision.
+    IssueArbiterModule.rob.isFull1 = [this]() { return !ROBModule.canAllocate(2); };
+    IssueArbiterModule.rob.nextTag1 = [this]() { return robNextTag(ROBModule.getNextTag()); };
+    IssueArbiterModule.prf.freeListEmpty1 = [this]() {
+      return !PRFModule.hasFree(1u + unsigned(bool(IssueArbiterModule.lane0.core.allocDest)));
+    };
+    IssueArbiterModule.prf.freePhy1 = [this]() {
+      PrfSeq seq = PRFModule.getHeadSeq();
+      if (bool(IssueArbiterModule.lane0.core.allocDest)) seq = prfSeqNext(seq);
+      return PRFModule.getFreeListSlot(seq);
+    };
+    auto &lsq = IssueArbiterModule.lsq;
+    lsq.lqFull1 = [this]() {
+      return !LQModule.canAllocate(1u + unsigned(bool(IssueArbiterModule.lane0.core.isLoad)));
+    };
+    lsq.sqFull1 = [this]() {
+      return !SQModule.canAllocate(1u + unsigned(bool(IssueArbiterModule.lane0.core.isStore)));
+    };
+    lsq.lqTail1 = [this]() {
+      return (LQModule.getTail() + unsigned(bool(IssueArbiterModule.lane0.core.isLoad))) & LQ_SEQ_MASK;
+    };
+    lsq.sqTail1 = [this]() {
+      return (SQModule.getTail() + unsigned(bool(IssueArbiterModule.lane0.core.isStore))) & SQ_SEQ_MASK;
+    };
+    lsq.lqTailSnapshot1 = [this]() { return (uint32_t(IssueArbiterModule.lsq.lqTail1) + 1u) & LQ_SEQ_MASK; };
+    lsq.sqTailSnapshot1 = [this]() { return (uint32_t(IssueArbiterModule.lsq.sqTail1) + 1u) & SQ_SEQ_MASK; };
+  }
+}
+
 OperandWriteback CPU::grantedWritebacks() const {
   OperandWriteback ports{};
   if (!bool(recoveryActive) && !bool(exitCommitted)) {
@@ -2185,8 +2132,8 @@ bool CPU::frontendCanRun() const {
 
 unsigned CPU::decodePopCount() const {
   if (!frontendCanRun() || bool(flushArbiter.needSquash)) return 0;
-  const bool issueValid = static_cast<bool>(IssueArbiterModule.lane0.core.valid);
-  const unsigned cap = DecodeUnitModule.pushCapacity(issueValid);
+  const unsigned popped = static_cast<uint32_t>(DecodeUnitModule.issuePopCount);
+  const unsigned cap = DecodeUnitModule.pushCapacity(popped);
   const unsigned avail = FQModule.count();
   unsigned n = avail < cap ? avail : cap;
   const unsigned limit = static_cast<unsigned>(DECODE_WIDTH);

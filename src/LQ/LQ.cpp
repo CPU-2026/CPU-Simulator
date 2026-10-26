@@ -207,20 +207,25 @@ void LQ::work() {
     intent[index].bcastData = true;
   };
 
-  // 1. issue push — unique-field writes are direct (index = old tail, never
-  //    reachable by later sources since it is inactive this cycle); the
-  //    multi-writer fields and tail go through intents.
-  if (static_cast<bool>(issue.issueValid) && static_cast<bool>(issue.issueLoad)) {
-    auto t = static_cast<uint32_t>(tail) & LQ_MASK;
-    LQqueue[t].robTag <= static_cast<uint32_t>(issue.issueTag);
-    LQqueue[t].nBytes <= static_cast<uint32_t>(issue.issueBytes);
-    LQqueue[t].isUnsigned <= static_cast<uint32_t>(issue.issueIsUnsigned);
-    LQqueue[t].isAddressReady <= false;
-    setStateIntent(static_cast<int>(t), static_cast<uint32_t>(ValueState::NOTREADY));
-    intent[static_cast<int>(t)].bcastWrite = true;
-    intent[static_cast<int>(t)].bcastData = false;
-    tailWritten = true;
-    tailData = (static_cast<uint32_t>(tail) + 1) & LQ_SEQ_MASK;
+  // 1. issue pushes — new slots are the inactive prefix starting at old tail.
+  // Unique fields write directly; multi-writer fields and tail use intents.
+  unsigned pushCount = 0;
+  for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+    const auto &port = issue[lane];
+    if (bool(port.issueValid) && bool(port.issueLoad)) {
+      ++pushCount;
+      dark::debug::assert(canAllocate(pushCount), "LQ issue exceeds old free capacity");
+      auto t = (static_cast<uint32_t>(tail) + pushCount - 1u) & LQ_MASK;
+      LQqueue[t].robTag <= static_cast<uint32_t>(port.issueTag);
+      LQqueue[t].nBytes <= static_cast<uint32_t>(port.issueBytes);
+      LQqueue[t].isUnsigned <= static_cast<uint32_t>(port.issueIsUnsigned);
+      LQqueue[t].isAddressReady <= false;
+      setStateIntent(static_cast<int>(t), static_cast<uint32_t>(ValueState::NOTREADY));
+      intent[static_cast<int>(t)].bcastWrite = true;
+      intent[static_cast<int>(t)].bcastData = false;
+      tailWritten = true;
+      tailData = (static_cast<uint32_t>(tail) + pushCount) & LQ_SEQ_MASK;
+    }
   }
 
   // 2. store-forward broadcasts from SQ (data-ready events pre-computed in comb)

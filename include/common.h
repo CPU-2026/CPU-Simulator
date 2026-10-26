@@ -7,6 +7,22 @@
 using RobTag = uint8_t;
 inline bool legacyHaltEnabled = false; // Host configuration for archived images only.
 
+// Allocation width is independent of fetch, decode and execution bandwidth.
+// Keep the old rename spelling as an exact compile-time alias, like RTL.
+#ifndef CPU_ISSUE_WIDTH
+#ifdef CPU_RENAME_WIDTH
+#define CPU_ISSUE_WIDTH CPU_RENAME_WIDTH
+#else
+#define CPU_ISSUE_WIDTH 1
+#endif
+#endif
+#ifndef CPU_RENAME_WIDTH
+#define CPU_RENAME_WIDTH CPU_ISSUE_WIDTH
+#endif
+static_assert(CPU_ISSUE_WIDTH == CPU_RENAME_WIDTH, "conflicting issue/rename widths");
+constexpr unsigned ISSUE_WIDTH = CPU_ISSUE_WIDTH;
+static_assert(ISSUE_WIDTH == 1 || ISSUE_WIDTH == 2 || ISSUE_WIDTH == 4);
+
 constexpr int INTEGERRS_CAP = 4;
 constexpr int STORERS_CAP = 2;
 constexpr int LOADRS_CAP = 2;
@@ -30,7 +46,7 @@ constexpr int MEMQ_SCAN_WINDOW = SQ_CAP < 8 ? SQ_CAP : 8;
 constexpr uint8_t MEM_STORE_BIT = 0x40;
 inline bool isStoreMem(uint8_t m) { return (m & MEM_STORE_BIT) != 0; }
 inline uint8_t memSlot(uint8_t m) { return m & 0x3F; }
-constexpr uint32_t ROB_CAP = 16;
+constexpr uint32_t ROB_CAP = ISSUE_WIDTH == 4 ? 32 : 16;
 constexpr unsigned RECOVERY_BEATS = 4;
 constexpr unsigned RECOVERY_WIDTH = (ROB_CAP + 3u) >> 2;
 struct RecoveryStep {
@@ -60,14 +76,31 @@ inline constexpr RobTag robNextTag(RobTag tag) {
 static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
 static_assert(ROB_TAG_WIDTH <= 8,
                "RobTag is uint8_t: packed tag must fit in 8 bits");
-constexpr unsigned FETCH_WIDTH = 1;
-constexpr unsigned DECODE_WIDTH = 1;
-constexpr unsigned ISSUE_WIDTH = 1;
+#ifndef CPU_FETCH_WIDTH
+#define CPU_FETCH_WIDTH 1
+#endif
+#ifndef CPU_DECODE_WIDTH
+#define CPU_DECODE_WIDTH 1
+#endif
+#ifndef CPU_RENAME_WIDTH
+#define CPU_RENAME_WIDTH 1
+#endif
+constexpr unsigned FETCH_WIDTH = CPU_FETCH_WIDTH;
+constexpr unsigned DECODE_WIDTH = CPU_DECODE_WIDTH;
 static_assert(FETCH_WIDTH >= 1 && FETCH_WIDTH <= 2);
-static_assert(DECODE_WIDTH >= 1 && DECODE_WIDTH <= 2);
-static_assert(ISSUE_WIDTH >= 1 && ISSUE_WIDTH <= 2);
+static_assert(DECODE_WIDTH == 1 || DECODE_WIDTH == 2 || DECODE_WIDTH == 4);
+#ifdef CPU_FQ_ENTRIES
+constexpr int FQ_CAP = CPU_FQ_ENTRIES;
+#else
 constexpr int FQ_CAP = DECODE_WIDTH << 1;
+#endif
+#ifdef CPU_IQ_ENTRIES
+constexpr int IQ_CAP = CPU_IQ_ENTRIES;
+#else
 constexpr int IQ_CAP = DECODE_WIDTH << 1;
+#endif
+constexpr int ISSUE_COUNT_WIDTH = std::bit_width(ISSUE_WIDTH);
+constexpr int DECODE_COUNT_WIDTH = std::bit_width(DECODE_WIDTH);
 constexpr int FQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(FQ_CAP - 1));
 constexpr int IQ_PTR_WIDTH = std::bit_width(static_cast<uint32_t>(IQ_CAP - 1));
 constexpr int FQ_SEQ_WIDTH = FQ_PTR_WIDTH + 1;
@@ -191,7 +224,7 @@ struct OperandWritePort {
 };
 using OperandWriteback = std::array<OperandWritePort, 2>;
 constexpr int IMEM_CAP = 4;
-constexpr int CKPT_CAP = 32;
+constexpr int CKPT_CAP = ISSUE_WIDTH == 4 ? 64 : 32;
 // IDs are 0..CKPT_CAP-1 and CKPT_CAP is a power of two: derived width is exact.
 constexpr int CKPT_ID_WIDTH =
     std::bit_width(static_cast<uint32_t>(CKPT_CAP - 1));

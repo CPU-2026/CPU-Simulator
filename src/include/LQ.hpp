@@ -99,7 +99,7 @@ struct LQInputStoreNotifies {
 struct LQInput {
   std::array<CommitPort, COMMIT_WIDTH> commits;
   LQInputSquash squash;
-  LQInputIssue issue;
+  std::array<LQInputIssue, ISSUE_WIDTH> issue;
   LQInputCDB cdb;
   LQInputAGU agu;
   LQInputROB rob;
@@ -123,6 +123,10 @@ class LQ : public dark::Module<LQInput, LQInner> {
 public:
   bool isEmpty() const;
   bool isFull() const;
+  bool canAllocate(unsigned n) const {
+    const unsigned used = (uint32_t(tail) - uint32_t(head)) & LQ_SEQ_MASK;
+    return used + n <= unsigned(LQ_CAP);
+  }
   bool isActive(uint8_t index) const;
   bool matchesAddress(uint8_t index, RobTag tag) const {
     return isActive(index) && getRobTag(index) == tag;

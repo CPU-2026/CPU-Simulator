@@ -426,6 +426,175 @@ Operand IssueArbiter::resolveSrcFwd(const IssueArbOperandView &v,
   return resolveSrc(v);
 }
 
+const WideIssueDecision &IssueArbiter::wideDecision(unsigned requested) const {
+  if (!wideCache.valid) {
+    wideCache.lanes = {};
+    auto remaining = std::array<uint32_t, 7>{};
+    for (unsigned pool = 0; pool < 7; ++pool)
+      remaining[pool] = uint32_t(availableRows[pool]);
+    unsigned physical = 0, loads = 0, stores = 0;
+    RobTag tag = uint32_t(rob.nextTag);
+    bool open = !bool(squashNeed);
+    for (unsigned lane = 0; lane < 4; ++lane) {
+      const auto &d = wideDec[lane];
+      auto &p = wideCache.lanes[lane];
+      const unsigned cls = issueClass(d);
+      const bool writes = bool(d.allocDest) && uint32_t(d.rd) != 0 &&
+                          (cls == 1 || cls == 3 || cls == 6 || cls == 8 || cls == 9);
+      const int pool = cls == 1 || cls == 6 ? 0 : cls == 8 ? 1 :
+                       cls == 9 ? 2 : cls == 5 ? 3 : cls == 3 ? 4 : cls == 4 ? 5 : -1;
+      bool can = open && !bool(d.isEmpty) && cls != 0 && lane < uint32_t(robCredits) &&
+                 (!writes || physical < uint32_t(physicalCredits));
+      if (pool >= 0) can &= remaining[pool] != 0;
+      if (cls == 3) can &= loads < uint32_t(loadCredits);
+      if (cls == 4) can &= stores < uint32_t(storeCredits) && remaining[6] != 0;
+      open = can && cls != 2;
+      if (can) {
+        p.valid = true;
+        p.cls = cls;
+        p.op = uint32_t(decodeOp(uint32_t(d.type), uint32_t(d.opcode),
+                                 uint32_t(d.funct3), uint32_t(d.funct7)));
+        p.rd = uint32_t(d.rd);
+        p.pc = uint32_t(d.pc);
+        p.predictedPC = uint32_t(d.predictedPC);
+        p.ckptId = uint32_t(d.ckptId);
+        p.imm = uint32_t(d.imm);
+        p.tag = tag;
+        p.alloc = writes;
+        p.phy = writes ? uint32_t(wideFreePhy[physical]) : 0;
+        p.oldPhy = writes ? uint32_t(wideRat[lane].rdOldPhy) : 0;
+        p.control = (cls == 1 && uint32_t(d.opcode) == 0x67) ||
+                    (cls == 6 && uint32_t(d.type) == uint32_t(RISC_V::J));
+        p.call = p.control && (p.rd == 1 || p.rd == 5);
+        p.ret = cls == 1 && p.control && (uint32_t(d.rs1) == 1 || uint32_t(d.rs1) == 5);
+        p.intImmediate = uint32_t(d.type) != uint32_t(RISC_V::R);
+        p.upperPC = cls == 6 && (p.control || uint32_t(d.opcode) == 0x17);
+        // The latest *actual* writer wins for each source and for WAW oldPhy.
+        auto source = [&](const IssueArbOperandView &view, unsigned reg) {
+          Operand operand = resolveSrc(view);
+          for (unsigned older = 0; older < lane; ++older) {
+            const auto &previous = wideCache.lanes[older];
+            if (previous.alloc && reg != 0 && reg == previous.rd)
+              operand = previous.control ? Operand{InvalidPhy, int32_t(previous.pc + 4u)}
+                                         : Operand{int(previous.phy), 0};
+          }
+          return operand;
+        };
+        p.s1 = source(wideRat[lane].s1, uint32_t(d.rs1));
+        p.s2 = source(wideRat[lane].s2, uint32_t(d.rs2));
+        for (unsigned older = 0; older < lane; ++older) {
+          const auto &previous = wideCache.lanes[older];
+          if (writes && previous.alloc && p.rd == previous.rd) p.oldPhy = previous.phy;
+        }
+        auto takeRow = [&](unsigned which) {
+          unsigned slot = 0;
+          bool found = false;
+          for (unsigned row = 0; row < 32; ++row) {
+            if (!found && ((remaining[which] >> row) & 1u)) {
+              slot = row;
+              found = true;
+            }
+          }
+          p.slots[which] = slot;
+          remaining[which] &= ~(1u << slot);
+        };
+        if (pool >= 0) takeRow(unsigned(pool));
+        if (cls == 4) takeRow(6);
+        if (cls == 3) p.memIndex = (uint32_t(lsq.lqTail) + loads) & LQ_MASK;
+        if (cls == 4) p.memIndex = MEM_STORE_BIT | ((uint32_t(lsq.sqTail) + stores) & SQ_MASK);
+        if (cls == 3 || cls == 4) {
+          const unsigned size = uint32_t(d.funct3) & 3u;
+          p.nBytes = size == 0 ? 1u : size == 1 ? 2u : 4u;
+          p.unsignedLoad = cls == 3 && (uint32_t(d.funct3) & 4u);
+        }
+        loads += cls == 3;
+        stores += cls == 4;
+        p.lqSnapshot = (uint32_t(lsq.lqTail) + loads) & LQ_SEQ_MASK;
+        p.sqSnapshot = (uint32_t(lsq.sqTail) + stores) & SQ_SEQ_MASK;
+        physical += writes;
+        tag = robNextTag(tag);
+      }
+    }
+    wideCache.valid = true;
+  }
+  return wideCache.lanes[requested];
+}
+
+void IssueArbiter::wire_wide_output() {
+  for (unsigned lane = 0; lane < 4; ++lane) {
+    auto &out = lane == 0 ? lane0 : lane == 1 ? lane1 : lane == 2 ? lane2 : lane3;
+    out.core.valid = [this, lane]() { return wideDecision(lane).valid; };
+    out.core.allocDest = [this, lane]() { return wideDecision(lane).alloc; };
+    out.core.phy = [this, lane]() { return wideDecision(lane).phy; };
+    out.core.robTag = [this, lane]() { return wideDecision(lane).tag; };
+    out.core.isLoad = [this, lane]() { return wideDecision(lane).cls == 3; };
+    out.core.isStore = [this, lane]() { return wideDecision(lane).cls == 4; };
+    out.core.isControl = [this, lane]() { return wideDecision(lane).control; };
+    out.core.nBytes = [this, lane]() { return wideDecision(lane).nBytes; };
+    out.core.isUnsigned = [this, lane]() { return wideDecision(lane).unsignedLoad; };
+    out.core.pc = [this, lane]() { return wideDecision(lane).pc; };
+    out.select.hasInteger = [this, lane]() { auto c = wideDecision(lane).cls; return c == 1 || c == 6; };
+    out.select.hasMultiply = [this, lane]() { return wideDecision(lane).cls == 8; };
+    out.select.hasDivide = [this, lane]() { return wideDecision(lane).cls == 9; };
+    out.select.hasBranch = [this, lane]() { return wideDecision(lane).cls == 5; };
+    out.select.hasLoad = [this, lane]() { return wideDecision(lane).cls == 3; };
+    out.select.hasStore = [this, lane]() { return wideDecision(lane).cls == 4; };
+    auto slot = [this, lane](auto &wire, unsigned pool) {
+      wire = [this, lane, pool]() { return wideDecision(lane).slots[pool]; };
+    };
+    slot(out.select.integerSlot, 0); slot(out.select.multiplySlot, 1);
+    slot(out.select.divideSlot, 2); slot(out.select.branchSlot, 3);
+    slot(out.select.loadSlot, 4); slot(out.select.storeAddrSlot, 5);
+    slot(out.select.storeValueSlot, 6);
+    auto payload = [this, lane](auto &port, unsigned cls) {
+      port.op = [this, lane, cls]() {
+        const auto &p = wideDecision(lane);
+        return p.cls == cls || (cls == 1 && p.cls == 6) ? p.op : uint32_t(Operation::OP_INVALID);
+      };
+      port.s1Tag = [this, lane]() { const auto &p = wideDecision(lane); return p.cls == 6 ? 0u : unsigned(p.s1.tag); };
+      port.s1Imm = [this, lane]() { const auto &p = wideDecision(lane); return p.cls == 6 ? (p.upperPC ? p.pc : 0u) : uint32_t(p.s1.imm); };
+      port.s2Tag = [this, lane]() {
+        const auto &p = wideDecision(lane);
+        return p.cls == 6 || p.cls == 3 || p.cls == 4 || (p.cls == 1 && p.intImmediate) ? 0u : unsigned(p.s2.tag);
+      };
+      port.s2Imm = [this, lane]() {
+        const auto &p = wideDecision(lane);
+        return p.cls == 6 || p.cls == 3 || p.cls == 4 || (p.cls == 1 && p.intImmediate) ? p.imm : uint32_t(p.s2.imm);
+      };
+      port.robTag = [this, lane]() { return wideDecision(lane).tag; };
+    };
+    payload(out.intP, 1); payload(out.mulP, 8); payload(out.divP, 9);
+    payload(out.brP, 5); payload(out.loadP, 3); payload(out.saP, 4);
+    out.loadP.memIndex = [this, lane]() { return wideDecision(lane).memIndex; };
+    out.saP.memIndex = [this, lane]() { return wideDecision(lane).memIndex; };
+    out.svP.memIndex = [this, lane]() { return wideDecision(lane).memIndex; };
+    out.svP.robTag = [this, lane]() { return wideDecision(lane).tag; };
+    out.svP.dataTag = [this, lane]() { return unsigned(wideDecision(lane).s2.tag); };
+    out.svP.dataImm = [this, lane]() { return uint32_t(wideDecision(lane).s2.imm); };
+    out.brP.imm = [this, lane]() { return wideDecision(lane).imm; };
+    out.brP.pc = [this, lane]() { return wideDecision(lane).pc; };
+    out.robEntry.type = [this, lane]() {
+      const auto &p = wideDecision(lane);
+      return uint32_t(p.control ? ROBType::LINK : p.cls == 4 ? ROBType::STORE : p.cls == 5 ? ROBType::BRANCH : ROBType::REGISTER);
+    };
+    out.robEntry.isCommitReady = [this, lane]() { auto c = wideDecision(lane).cls; return c == 2 || c == 7; };
+    // Legacy HALT does not allocate a destination, but retirement still needs
+    // its architectural rd to select the result (a0), not x0.
+    out.robEntry.dest = [this, lane]() { const auto &p = wideDecision(lane); return p.alloc || p.cls == 2 ? p.rd : 0u; };
+    out.robEntry.halt = [this, lane]() { return wideDecision(lane).cls == 2; };
+    out.robEntry.exception = [this, lane]() { return wideDecision(lane).cls == 7; };
+    out.robEntry.isCall = [this, lane]() { return wideDecision(lane).call; };
+    out.robEntry.isRet = [this, lane]() { return wideDecision(lane).ret; };
+    out.robEntry.ckptId = [this, lane]() { return wideDecision(lane).ckptId; };
+    out.robEntry.predictedPC = [this, lane]() { return wideDecision(lane).predictedPC; };
+    out.robEntry.pc = [this, lane]() { return wideDecision(lane).pc; };
+    out.robEntry.lqTailSnapshot = [this, lane]() { return wideDecision(lane).lqSnapshot; };
+    out.robEntry.sqTailSnapshot = [this, lane]() { return wideDecision(lane).sqSnapshot; };
+    out.robEntry.newPhy = [this, lane]() { return wideDecision(lane).phy; };
+    out.robEntry.oldPhy = [this, lane]() { return wideDecision(lane).oldPhy; };
+  }
+}
+
 // ---- Single issue port: `win` picks the branch, every Output field is a
 // small mux keyed on it. Failure paths reproduce the former default packet
 // field by field (IssuePacket{} defaults: valid=false, phy/oldPhy/newPhy=
@@ -1119,7 +1288,7 @@ void IssueArbiter::wire_output() {
         if (!static_cast<bool>(rs.intBusy[i]) &&
             (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(intSlot)))
           return 1u;
-      return 0u;
+      return bool(rs.intReuseValid) && (!l0 || uint32_t(rs.intReuseSlot) != uint32_t(intSlot)) ? 1u : 0u;
     };
     intSlot1 = [this]() -> uint32_t {
       const bool l0 = static_cast<uint32_t>(win) == 1u || static_cast<uint32_t>(win) == 6u;
@@ -1127,7 +1296,8 @@ void IssueArbiter::wire_output() {
         if (!static_cast<bool>(rs.intBusy[i]) &&
             (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(intSlot)))
           return static_cast<uint32_t>(i);
-      return 0u;
+      return bool(rs.intReuseValid) && (!l0 || uint32_t(rs.intReuseSlot) != uint32_t(intSlot))
+                 ? uint32_t(rs.intReuseSlot) : 0u;
     };
     loadFree1 = [this]() -> uint32_t {
       const bool l0 = static_cast<uint32_t>(win) == 3u;
@@ -1183,7 +1353,7 @@ void IssueArbiter::wire_output() {
         if (!static_cast<bool>(rs.brBusy[i]) &&
             (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(brSlot)))
           return 1u;
-      return 0u;
+      return bool(rs.brReuseValid) && (!l0 || uint32_t(rs.brReuseSlot) != uint32_t(brSlot)) ? 1u : 0u;
     };
     brSlot1 = [this]() -> uint32_t {
       const bool l0 = static_cast<uint32_t>(win) == 5u;
@@ -1191,7 +1361,8 @@ void IssueArbiter::wire_output() {
         if (!static_cast<bool>(rs.brBusy[i]) &&
             (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(brSlot)))
           return static_cast<uint32_t>(i);
-      return 0u;
+      return bool(rs.brReuseValid) && (!l0 || uint32_t(rs.brReuseSlot) != uint32_t(brSlot))
+                 ? uint32_t(rs.brReuseSlot) : 0u;
     };
     mulFree1 = [this]() -> uint32_t {
       const bool l0 = static_cast<uint32_t>(win) == 8u;
@@ -1693,7 +1864,7 @@ void IssueArbiter::wire_output() {
                  : 0u;
     };
 
-    // ---- lane1 robEntry group (intra-group WAR: oldPhy follows lane0) ----
+    // ---- lane1 robEntry group (intra-group WAW: oldPhy follows lane0) ----
     lane1.robEntry.type = [this]() -> uint32_t {
       const uint32_t w = static_cast<uint32_t>(win1);
       if (w == 1u)
@@ -1764,7 +1935,7 @@ void IssueArbiter::wire_output() {
       if (w == 1u || w == 4u || w == 5u || w == 6u || w == 8u || w == 9u)
         return static_cast<uint32_t>(lsq.lqTail1);
       if (w == 3u)
-        return static_cast<uint32_t>(lsq.lqTailSnapshot);
+        return static_cast<uint32_t>(lsq.lqTailSnapshot1);
       return 0u;
     };
     lane1.robEntry.sqTailSnapshot = [this]() -> uint32_t {
@@ -1772,7 +1943,7 @@ void IssueArbiter::wire_output() {
       if (w == 1u || w == 3u || w == 5u || w == 6u || w == 8u || w == 9u)
         return static_cast<uint32_t>(lsq.sqTail1);
       if (w == 4u)
-        return static_cast<uint32_t>(lsq.sqTailSnapshot);
+        return static_cast<uint32_t>(lsq.sqTailSnapshot1);
       return 0u;
     };
     lane1.robEntry.newPhy = [this]() -> uint32_t {
@@ -1785,8 +1956,8 @@ void IssueArbiter::wire_output() {
                  : static_cast<uint32_t>(InvalidPhy);
     };
     lane1.robEntry.oldPhy = [this]() -> uint32_t {
-      // Intra-group WAR: lane1's old value of its dest is lane0's newPhy when
-      // both write the same register; otherwise the committed RAT mapping.
+      // Intra-group WAW: lane1's old mapping is lane0's newPhy when
+      // both write the same register; otherwise the old speculative RAT mapping.
       const uint32_t w = static_cast<uint32_t>(win1);
       if (w != 1u && w != 3u && w != 6u && w != 8u && w != 9u)
         return static_cast<uint32_t>(InvalidPhy);

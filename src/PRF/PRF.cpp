@@ -78,6 +78,7 @@ void PRF::work() {
   if (!needSquash && !static_cast<bool>(recovery.active)) {
     for (unsigned L = 0; L < ISSUE_WIDTH; ++L) {
       if (issueAlloc[L]) {
+        assert(hasFree(popCount + 1u));
         const uint8_t popPhy = static_cast<uint32_t>(
             freeList[prfSlot(static_cast<PrfSeq>(nextHead))]);
         assert(popPhy != InvalidPhy);
