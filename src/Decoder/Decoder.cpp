@@ -104,12 +104,14 @@ void DecodeUnit::work() {
     tail <= 0;
   } else {
     // stage 2 pop: release the head uop(s) once the issue arbiter consumed them
-    const unsigned pop = static_cast<uint32_t>(issuePopCount) & 0x3u;
+    const unsigned pop = static_cast<uint32_t>(issuePopCount);
+    dark::debug::assert(pop <= ISSUE_WIDTH && pop <= count(), "IQ issue pop exceeds old entries");
     if (pop > 0 && !isEmpty()) {
       head <= ((static_cast<uint32_t>(head) + pop) & IQ_SEQ_MASK);
     }
     // stage 1 push: decode up to decodePushCount FQ entries into the IQ.
-    const unsigned push = static_cast<uint32_t>(decodePushCount) & 0x3u;
+    const unsigned push = static_cast<uint32_t>(decodePushCount);
+    dark::debug::assert(push <= DECODE_WIDTH && push <= pushCapacity(pop), "IQ decode push exceeds capacity");
     auto decodeInto = [&](unsigned slot, uint32_t raw, uint32_t pc,
                           uint32_t predictedPC, uint32_t ckptId) {
       Uop uop = Decoder::decode(static_cast<int32_t>(raw));
@@ -143,7 +145,16 @@ void DecodeUnit::work() {
       decodeInto(t1, static_cast<uint32_t>(fqHeadRaw1),
                  static_cast<uint32_t>(fqHeadPc1),
                  static_cast<uint32_t>(fqHeadPredictedPC1),
-                 static_cast<uint32_t>(fqHeadCkptId1));
+                  static_cast<uint32_t>(fqHeadCkptId1));
+    }
+    if constexpr (DECODE_WIDTH == 4) {
+      for (unsigned lane = 2; lane < DECODE_WIDTH; ++lane) {
+        if (lane < push) {
+          decodeInto((static_cast<uint32_t>(tail) + lane) & (IQ_CAP - 1),
+                     uint32_t(fqExtraRaw[lane - 2]), uint32_t(fqExtraPc[lane - 2]),
+                     uint32_t(fqExtraPredictedPC[lane - 2]), uint32_t(fqExtraCkptId[lane - 2]));
+        }
+      }
     }
     if (push > 0) {
       tail <= ((static_cast<uint32_t>(tail) + push) & IQ_SEQ_MASK);

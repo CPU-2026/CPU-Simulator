@@ -213,6 +213,8 @@ void ROB::work() {
                       "ROB push into a full ROB overwrites the head entry");
   for (unsigned L = 0; L < ISSUE_WIDTH; ++L) {
     if (issueValid[L]) {
+      dark::debug::assert(canAllocate(L + 1u), "ROB issue exceeds old free capacity");
+      dark::debug::assert(L == 0 || issueValid[L - 1u], "ROB issue lanes must form a prefix");
       const uint32_t q = issueSlotIdx[L];
       ROBqueue[q].tag <= issueTag[L];
       ROBqueue[q].type <= static_cast<uint32_t>(issue[L].entry.type);

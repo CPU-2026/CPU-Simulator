@@ -233,6 +233,8 @@ struct IssueArbInputLsq {
   Wire<1> lqFull1, sqFull1;
   Wire<LQ_SEQ_WIDTH> lqTail1;
   Wire<SQ_SEQ_WIDTH> sqTail1;
+  Wire<LQ_SEQ_WIDTH> lqTailSnapshot1;
+  Wire<SQ_SEQ_WIDTH> sqTailSnapshot1;
 };
 // Raw RAT operand read; the ready->constant resolve lives in the module
 // (verbatim resolveSrc, gated exactly like the former per-branch call
@@ -256,6 +258,31 @@ struct IssueArbInput {
   IssueArbInputRat rat;
   IssueArbInputRat rat1;
   Wire<1> squashNeed;
+  std::array<IssueArbInputDec, 4> wideDec;
+  std::array<IssueArbInputRat, 4> wideRat;
+  std::array<Wire<PHY_TAG_WIDTH>, 4> wideFreePhy;
+  Wire<7> physicalCredits, robCredits;
+  Wire<LQ_SEQ_WIDTH> loadCredits;
+  Wire<SQ_SEQ_WIDTH> storeCredits;
+  // Pool order: Integer, Multiply, Divide, Branch, Load, StoreAddr, StoreValue.
+  std::array<Wire<32>, 7> availableRows;
+};
+
+// A combinational plan, NOT a module next-state image. Like Wire's memoized
+// value, this cache is invalidated at every module sync (never in work()).
+struct WideIssueDecision {
+  uint32_t cls = 0, op = 0, phy = 0, oldPhy = 0, tag = 0;
+  uint32_t rd = 0, pc = 0, predictedPC = 0, ckptId = 0, imm = 0;
+  uint32_t lqSnapshot = 0, sqSnapshot = 0, memIndex = 0, nBytes = 0;
+  std::array<unsigned, 7> slots{};
+  Operand s1{}, s2{};
+  bool valid = false, alloc = false, control = false, call = false, ret = false;
+  bool unsignedLoad = false, intImmediate = false, upperPC = false;
+};
+struct WideIssueCache {
+  mutable bool valid = false;
+  mutable std::array<WideIssueDecision, 4> lanes{};
+  void sync() { valid = false; }
 };
 
 // ---- Inner: shared decision nets of the always_comb cloud (zero flops;
@@ -265,6 +292,7 @@ struct IssueArbInput {
 //   0 none (guard fail / branch resource fail / unhandled opcode)
 //   1 INT  2 HALT  3 LOAD  4 STORE  5 BR  6 UJ  7 RV_INVALID  8 MUL  9 DIV
 struct IssueArbInner {
+  WideIssueCache wideCache;
   Wire<4> win;
   Wire<4> win1;
   // branch parameters (pure functions of dec.type/opcode)
@@ -389,19 +417,28 @@ struct IssueArbLaneOutput {
 struct IssueArbOutput {
   IssueArbLaneOutput lane0;
   IssueArbLaneOutput lane1; // ISSUE_WIDTH == 2; unwired at width 1
+  IssueArbLaneOutput lane2, lane3;
 };
 
-// Stateless issue arbiter (pure combinational, zero flip-flops): selects at
-// most one decoded head instruction per cycle, allocates its resources (ROB
+// Stateless issue arbiter (pure combinational, zero flip-flops): selects an
+// in-order prefix of up to ISSUE_WIDTH decoded instructions, allocating (ROB
 // tag, RS first-fit slot, phy reg, LSQ tail snapshots) and drives the
 // per-consumer field groups. Archived in StaticArbiter.hpp with the other
 // stateless arbiters; the stateful FlushArbiter lives in DynamicArbiter.hpp.
 struct IssueArbiter : dark::Module<IssueArbInput, IssueArbOutput, IssueArbInner> {
-  IssueArbiter() { wire_output(); }
+  IssueArbiter() {
+    if constexpr (ISSUE_WIDTH == 4) wire_wide_output();
+    else wire_output();
+  }
   void work() override {}
+  const IssueArbLaneOutput &outputAt(unsigned lane) const {
+    return lane == 0 ? lane0 : lane == 1 ? lane1 : lane == 2 ? lane2 : lane3;
+  }
 
 private:
   void wire_output();
+  void wire_wide_output();
+  const WideIssueDecision &wideDecision(unsigned lane) const;
   // Raw issue class of the decoded head (pre-resource-check), mirroring the
   // former build() switch; class codes as in IssueArbInner.win.
   uint32_t issueClass(const IssueArbInputDec &d) const;
@@ -409,7 +446,7 @@ private:
   Operand resolveSrc(const IssueArbOperandView &v) const;
   // Resolve with intra-group RAW forwarding: if srcReg == fwdDest (and the
   // previous lane allocates), forward to fwdPhy (not-ready tag). Else fall
-  // back to resolveSrc over the committed RAT view.
+  // back to resolveSrc over the cycle-start speculative RAT view.
   Operand resolveSrcFwd(const IssueArbOperandView &v, uint32_t srcReg,
                         bool fwdAlloc, uint32_t fwdDest, uint32_t fwdPhy) const;
 };

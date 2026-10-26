@@ -1,5 +1,14 @@
 # 访存
 
+2026-10-26四宽：LQ/SQ消费同一0..4条发射前缀，分别按实际Load/Store数推进旧tail，
+每条ROB尾快照包含自身及更老lane；信用不包含本拍退休或发送释放。原Load/Store RS各2项，
+仍限制实际内存分配前缀，不等于同拍四Load/四Store，更不等于四访存口。单AGU及Cache/AXI/Slave不改。
+见[四宽同步记录](../../../sync/TEMPLATE-WIDE4-20261026.md)。
+
+后续RTL也已接入双Load/双Store分配；LQ按旧空槽分配、SQ按Store前缀推进tail，既有完整tag/活动位/committed恢复语义保持。软件尾快照字段不照搬RTL；实际验收见[RTL移植记录](../../../sync/RTL-DUAL-RENAME-20261025.md)。
+
+2026-10-25：`CPU_RENAME_WIDTH=2`支持双Load/双Store分配，分别用旧tail及前缀入队数选择两个不同槽，tail只写一次。ROB每条LSQ恢复边界包含更老lane及自身；旧full仍拒收，不旁路本拍退休/发送释放的额度。AGU/StoreValue、转发及Cache接口带宽保持，见[接线记录](../../../sync/DUAL-RENAME-WIRING-20261025.md)。
+
 当前默认单取指档恢复按原ROB liveCount省略空beat；期间后端仍冻结，LSQ返回和已提交Store/Cache/AXI继续。外部Slave容量/服务与退出协议保持。
 可选双取的恢复期安全hit提前取指只开放前端，不扩大本文访存请求、StoreValue和Load广播资格。
 

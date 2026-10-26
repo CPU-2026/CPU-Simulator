@@ -5,6 +5,13 @@
 
 ## 构建与测试
 
+四译码／四路顺序发射：追加`-DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=4 -DCPU_ISSUE_WIDTH=4 -DCPU_COMMIT_WIDTH=2`。
+`CPU_RENAME_WIDTH`现在是`CPU_ISSUE_WIDTH`的兼容别名（1/2/4），冲突配置编译失败。
+四宽自动使用ROB32/PRF64/checkpoint64、默认FQ8/IQ8；不增加取指、执行、提交或访存端口。
+默认仍1/1/1/2，旧golden保持；四宽验收边界见[同步记录](../../sync/TEMPLATE-WIDE4-20261026.md)，不能套用历史双宽周期或宣称持续4 IPC。
+
+可选双发射：追加`-DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=2 -DCPU_RENAME_WIDTH=2 -DCPU_COMMIT_WIDTH=2`，默认rename仍1。双Load/双Store、RAW/WAW分配逻辑已移植RTL；对应单/双rename各25课程＋40定向独立ISA通过，课程逐例core/total/退休数与模板相等。主树仍单发射，默认golden不改，未新增第二ALU；见[RTL移植记录](../../sync/RTL-DUAL-RENAME-20261025.md)。
+
 在本目录执行，使用支持C++20的编译器：
 
 ```bash

@@ -11,7 +11,8 @@ void InstructBuffer::work() {
     lastValid <= 0;
     lastValid1 <= 0;
   } else {
-    const unsigned pop = static_cast<uint32_t>(decodePopCount) & 0x3u;
+    const unsigned pop = static_cast<uint32_t>(decodePopCount);
+    dark::debug::assert(pop <= DECODE_WIDTH && pop <= count(), "FQ decode pop exceeds old entries");
     const bool push1 = FETCH_WIDTH >= 2 &&
                        static_cast<bool>(icacheReturnValid1);
     // stage 2 push: exactly the ICache head-consumption handshake (one or two

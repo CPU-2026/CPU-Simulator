@@ -244,25 +244,30 @@ void SQ::work() {
 
   // Push initializes every reused row field. Later same-cycle sources update
   // the local intent, preserving main-tree last-writer-wins ordering.
-  if (static_cast<bool>(issue.issueValid) &&
-      static_cast<bool>(issue.issueStore)) {
-    const uint32_t t = static_cast<uint32_t>(tail) & SQ_MASK;
-    intent[t].tagWrite = true;
-    intent[t].tag = static_cast<uint32_t>(issue.issueTag);
-    intent[t].addressWrite = true;
-    intent[t].address = 0;
-    intent[t].valueWrite = true;
-    intent[t].value = 0;
-    intent[t].bytesWrite = true;
-    intent[t].bytes = static_cast<uint32_t>(issue.issueBytes);
-    intent[t].addressReadyWrite = true;
-    intent[t].addressReady = false;
-    intent[t].valueReadyWrite = true;
-    intent[t].valueReady = false;
-    intent[t].committedWrite = true;
-    intent[t].committed = false;
-    tailWrite = true;
-    tailData = (static_cast<uint32_t>(tail) + 1) & SQ_SEQ_MASK;
+  unsigned pushCount = 0;
+  for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+    const auto &port = issue[lane];
+    if (bool(port.issueValid) && bool(port.issueStore)) {
+      ++pushCount;
+      dark::debug::assert(canAllocate(pushCount), "SQ issue exceeds old free capacity");
+      const uint32_t t = (static_cast<uint32_t>(tail) + pushCount - 1u) & SQ_MASK;
+      intent[t].tagWrite = true;
+      intent[t].tag = static_cast<uint32_t>(port.issueTag);
+      intent[t].addressWrite = true;
+      intent[t].address = 0;
+      intent[t].valueWrite = true;
+      intent[t].value = 0;
+      intent[t].bytesWrite = true;
+      intent[t].bytes = static_cast<uint32_t>(port.issueBytes);
+      intent[t].addressReadyWrite = true;
+      intent[t].addressReady = false;
+      intent[t].valueReadyWrite = true;
+      intent[t].valueReady = false;
+      intent[t].committedWrite = true;
+      intent[t].committed = false;
+      tailWrite = true;
+      tailData = (static_cast<uint32_t>(tail) + pushCount) & SQ_SEQ_MASK;
+    }
   }
 
   // store value ready: write the value from the PRF (RS owns the slot, it

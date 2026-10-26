@@ -17,8 +17,8 @@ class Decoder {
 
 struct DecodeInput {
     Wire<1> needSquash;
-    Wire<2> issuePopCount;   // 0..2: entries popped by issue this cycle
-    Wire<2> decodePushCount; // 0..2: entries decoded from FQ this cycle
+    Wire<ISSUE_COUNT_WIDTH> issuePopCount;
+    Wire<DECODE_COUNT_WIDTH> decodePushCount;
     Wire<32> fqHeadRaw;
     Wire<32> fqHeadPc;
     Wire<32> fqHeadPredictedPC;
@@ -27,6 +27,8 @@ struct DecodeInput {
     Wire<32> fqHeadPc1;
     Wire<32> fqHeadPredictedPC1;
     Wire<CKPT_ID_WIDTH> fqHeadCkptId1;
+    std::array<Wire<32>, 2> fqExtraRaw, fqExtraPc, fqExtraPredictedPC;
+    std::array<Wire<CKPT_ID_WIDTH>, 2> fqExtraCkptId;
 };
 
 struct UopEntry {
@@ -65,8 +67,8 @@ struct DecodeUnit : dark::Module<DecodeInput, IQOutput, IQInner> {
     }
     bool isEmpty() const { return count() == 0u; }
     bool isFull() const { return count() == static_cast<unsigned>(IQ_CAP); }
-    unsigned pushCapacity(bool willPop) const {
-        return static_cast<unsigned>(IQ_CAP) - count() + (willPop ? 1u : 0u);
+    unsigned pushCapacity(unsigned popCount) const {
+        return static_cast<unsigned>(IQ_CAP) - count() + popCount;
     }
     RISC_V headType() const {
         return static_cast<RISC_V>(static_cast<uint32_t>(

@@ -8,6 +8,37 @@
 
 ## 基本类型
 
+2026-10-26起`CPU_ISSUE_WIDTH`是后端顺序分配宽度，允许1/2/4；`CPU_RENAME_WIDTH`保留为完全同义别名，
+同时指定但不相等会编译失败。此规则覆盖下方历史“旧CPU_ISSUE_WIDTH仅前端”的说明。
+四宽独立构建示例：
+
+```bash
+cmake -S . -B /tmp/opencode/template-four -DCMAKE_BUILD_TYPE=Release \
+  -DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=4 -DCPU_ISSUE_WIDTH=4 -DCPU_COMMIT_WIDTH=2 \
+  -DCPU_RUNTIME_OUTPUT_DIRECTORY=/tmp/opencode/template-four \
+  -DCMAKE_CXX_FLAGS=-D_DEBUG -DCMAKE_CXX_FLAGS_RELEASE='-O3 -UNDEBUG'
+cmake --build /tmp/opencode/template-four -j2
+```
+
+四宽默认ROB32/PRF64/checkpoint64、FQ8/IQ8；默认单发射仍ROB16。
+decode4/issue1或2须显式缩小FQ/IQ（例如各4项）以满足checkpoint32预算，不能截断CID或放宽预算断言。
+四宽不能套单发射golden周期，结果和独立退休数必须校验；可复用`sync/check_template_wide4.py`和
+`sync/check_template_wide4_cpu.py`，报告均输出到仓库外，真实观察器只打开外部副本CPU访问标签。
+
+后端双重命名使用独立配置`-DCPU_RENAME_WIDTH=2`（默认1），不是旧前端`CPU_ISSUE_WIDTH`。例如独立构建：
+
+```bash
+cmake -S . -B /tmp/opencode/rename-build -DCMAKE_BUILD_TYPE=Release \
+  -DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=2 -DCPU_RENAME_WIDTH=2 \
+  -DCPU_RUNTIME_OUTPUT_DIRECTORY=/tmp/opencode/rename-build/bin \
+  -DCMAKE_CXX_FLAGS=-D_DEBUG -DCMAKE_CXX_FLAGS_RELEASE='-O3 -UNDEBUG'
+cmake --build /tmp/opencode/rename-build -j4
+```
+
+双宽支持双Load/双Store入队，但不增加AGU/Cache/CDB带宽。周期会变化，不能拿单发射golden验收双发射周期；默认单发射必须保持改前结果/退休/分段周期。记录见[双重命名接线](../../../sync/DUAL-RENAME-WIRING-20261025.md)。
+
+该逻辑随后已移植RTL：固定fetch/decode/commit=2时，单/双rename各25课程＋40定向独立ISA通过，课程core/total/退休数与模板相等；双rename不是主树支持项。RTL运行方式和既有失败边界见[移植记录](../../../sync/RTL-DUAL-RENAME-20261025.md)。
+
 前端配置可直接用CMake cache：`-DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=2 -DCPU_COMMIT_WIDTH=2`，并可设置`CPU_FQ_ENTRIES`/`CPU_IQ_ENTRIES`。默认容量各为译码宽度两倍；仍单发射，旧`CPU_ISSUE_WIDTH`仅在未提供新宽度时兼容原前端设置。双取已同步RTL packet/逐指令CID/恢复期安全hit提前取指，2/1/2与2/2/2均25例三端周期相等；默认保持1/1/2，其他容量组合不能套用该结论，见[实施记录](../../../sync/WIDTH-DECODE-SYNC-20261024.md)。
 
 Integer/Branch默认各4项，容量参数为`CPU_INT_RS_ENTRIES`/`CPU_BRANCH_RS_ENTRIES`。只有这两池允许授权WB当拍派发及满站实际离站复用，其他池不能借此读取新的PRF值。

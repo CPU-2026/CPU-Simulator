@@ -22,20 +22,19 @@
 // so release and flush converge through the same else-if (both set free=1).
 
 void RSUnit::work() {
-  const bool issueValid = static_cast<bool>(sel.valid);
-  const bool hasInt = issueValid && static_cast<bool>(sel.hasInteger);
-  const bool hasLoad = issueValid && static_cast<bool>(sel.hasLoad);
-  const bool hasStore = issueValid && static_cast<bool>(sel.hasStore);
-  const bool hasBranch = issueValid && static_cast<bool>(sel.hasBranch);
-  const bool hasMul = issueValid && static_cast<bool>(sel.hasMultiply);
-  const bool hasDiv = issueValid && static_cast<bool>(sel.hasDivide);
-  const uint32_t intSlot = static_cast<uint32_t>(sel.integerSlot);
-  const uint32_t loadSlotV = static_cast<uint32_t>(sel.loadSlot);
-  const uint32_t saSlot = static_cast<uint32_t>(sel.storeAddrSlot);
-  const uint32_t svSlot = static_cast<uint32_t>(sel.storeValueSlot);
-  const uint32_t brSlot = static_cast<uint32_t>(sel.branchSlot);
-  const uint32_t mulSlot = static_cast<uint32_t>(sel.multiplySlot);
-  const uint32_t divSlotV = static_cast<uint32_t>(sel.divideSlot);
+  // Select the writer per slot before touching any Register.
+  auto pushLane = [&](int slot, auto hasMember, auto slotMember) {
+    int selected = -1;
+    for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+      const auto &sel = issue[lane].sel;
+      if (bool(sel.valid) && bool(sel.*hasMember) &&
+          uint32_t(sel.*slotMember) == unsigned(slot)) {
+        dark::debug::assert(selected < 0, "Two issue lanes allocated one RS slot");
+        selected = int(lane);
+      }
+    }
+    return selected;
+  };
 
   const bool needSquash = static_cast<bool>(squash.needSquash);
   const RobTag sqTag = static_cast<uint32_t>(squash.SquashTag);
@@ -56,11 +55,13 @@ void RSUnit::work() {
   for (int i = 0; i < INTEGERRS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(integerRS[i].busy);
     const RobTag tagOld = static_cast<uint32_t>(integerRS[i].robTag);
-    const bool pushHit = hasInt && intSlot == static_cast<uint32_t>(i);
+    const int lane = pushLane(i, &RSInputIssueSel::hasInteger, &RSInputIssueSel::integerSlot);
+    const bool pushHit = lane >= 0;
     const bool relHit = aluRel && aluIdx == static_cast<uint32_t>(i);
     const bool flushHit =
         needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
     if (pushHit) {
+      const auto &data = issue[lane].data;
       integerRS[i].busy <= 1;
       integerRS[i].op <= static_cast<uint32_t>(data.intP.op);
       integerRS[i].src1.tag <= static_cast<uint32_t>(data.intP.s1Tag);
@@ -77,11 +78,13 @@ void RSUnit::work() {
   for (int i = 0; i < LOADRS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(loadRS[i].busy);
     const RobTag tagOld = static_cast<uint32_t>(loadRS[i].robTag);
-    const bool pushHit = hasLoad && loadSlotV == static_cast<uint32_t>(i);
+    const int lane = pushLane(i, &RSInputIssueSel::hasLoad, &RSInputIssueSel::loadSlot);
+    const bool pushHit = lane >= 0;
     const bool relHit = aguRel && aguIsLoadV && aguIdx == static_cast<uint32_t>(i);
     const bool flushHit =
         needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
     if (pushHit) {
+      const auto &data = issue[lane].data;
       loadRS[i].busy <= 1;
       loadRS[i].op <= static_cast<uint32_t>(data.loadP.op);
       loadRS[i].src1.tag <= static_cast<uint32_t>(data.loadP.s1Tag);
@@ -100,12 +103,14 @@ void RSUnit::work() {
   for (int i = 0; i < STORERS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(storeAddressRS[i].busy);
     const RobTag tagOld = static_cast<uint32_t>(storeAddressRS[i].robTag);
-    const bool pushHit = hasStore && saSlot == static_cast<uint32_t>(i);
+    const int lane = pushLane(i, &RSInputIssueSel::hasStore, &RSInputIssueSel::storeAddrSlot);
+    const bool pushHit = lane >= 0;
     const bool relHit =
         aguRel && !aguIsLoadV && aguIdx == static_cast<uint32_t>(i);
     const bool flushHit =
         needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
     if (pushHit) {
+      const auto &data = issue[lane].data;
       storeAddressRS[i].busy <= 1;
       storeAddressRS[i].op <= static_cast<uint32_t>(data.saP.op);
       storeAddressRS[i].src1.tag <= static_cast<uint32_t>(data.saP.s1Tag);
@@ -125,11 +130,13 @@ void RSUnit::work() {
   for (int i = 0; i < STORERS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(storeValueRS[i].busy);
     const RobTag tagOld = static_cast<uint32_t>(storeValueRS[i].robTag);
-    const bool pushHit = hasStore && svSlot == static_cast<uint32_t>(i);
+    const int lane = pushLane(i, &RSInputIssueSel::hasStore, &RSInputIssueSel::storeValueSlot);
+    const bool pushHit = lane >= 0;
     const bool relHit = busyOld && static_cast<bool>(prf.svReady[i]);
     const bool flushHit =
         needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
     if (pushHit) {
+      const auto &data = issue[lane].data;
       storeValueRS[i].busy <= 1;
       storeValueRS[i].data.tag <= static_cast<uint32_t>(data.svP.dataTag);
       storeValueRS[i].data.imm <= static_cast<uint32_t>(data.svP.dataImm);
@@ -144,11 +151,13 @@ void RSUnit::work() {
   for (int i = 0; i < BRANCHRS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(branchRS[i].busy);
     const RobTag tagOld = static_cast<uint32_t>(branchRS[i].robTag);
-    const bool pushHit = hasBranch && brSlot == static_cast<uint32_t>(i);
+    const int lane = pushLane(i, &RSInputIssueSel::hasBranch, &RSInputIssueSel::branchSlot);
+    const bool pushHit = lane >= 0;
     const bool relHit = bruRel && bruIdx == static_cast<uint32_t>(i);
     const bool flushHit =
         needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
     if (pushHit) {
+      const auto &data = issue[lane].data;
       branchRS[i].busy <= 1;
       branchRS[i].op <= static_cast<uint32_t>(data.brP.op);
       branchRS[i].src1.tag <= static_cast<uint32_t>(data.brP.s1Tag);
@@ -167,11 +176,13 @@ void RSUnit::work() {
   for (int i = 0; i < MULTIPLYRS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(multiplyRS[i].busy);
     const RobTag tagOld = static_cast<uint32_t>(multiplyRS[i].robTag);
-    const bool pushHit = hasMul && mulSlot == static_cast<uint32_t>(i);
+    const int lane = pushLane(i, &RSInputIssueSel::hasMultiply, &RSInputIssueSel::multiplySlot);
+    const bool pushHit = lane >= 0;
     const bool relHit = mulRel && mulIdx == static_cast<uint32_t>(i);
     const bool flushHit =
         needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
     if (pushHit) {
+      const auto &data = issue[lane].data;
       multiplyRS[i].busy <= 1;
       multiplyRS[i].op <= static_cast<uint32_t>(data.mulP.op);
       multiplyRS[i].src1.tag <= static_cast<uint32_t>(data.mulP.s1Tag);
@@ -190,11 +201,13 @@ void RSUnit::work() {
   for (int i = 0; i < DIVIDERS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(divideRS[i].busy);
     const RobTag tagOld = static_cast<uint32_t>(divideRS[i].robTag);
-    const bool pushHit = hasDiv && divSlotV == static_cast<uint32_t>(i);
+    const int lane = pushLane(i, &RSInputIssueSel::hasDivide, &RSInputIssueSel::divideSlot);
+    const bool pushHit = lane >= 0;
     const bool relHit = divRel && divIdx == static_cast<uint32_t>(i);
     const bool flushHit =
         needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
     if (pushHit) {
+      const auto &data = issue[lane].data;
       divideRS[i].busy <= 1;
       divideRS[i].op <= static_cast<uint32_t>(data.divP.op);
       divideRS[i].src1.tag <= static_cast<uint32_t>(data.divP.s1Tag);

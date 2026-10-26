@@ -49,7 +49,7 @@ struct SQInputPRF {
 struct SQInput {
   std::array<CommitPort, COMMIT_WIDTH> commits;
   SQInputSquash squash;
-  SQInputIssue issue;
+  std::array<SQInputIssue, ISSUE_WIDTH> issue;
   SQInputMemDispatch memDispatch;
   SQInputROB rob;
   SQInputAGU agu;
@@ -135,6 +135,10 @@ public:
   StoreCompletion completionBitmap() const;
   bool isEmpty() const;
   bool isFull() const;
+  bool canAllocate(unsigned n) const {
+    const unsigned used = (uint32_t(tail) - uint32_t(head)) & SQ_SEQ_MASK;
+    return used + n <= unsigned(SQ_CAP);
+  }
   bool isActive(uint8_t index) const;
   bool matchesAddress(uint8_t index, RobTag tag) const {
     return isActive(index) && getRobTag(index) == tag;

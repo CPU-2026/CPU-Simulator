@@ -141,9 +141,12 @@ struct RSInputSquash {
 struct RSInputPRF {
   std::array<Wire<1>, STORERS_CAP> svReady;
 };
-struct RSInput {
+struct RSIssuePort {
   RSInputIssueSel sel;
   RSInputIssueData data;
+};
+struct RSInput {
+  std::array<RSIssuePort, ISSUE_WIDTH> issue;
   RSInputDispatch dispatch;
   RSInputSquash squash;
   RSInputPRF prf;

@@ -33,6 +33,7 @@
 class CPU {
  private:
   void clock(bool shuffle = false);
+  void wireIssue();
   // Framework runner: run_once() = ++cycles -> registered work() sequence ->
   // sync_all(); run_once_shuffle() randomizes the work order (order
   // independence is structural: every cross-module read is a Wire tied to
@@ -80,7 +81,7 @@ class CPU {
   bool frontendCanRun() const;
   OperandWriteback grantedWritebacks() const;
   // 0..DECODE_WIDTH: decoded uops moved FQ -> IQ this cycle (min of FQ
-  // availability, IQ push capacity after the single-issue pop, and width).
+  // availability, IQ push capacity after the actual issue pops, and width).
   unsigned decodePopCount() const;
 public:
   CPU(const Memory &mem);
