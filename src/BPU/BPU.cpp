@@ -94,58 +94,59 @@ PredictInfo BPU::predict(uint32_t pc, uint8_t ghr) const {
 bool BPU::fetchAllowed() const {
   return !static_cast<bool>(fetchCtx.squashNeed) &&
          !static_cast<bool>(fetchCtx.haltFetched) &&
-         static_cast<bool>(fetchCtx.fqCanAccept) &&
+         static_cast<bool>(fetchCtx.fqCanAcceptN[0]) &&
          static_cast<bool>(fetchCtx.memCanAccept);
 }
 
-// ---- fetch-stage prediction bundle (retired FetchDecision::build). ----
-//      I$ metadata truncates at the earliest CFI. One OLD predictor query is
-//      made for that CFI; both distinct CIDs capture the same OLD GHR. ----
 BPU::FetchGroup BPU::fetchGroup() const {
   FetchGroup g;
   if (!fetchAllowed())
     return g;
   const uint8_t ghr0 = static_cast<uint8_t>(static_cast<uint32_t>(dir.GHR));
   const uint32_t pc0 = static_cast<uint32_t>(fetchCtx.pc);
-  const bool second = FETCH_WIDTH == 2 && !legacyHaltEnabled && bool(fetchCtx.icacheHit) &&
-                      !(pc0 & 4u) && !bool(fetchCtx.firstControl);
-  const bool querySecond = second && bool(fetchCtx.secondControl);
-  const bool enabled = FETCH_WIDTH == 1 || legacyHaltEnabled || !bool(fetchCtx.icacheHit) ||
-                       bool(fetchCtx.firstControl) || querySecond;
-  const PredictInfo p0 = predict(pc0 | (querySecond ? 4u : 0u), ghr0);
-  g.valid0 = true;
-  g.pc0 = pc0;
-  g.nextPC = enabled ? uint32_t(p0.predictPC) : pc0 + (second ? 8u : 4u);
-  g.predPC0 = second ? (pc0 | 4u) : g.nextPC;
-  g.shift0 = enabled && (p0.btbHit || p0.condSeen);
-  g.shiftValue0 = p0.btbHit ? (p0.unconditional ? true : p0.taken)
-                            : (p0.condSeen ? p0.taken : false);
-  if (second) {
-    g.valid1 = true;
-    g.pc1 = pc0 | 4u;
-    g.predPC1 = g.nextPC;
+  const bool canMulti = !legacyHaltEnabled && static_cast<bool>(fetchCtx.icacheHit);
+  const uint32_t blockRemain =
+      canMulti ? FETCH_WIDTH - ((pc0 >> 2) & (FETCH_WIDTH - 1)) : 1u;
+  unsigned maxLanes = blockRemain;
+  for (unsigned L = 0; L < blockRemain; ++L)
+    if (!static_cast<bool>(fetchCtx.fqCanAcceptN[L])) { maxLanes = L; break; }
+  unsigned cfiPos = maxLanes;
+  for (unsigned L = 0; L < maxLanes; ++L)
+    if (static_cast<bool>(fetchCtx.control[L])) { cfiPos = L; break; }
+  const bool hasCfi = cfiPos < maxLanes;
+  const unsigned groupSize = hasCfi ? (cfiPos + 1) : maxLanes;
+  const bool doPredict = !canMulti || hasCfi;
+  const uint32_t predictPc = hasCfi ? (pc0 + 4u * cfiPos) : pc0;
+  const PredictInfo p = predict(predictPc, ghr0);
+  g.nextPC = doPredict ? uint32_t(p.predictPC) : (pc0 + 4u * groupSize);
+  g.shift = doPredict && (p.btbHit || p.condSeen);
+  g.shiftValue = p.btbHit ? (p.unconditional ? true : p.taken)
+                          : (p.condSeen ? p.taken : false);
+  for (unsigned L = 0; L < groupSize; ++L) {
+    g.valid[L] = true;
+    g.pc[L] = pc0 + 4u * L;
+    g.predPC[L] = (L + 1 < groupSize) ? (pc0 + 4u * (L + 1)) : g.nextPC;
   }
+  g.groupSize = groupSize;
   return g;
 }
 
 void BPU::wire_output() {
   outValid = [this]() -> uint32_t {
-    return fetchGroup().valid0 ? 1u : 0u;
+    return fetchGroup().groupSize > 0 ? 1u : 0u;
   };
-  outValid1 = [this]() -> uint32_t {
-    return fetchGroup().valid1 ? 1u : 0u;
-  };
-  outPC = [this]() -> uint32_t { return fetchGroup().pc0; };
-  outPC1 = [this]() -> uint32_t { return fetchGroup().pc1; };
-  outPredictedPC = [this]() -> uint32_t { return fetchGroup().predPC0; };
-  outPredictedPC1 = [this]() -> uint32_t { return fetchGroup().predPC1; };
+  outCount = [this]() -> uint32_t { return fetchGroup().groupSize; };
   outPredPC = [this]() -> uint32_t { return fetchGroup().nextPC; };
-  outShift = [this]() -> uint32_t { return fetchGroup().shift0 ? 1u : 0u; };
-  outShiftValue = [this]() -> uint32_t { return fetchGroup().shiftValue0 ? 1u : 0u; };
-  outShift1 = [this]() -> uint32_t { return fetchGroup().shift1 ? 1u : 0u; };
-  outShiftValue1 = [this]() -> uint32_t { return fetchGroup().shiftValue1 ? 1u : 0u; };
+  outShift = [this]() -> uint32_t { return fetchGroup().shift ? 1u : 0u; };
+  outShiftValue = [this]() -> uint32_t { return fetchGroup().shiftValue ? 1u : 0u; };
+  for (unsigned L = 0; L < FETCH_WIDTH; ++L) {
+    outPC[L] = [this, L]() -> uint32_t { return fetchGroup().pc[L]; };
+    outPredictedPC[L] = [this, L]() -> uint32_t { return fetchGroup().predPC[L]; };
+  }
   outCkptId = [this]() -> uint32_t {
-    return fetchGroup().valid0 ? (static_cast<uint32_t>(getNextCkptId()) & (CKPT_CAP - 1)) : 0u;
+    return fetchGroup().groupSize > 0
+               ? (static_cast<uint32_t>(getNextCkptId()) & (CKPT_CAP - 1))
+               : 0u;
   };
 }
 
@@ -333,19 +334,15 @@ void BPU::work() {
   if (static_cast<bool>(outValid)) {
     auto ckid = static_cast<uint32_t>(outCkptId);
     BPUSnapshot ckptSnap = snapshotCheckPoint();
-    bpCkpt[ckid].GHR <= ckptSnap.GHR_snapshot;
-    if (bool(outValid1)) bpCkpt[(ckid + 1) & (CKPT_CAP - 1)].GHR <= ckptSnap.GHR_snapshot;
+    const unsigned cnt = static_cast<uint32_t>(outCount);
+    for (unsigned L = 0; L < cnt; ++L)
+      bpCkpt[(ckid + L) & (CKPT_CAP - 1)].GHR <= ckptSnap.GHR_snapshot;
     if (static_cast<bool>(outShift))
       ghrLocal =
           static_cast<uint8_t>(((static_cast<uint32_t>(ghrLocal) << 1) |
                                 (static_cast<bool>(outShiftValue) ? 1u : 0u)) &
                                HISTORY_MASK);
-    if (static_cast<bool>(outValid1) && static_cast<bool>(outShift1))
-      ghrLocal =
-          static_cast<uint8_t>(((static_cast<uint32_t>(ghrLocal) << 1) |
-                                (static_cast<bool>(outShiftValue1) ? 1u : 0u)) &
-                               HISTORY_MASK);
-    nextCkpt = (ckid + (bool(outValid1) ? 2u : 1u)) & (CKPT_CAP - 1);
+    nextCkpt = (ckid + cnt) & (CKPT_CAP - 1);
   }
 
   // ---- Arch + speculative RAS local mirror (mirrors the main tree) ----
@@ -360,10 +357,6 @@ void BPU::work() {
 
   BTBWriteIntent fetchWriteIntent;
   if (!step.active) {
-    // RAS maintenance runs for every fetched jump in the group, in program
-    // order (lane0 then lane1) so return prediction stays exact. BTB early
-    // training uses the single fetch port (lane0 only): a lane1 jump is still
-    // trained at resolve time, costing at most one extra mispredict.
     auto rasFetch = [&](bool valid, bool isRet, bool isCall, uint32_t pc) {
       if (!valid)
         return;
@@ -372,19 +365,12 @@ void BPU::work() {
       if (!needSquash && isCall && specTop < RAS_CAP)
         specRAS[specTop++] = pc + 4u;
     };
-    rasFetch(static_cast<bool>(fetchInfo.FetchValid),
-             static_cast<bool>(fetchInfo.isFetchRet),
-             static_cast<bool>(fetchInfo.isFetchCall),
-             static_cast<uint32_t>(fetchInfo.FetchPC));
-    if (FETCH_WIDTH >= 2)
-      rasFetch(static_cast<bool>(fetchInfo.FetchValid1),
-               static_cast<bool>(fetchInfo.isFetchRet1),
-               static_cast<bool>(fetchInfo.isFetchCall1),
-               static_cast<uint32_t>(fetchInfo.FetchPC1));
+    for (unsigned L = 0; L < FETCH_WIDTH; ++L)
+      rasFetch(static_cast<bool>(fetchInfo.FetchValid[L]),
+               static_cast<bool>(fetchInfo.isFetchRet[L]),
+               static_cast<bool>(fetchInfo.isFetchCall[L]),
+               static_cast<uint32_t>(fetchInfo.FetchPC[L]));
 
-    // BTB early training: with !shift0, at most one lane per group is a jump
-    // (a lane0 jump degrades lane1), so a single fetch write port suffices.
-    // Prefer lane0; a lane1 jump is trained here only when lane0 is not.
     auto btbFetch = [&](bool valid, bool isRet, bool jalTargetValid,
                         uint32_t pc, uint32_t jalTarget) {
       if (!valid)
@@ -397,17 +383,14 @@ void BPU::work() {
       fetchWriteIntent.targetWrite = !isRet && jalTargetValid;
       fetchWriteIntent.target = jalTarget;
     };
-    if (static_cast<bool>(fetchInfo.FetchValid))
-      btbFetch(true, static_cast<bool>(fetchInfo.isFetchRet),
-               static_cast<bool>(fetchInfo.FetchJALTargetValid),
-               static_cast<uint32_t>(fetchInfo.FetchPC),
-               static_cast<uint32_t>(fetchInfo.FetchJALTarget));
-    else if (FETCH_WIDTH >= 2)
-      btbFetch(static_cast<bool>(fetchInfo.FetchValid1),
-               static_cast<bool>(fetchInfo.isFetchRet1),
-               static_cast<bool>(fetchInfo.FetchJALTargetValid1),
-               static_cast<uint32_t>(fetchInfo.FetchPC1),
-               static_cast<uint32_t>(fetchInfo.FetchJALTarget1));
+    for (unsigned L = 0; L < FETCH_WIDTH; ++L)
+      if (static_cast<bool>(fetchInfo.FetchValid[L])) {
+        btbFetch(true, static_cast<bool>(fetchInfo.isFetchRet[L]),
+                 static_cast<bool>(fetchInfo.FetchJALTargetValid[L]),
+                 static_cast<uint32_t>(fetchInfo.FetchPC[L]),
+                 static_cast<uint32_t>(fetchInfo.FetchJALTarget[L]));
+        break;
+      }
   }
 
   // Pre-commit architectural baseline: like the main tree tick() (which reads

@@ -16,29 +16,21 @@ struct InstructBufferEntry {
 
 struct FQInput {
   Wire<1> needSquash;
-  Wire<1> icacheReturnAccepted; // Same handshake as ICache.popConsume.
-  Wire<1> icacheReturnValid1;   // lane1 of the fetched group is valid
-  Wire<32> icacheReturnRaw;
-  Wire<32> icacheReturnPC;
-  Wire<32> icacheReturnPredictedPC;
+  Wire<1> icacheReturnAccepted;
+  Wire<3> icacheReturnCount;
+  std::array<Wire<32>, FETCH_WIDTH> icacheReturnRaw;
+  std::array<Wire<32>, FETCH_WIDTH> icacheReturnPC;
+  std::array<Wire<32>, FETCH_WIDTH> icacheReturnPredictedPC;
   Wire<CKPT_ID_WIDTH> icacheReturnCkptId;
-  Wire<32> icacheReturnRaw1;
-  Wire<32> icacheReturnPC1;
-  Wire<32> icacheReturnPredictedPC1;
   Wire<DECODE_COUNT_WIDTH> decodePopCount;
 };
 
 struct FQOutput {
   Register<FQ_SEQ_WIDTH> head;
   Register<FQ_SEQ_WIDTH> tail;
-  // Pre-decode observation of the last push (committed next cycle): feeds
-  // the BPU's scanner for RAS maintenance / early BTB training.
-  Register<1> lastValid;
-  Register<32> lastRaw;
-  Register<32> lastPC;
-  Register<1> lastValid1;
-  Register<32> lastRaw1;
-  Register<32> lastPC1;
+  Register<3> lastCount;
+  std::array<Register<32>, FETCH_WIDTH> lastRaw;
+  std::array<Register<32>, FETCH_WIDTH> lastPC;
 };
 
 struct FQInner {
@@ -63,23 +55,14 @@ struct InstructBuffer : dark::Module<FQInput, FQOutput, FQInner> {
   bool canAccept(unsigned push, unsigned pop) const {
     return count() + push <= static_cast<unsigned>(FQ_CAP) + pop;
   }
-  uint32_t getLastRaw() const {
-    return static_cast<uint32_t>(lastRaw);
+  uint32_t getLastCount() const {
+    return static_cast<uint32_t>(lastCount);
   }
-  uint32_t getLastPC() const {
-    return static_cast<uint32_t>(lastPC);
+  uint32_t getLastRaw(unsigned L) const {
+    return static_cast<uint32_t>(lastRaw[L]);
   }
-  bool getLastValid() const {
-    return static_cast<bool>(lastValid);
-  }
-  uint32_t getLastRaw1() const {
-    return static_cast<uint32_t>(lastRaw1);
-  }
-  uint32_t getLastPC1() const {
-    return static_cast<uint32_t>(lastPC1);
-  }
-  bool getLastValid1() const {
-    return static_cast<bool>(lastValid1);
+  uint32_t getLastPC(unsigned L) const {
+    return static_cast<uint32_t>(lastPC[L]);
   }
   uint32_t headRaw() const {
     return static_cast<uint32_t>(entries[static_cast<uint32_t>(head) & (FQ_CAP - 1)].raw);

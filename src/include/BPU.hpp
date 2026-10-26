@@ -51,29 +51,21 @@ struct BPUInputROB {
 // NPC/redirect combinational cloud inside the predictor unit (fetch context
 // in, prediction bundle out).
 struct BPUInputFetchCtx {
-  Wire<32> pc;          // FetchUnitModule.programCounter (_M_old)
-  Wire<1> squashNeed;   // flushArbiter.needSquash
-  Wire<1> haltFetched;  // Latched halt or HALT accepted this cycle.
-  Wire<1> fqCanAccept;  // FQ admission for at least one entry.
-  Wire<1> fqCanAccept2; // FQ admission for a full 2-entry group.
-  Wire<1> memCanAccept; // Request capacity and SRAM port allow a new fetch.
-  Wire<1> icacheHit, firstControl, secondControl;
+  Wire<32> pc;
+  Wire<1> squashNeed;
+  Wire<1> haltFetched;
+  std::array<Wire<1>, FETCH_WIDTH> fqCanAcceptN;
+  Wire<1> memCanAccept;
+  Wire<1> icacheHit;
+  std::array<Wire<1>, FETCH_WIDTH> control;
 };
 struct BPUInputFetchTypeInfo {
-  Wire<1> FetchValid;
-  Wire<1> isFetchCall;
-  Wire<1> isFetchRet;
-  Wire<1> FetchJALTargetValid;
-  Wire<32> FetchPC;
-  Wire<32> FetchJALTarget;
-  // Second lane of the fetch group (FETCH_WIDTH == 2). Kept wired to 0 at
-  // width 1 so single-width behavior is bit-identical.
-  Wire<1> FetchValid1;
-  Wire<1> isFetchCall1;
-  Wire<1> isFetchRet1;
-  Wire<1> FetchJALTargetValid1;
-  Wire<32> FetchPC1;
-  Wire<32> FetchJALTarget1;
+  std::array<Wire<1>, FETCH_WIDTH> FetchValid;
+  std::array<Wire<1>, FETCH_WIDTH> isFetchCall;
+  std::array<Wire<1>, FETCH_WIDTH> isFetchRet;
+  std::array<Wire<1>, FETCH_WIDTH> FetchJALTargetValid;
+  std::array<Wire<32>, FETCH_WIDTH> FetchPC;
+  std::array<Wire<32>, FETCH_WIDTH> FetchJALTarget;
 };
 struct BPUInput {
   std::array<CommitPort, COMMIT_WIDTH> commits;
@@ -88,18 +80,14 @@ struct BPUInput {
 };
 
 struct BPUOutput {
-  Wire<32> outPredPC; // group advance: next PC after the last valid lane
-  Wire<1> outValid;   // group valid (lane0 valid)
-  Wire<1> outValid1;  // lane1 valid (second instruction of the group)
-  Wire<32> outPC;     // lane0 PC
-  Wire<32> outPC1;    // lane1 PC
-  Wire<32> outPredictedPC;  // lane0 context predictPC
-  Wire<32> outPredictedPC1; // lane1 context predictPC
-  Wire<1> outShift;       // lane0 GHR shift
-  Wire<1> outShiftValue;  // lane0 GHR shift value
-  Wire<1> outShift1;      // lane1 GHR shift
-  Wire<1> outShiftValue1; // lane1 GHR shift value
-  Wire<CKPT_ID_WIDTH> outCkptId; // shared fetch checkpoint
+  Wire<32> outPredPC;
+  Wire<1> outValid;
+  Wire<3> outCount;
+  std::array<Wire<32>, FETCH_WIDTH> outPC;
+  std::array<Wire<32>, FETCH_WIDTH> outPredictedPC;
+  Wire<1> outShift;
+  Wire<1> outShiftValue;
+  Wire<CKPT_ID_WIDTH> outCkptId;
 };
 
 struct RASEntry {
@@ -172,12 +160,13 @@ struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   // FETCH_WIDTH == 2 and lane0 falls through within the same I$ line. The two
   // lanes share one checkpoint; the GHR advances per predicted-taken branch.
   struct FetchGroup {
-    bool valid0 = false, valid1 = false;
-    uint32_t pc0 = 0, pc1 = 0;
-    uint32_t predPC0 = 0, predPC1 = 0;
-    bool shift0 = false, shift1 = false;
-    bool shiftValue0 = false, shiftValue1 = false;
+    std::array<bool, FETCH_WIDTH> valid{};
+    std::array<uint32_t, FETCH_WIDTH> pc{};
+    std::array<uint32_t, FETCH_WIDTH> predPC{};
+    bool shift = false;
+    bool shiftValue = false;
     uint32_t nextPC = 0;
+    unsigned groupSize = 0;
   };
   FetchGroup fetchGroup() const;
   void wire_output();

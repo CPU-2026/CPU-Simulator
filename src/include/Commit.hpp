@@ -7,7 +7,7 @@
 #define CPU_COMMIT_WIDTH 2
 #endif
 constexpr unsigned COMMIT_WIDTH = CPU_COMMIT_WIDTH;
-static_assert(COMMIT_WIDTH >= 1 && COMMIT_WIDTH <= 2);
+static_assert(COMMIT_WIDTH == 1 || COMMIT_WIDTH == 2 || COMMIT_WIDTH == 4);
 
 // Every retirement consumer observes the same accepted, ordered prefix.
 struct CommitPort {
