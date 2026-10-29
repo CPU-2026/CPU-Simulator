@@ -49,14 +49,14 @@ BPU::BPU() {
 
 PredictInfo BPU::predict(uint32_t pc, uint8_t ghr) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
-  const uint32_t localIndex = p2 & (BHT_CAP - 1);
+  const uint32_t localIndex = ((p2 << LOCAL_HISTORY_BITS) | static_cast<uint32_t>(dir.localHistory[p2 & (BHT_CAP - 1)])) & (BHT_CAP - 1);
   const uint32_t globalIndex = (p2 ^ ghr) & (BHT_CAP - 1);
-  const uint32_t selectorIndex = (p2 ^ ghr) & (SELECTOR_CAP - 1);
+  const uint32_t selectorIndex = p2 & (SELECTOR_CAP - 1);
   const bool useGlobal =
       static_cast<uint32_t>(dir.selector[selectorIndex]) >= 2;
   const bool directionTaken =
       useGlobal ? static_cast<uint32_t>(dir.globalPHT[globalIndex]) >= 2
-                : static_cast<uint32_t>(dir.localPHT[localIndex]) >= 2;
+                : static_cast<uint32_t>(dir.localPHT[localIndex]) >= 4;
   const auto BTB_index = p2 & (BTB_CAP - 1);
   bool btbHit = static_cast<bool>(tgt.BTB[BTB_index].state) &&
                 static_cast<uint32_t>(tgt.BTB[BTB_index].tag) ==
@@ -165,6 +165,8 @@ struct TrainReq {
   uint32_t pc = 0;
   uint32_t target = 0;
   uint8_t ghr = 0;
+  uint32_t localHistory = 0;
+  bool localPrediction = false, globalPrediction = false;
 };
 
 // ---- per-cycle BTB write intents: one fixed-shape port per training source
@@ -216,7 +218,8 @@ void BPU::work() {
   bool boot = !static_cast<bool>(bootDone);
   if (boot) {
     for (int i = 0; i < BHT_CAP; ++i) {
-      dir.localPHT[i] <= 1;
+      dir.localHistory[i] <= 0;
+      dir.localPHT[i] <= 3;
       dir.globalPHT[i] <= 1;
     }
     for (int i = 0; i < SELECTOR_CAP; ++i)
@@ -249,6 +252,9 @@ void BPU::work() {
       // Checkpoints are written only by fetch allocation and read by squash;
       // same-cycle allocation and rollback use distinct IDs.
       trBru.ghr = static_cast<uint8_t>(static_cast<uint32_t>(bpCkpt[cid].GHR));
+      trBru.localHistory = static_cast<uint32_t>(bpCkpt[cid].localHistory);
+      trBru.localPrediction = static_cast<bool>(bpCkpt[cid].localPrediction);
+      trBru.globalPrediction = static_cast<bool>(bpCkpt[cid].globalPrediction);
     }
   }
   const RobTag cdbRobTag = static_cast<uint32_t>(cdb.cdbRobTag);
@@ -278,15 +284,18 @@ void BPU::work() {
       bruWriteIntent = jumpWriteIntent(trBru);
     } else {
       const uint32_t p2 = trBru.pc >> 2;
-      const uint32_t localIndex = p2 & (BHT_CAP - 1);
+      const uint32_t historyIndex = p2 & (BHT_CAP - 1);
+      const uint32_t localIndex = ((p2 << LOCAL_HISTORY_BITS) | trBru.localHistory) & (BHT_CAP - 1);
       const uint32_t globalIndex = (p2 ^ trBru.ghr) & (BHT_CAP - 1);
-      const uint32_t selectorIndex = (p2 ^ trBru.ghr) & (SELECTOR_CAP - 1);
+      const uint32_t selectorIndex = p2 & (SELECTOR_CAP - 1);
       uint32_t local = static_cast<uint32_t>(dir.localPHT[localIndex]);
       uint32_t global = static_cast<uint32_t>(dir.globalPHT[globalIndex]);
-      const bool localPred = local >= 2;
-      const bool globalPred = global >= 2;
+      // The chooser learns which predictor was right AT FETCH, not which
+      // current counter happens to be right after intervening training.
+      const bool localPred = trBru.localPrediction;
+      const bool globalPred = trBru.globalPrediction;
       if (trBru.taken) {
-        if (local < 3)
+        if (local < 7)
           ++local;
         if (global < 3)
           ++global;
@@ -298,6 +307,12 @@ void BPU::work() {
       }
       dir.localPHT[localIndex] <= local;
       dir.globalPHT[globalIndex] <= global;
+      // Resolution-trained (not fetch-speculative): squash never needs to
+      // undo a predicted local-history shift. Append to the latest old LHT
+      // value, even when this branch was predicted from an older snapshot.
+      dir.localHistory[historyIndex] <=
+          (((static_cast<uint32_t>(dir.localHistory[historyIndex]) << 1) |
+            uint32_t(trBru.taken)) & LOCAL_HISTORY_MASK);
 
       if (globalPred == trBru.taken && localPred != trBru.taken) {
         uint32_t choice = static_cast<uint32_t>(dir.selector[selectorIndex]);
@@ -335,8 +350,16 @@ void BPU::work() {
     auto ckid = static_cast<uint32_t>(outCkptId);
     BPUSnapshot ckptSnap = snapshotCheckPoint();
     const unsigned cnt = static_cast<uint32_t>(outCount);
-    for (unsigned L = 0; L < cnt; ++L)
-      bpCkpt[(ckid + L) & (CKPT_CAP - 1)].GHR <= ckptSnap.GHR_snapshot;
+    for (unsigned L = 0; L < cnt; ++L) {
+      auto &snapshot = bpCkpt[(ckid + L) & (CKPT_CAP - 1)];
+      const uint32_t p2 = static_cast<uint32_t>(outPC[L]) >> 2;
+      const uint32_t history = static_cast<uint32_t>(dir.localHistory[p2 & (BHT_CAP - 1)]);
+      snapshot.GHR <= ckptSnap.GHR_snapshot;
+      snapshot.localHistory <= history;
+      snapshot.localPrediction <= (static_cast<uint32_t>(dir.localPHT[((p2 << LOCAL_HISTORY_BITS) | history) & (BHT_CAP - 1)]) >= 4);
+      snapshot.globalPrediction <=
+          (static_cast<uint32_t>(dir.globalPHT[(p2 ^ ckptSnap.GHR_snapshot) & (BHT_CAP - 1)]) >= 2);
+    }
     if (static_cast<bool>(outShift))
       ghrLocal =
           static_cast<uint8_t>(((static_cast<uint32_t>(ghrLocal) << 1) |

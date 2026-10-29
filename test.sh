@@ -4,12 +4,12 @@
 #   pattern    : optional course case glob (for example "*gcd" or "perf_*")
 #   env LEGACY_CORPUS=1: use the archived 18-case runner (QUICK=1 skips pi)
 #   env BP_BIN=: override the simulator binary (default: ./code)
-#   env GOLDEN_MD=: override ../docs/benchmarks.md
+#   env GOLDEN_MD=: override docs/benchmarks.md in course mode (legacy uses the archived root table)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ "${LEGACY_CORPUS:-0}" != 1 ]; then
-  exec python3 "$ROOT/../data/course.py" test "${1:-*}" --data "$ROOT/data/course-testcases" --binary "${BP_BIN:-$ROOT/code}"
+  exec python3 "$ROOT/../data/course.py" test "${1:-*}" --data "$ROOT/data/course-testcases" --binary "${BP_BIN:-$ROOT/code}" --golden "${GOLDEN_MD:-$ROOT/docs/benchmarks.md}"
 fi
 export LEGACY_HALT=1
 DATA_DIR="$ROOT/data/testcases"

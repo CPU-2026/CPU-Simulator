@@ -280,8 +280,8 @@ static_assert(CKPT_CAP <= (1 << 6),
               "checkpoint IDs must fit the retained 6-bit carrier");
 // DCache geometry (mirrors main tree common.hpp). Address fields and masks
 // are derived from the line size and set count.
-constexpr int DCACHE_BLOCK_CAP = 32; // 64 sets x 2 ways = 4 KiB
-constexpr int NUM_OF_DCACHE_SETS = 64;
+constexpr int DCACHE_BLOCK_CAP = 32; // 128 sets x 2 ways = 8 KiB
+constexpr int NUM_OF_DCACHE_SETS = 128;
 constexpr int NUM_OF_DCACHE_WAYS = 2;
 constexpr int DCACHE_MSHR_CAP = 4;
 static_assert(REQUEST_CAP <= 8 && DCACHE_MSHR_CAP <= 8);

@@ -120,7 +120,7 @@ struct DispatchArbInput {
   std::array<Wire<PHY_TAG_WIDTH>, DIVIDERS_CAP> divSrc1Tag, divSrc2Tag;
   std::array<Wire<ROB_TAG_WIDTH>, DIVIDERS_CAP> divRobTag;
   std::array<Wire<1>, PRF_CAP> prdReady; // PRF ready bitmap bus
-  std::array<Wire<1>, PRF_CAP> bypassReady; // Granted WB, Integer/Branch only.
+  std::array<Wire<1>, PRF_CAP> bypassReady; // Granted WB, Integer/Branch/Load only.
   Wire<1> squashNeed;
   Wire<ROB_TAG_WIDTH> squashTag;
 };
@@ -204,9 +204,10 @@ struct IssueArbInputRob {
 };
 // Raw busy bitmaps: the module runs first-fit free-slot scans.
 struct IssueArbInputRs {
-  Wire<1> intReuseValid, brReuseValid;
+  Wire<1> intReuseValid, brReuseValid, loadReuseValid;
   Wire<4> intReuseSlot;
   Wire<2> brReuseSlot;
+  Wire<4> loadReuseSlot;
   std::array<Wire<1>, INTEGERRS_CAP> intBusy;
   std::array<Wire<1>, LOADRS_CAP> loadBusy;
   std::array<Wire<1>, STORERS_CAP> saBusy;

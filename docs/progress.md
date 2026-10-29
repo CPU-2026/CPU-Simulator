@@ -4,4 +4,4 @@
 
 本提交的默认取指 / 译码 / 分配 / 提交宽度为 1 / 1 / 1 / 2。验证数据仅适用于各记录注明的版本。
 
-[迁移归档](_archive/20261018/docs/progress.md)
+[用例基准](benchmarks.md) · [迁移归档](_archive/20261018/docs/progress.md)

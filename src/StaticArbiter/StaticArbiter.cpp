@@ -129,8 +129,8 @@ DispatchArbiter::WinResult DispatchArbiter::aguSelect() const {
     RobTag tag;
     if (i < LOADRS_CAP) {
       req = static_cast<bool>(loadBusy[i]) &&
-            readyOf(static_cast<uint32_t>(loadSrc1Tag[i])) &&
-            readyOf(static_cast<uint32_t>(loadSrc2Tag[i]));
+            readyOf(static_cast<uint32_t>(loadSrc1Tag[i]), true) &&
+            readyOf(static_cast<uint32_t>(loadSrc2Tag[i]), true);
       tag = static_cast<uint32_t>(loadRobTag[i]);
     } else {
       int j = i - LOADRS_CAP;
@@ -654,13 +654,13 @@ void IssueArbiter::wire_output() {
     for (int i = 0; i < LOADRS_CAP; i++)
       if (!static_cast<bool>(rs.loadBusy[i]))
         return 1u;
-    return 0u;
+    return static_cast<bool>(rs.loadReuseValid) ? 1u : 0u;
   };
   loadSlot = [this]() -> uint32_t {
     for (int i = 0; i < LOADRS_CAP; i++)
       if (!static_cast<bool>(rs.loadBusy[i]))
         return static_cast<uint32_t>(i);
-    return 0u;
+    return static_cast<bool>(rs.loadReuseValid) ? static_cast<uint32_t>(rs.loadReuseSlot) : 0u;
   };
   saFree = [this]() -> uint32_t {
     for (int i = 0; i < STORERS_CAP; i++)
@@ -1305,7 +1305,7 @@ void IssueArbiter::wire_output() {
         if (!static_cast<bool>(rs.loadBusy[i]) &&
             (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(loadSlot)))
           return 1u;
-      return 0u;
+      return bool(rs.loadReuseValid) && (!l0 || uint32_t(rs.loadReuseSlot) != uint32_t(loadSlot)) ? 1u : 0u;
     };
     loadSlot1 = [this]() -> uint32_t {
       const bool l0 = static_cast<uint32_t>(win) == 3u;
@@ -1313,7 +1313,8 @@ void IssueArbiter::wire_output() {
         if (!static_cast<bool>(rs.loadBusy[i]) &&
             (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(loadSlot)))
           return static_cast<uint32_t>(i);
-      return 0u;
+      return bool(rs.loadReuseValid) && (!l0 || uint32_t(rs.loadReuseSlot) != uint32_t(loadSlot))
+                 ? uint32_t(rs.loadReuseSlot) : 0u;
     };
     saFree1 = [this]() -> uint32_t {
       const bool l0 = static_cast<uint32_t>(win) == 4u;

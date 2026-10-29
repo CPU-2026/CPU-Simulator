@@ -8,6 +8,8 @@
 #include "SRAM.hpp"
 #include <array>
 #include <cstdint>
+constexpr unsigned LOCAL_HISTORY_BITS = 1;
+constexpr unsigned LOCAL_HISTORY_MASK = (1u << LOCAL_HISTORY_BITS) - 1u;
 // The common-header CKPT_LIVE_MAX guard covers every checkpoint retained in
 // ROB, ICache, FQ, or IQ before an ID can be recycled; CKPT_ID_WIDTH is the
 // exact carrier for the logical pool IDs 0..CKPT_CAP-1.
@@ -102,13 +104,17 @@ struct BTBEntryReg {
 // Register-storage mirror of the plain BPUSnapshot (comb-domain).
 struct BPUSnapshotReg {
   Register<8> GHR;
+  // Prediction-time context, not the possibly changed history at resolution.
+  Register<LOCAL_HISTORY_BITS> localHistory;
+  Register<1> localPrediction, globalPrediction;
 };
 
-// Tournament direction predictor: direct-PC local counters, gshare global
-// counters, and a gshare-indexed chooser. Counter value 1 is weakly not-taken
-// and 2 is weakly taken.
+// Two-level local (PC -> resolved local history -> shared pattern counters)
+// competes with gshare through a PC-indexed chooser. Local counters are 3-bit;
+// global/chooser counters remain 2-bit and all table capacities are unchanged.
 struct DirectionPred {
-  std::array<Register<2>, BHT_CAP> localPHT;
+  std::array<Register<LOCAL_HISTORY_BITS>, BHT_CAP> localHistory;
+  std::array<Register<3>, BHT_CAP> localPHT;
   std::array<Register<2>, BHT_CAP> globalPHT;
   std::array<Register<2>, SELECTOR_CAP> selector;
   Register<8> GHR;
@@ -137,7 +143,7 @@ struct BPUInner {
   TargetPred tgt;
   std::array<BPUSnapshotReg, CKPT_CAP> bpCkpt;
   Register<CKPT_ID_WIDTH> nextCkptId;
-  Register<1> bootDone; // cycle-0 init: all direction counters = 1
+  Register<1> bootDone; // cycle-0 weak NT: local=3, global/chooser=1
 };
 struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
    BPU();
