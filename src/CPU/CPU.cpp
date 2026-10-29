@@ -715,7 +715,7 @@ void CPU::wire() {
       return 0u;
     if (static_cast<uint32_t>(d.rsType) == static_cast<uint32_t>(RSType::Load))
       return static_cast<uint32_t>(PRFModule.getOperandValue(
-          RSModule.getLoadSrc1(static_cast<uint32_t>(d.rsIndex))));
+          RSModule.getLoadSrc1(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()));
     return static_cast<uint32_t>(PRFModule.getOperandValue(
         RSModule.getSaSrc1(static_cast<uint32_t>(d.rsIndex))));
   };
@@ -725,7 +725,7 @@ void CPU::wire() {
       return 0u;
     if (static_cast<uint32_t>(d.rsType) == static_cast<uint32_t>(RSType::Load))
       return static_cast<uint32_t>(PRFModule.getOperandValue(
-          RSModule.getLoadSrc2(static_cast<uint32_t>(d.rsIndex))));
+          RSModule.getLoadSrc2(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()));
     return static_cast<uint32_t>(PRFModule.getOperandValue(
         RSModule.getSaSrc2(static_cast<uint32_t>(d.rsIndex))));
   };
@@ -955,6 +955,13 @@ void CPU::wire() {
     return !bool(recoveryActive) && !bool(exitCommitted) && bool(DispatchArbiterModule.bru.valid) ? 1u : 0u;
   };
   IssueArbiterModule.rs.brReuseSlot = [this]() { return uint32_t(DispatchArbiterModule.bru.rsIndex); };
+  IssueArbiterModule.rs.loadReuseValid = [this]() {
+    // Reuse only the OLD Load actually accepted by the shared AGU, never a
+    // ready Load that lost arbitration to StoreAddr or a frozen consumer.
+    return !bool(recoveryActive) && !bool(exitCommitted) && bool(DispatchArbiterModule.agu.valid) &&
+        uint32_t(DispatchArbiterModule.agu.rsType) == uint32_t(RSType::Load) ? 1u : 0u;
+  };
+  IssueArbiterModule.rs.loadReuseSlot = [this]() { return uint32_t(DispatchArbiterModule.agu.rsIndex); };
   for (int i = 0; i < LOADRS_CAP; ++i) {
     IssueArbiterModule.rs.loadBusy[i] = [this, i]() {
       return RSModule.isLoadFree(i) ? 0u : 1u;

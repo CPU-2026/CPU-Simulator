@@ -57,6 +57,7 @@ struct DCacheMiss {
 struct DCachePlan {
   int lookup = -1, response = -1, store = -1, mergeSlot = -1, mergeMiss = -1;
   int lookupCandidate = -1;
+  bool acceptLookup = false;
   int allocate = -1, fillMiss = -1, writeAck = -1;
   bool fillBeat = false, fillFire = false, loadValid = false, exitValid = false;
   uint32_t loadValue = 0, exitValue = 0;
@@ -82,6 +83,8 @@ struct DCacheInner {
   Register<DCACHE_REQUEST_BITS> cursor, readIndex;
   Register<NUM_OF_DCACHE_WAYS> readWayMask;
   Register<1> readValid;
+  Register<DCACHE_OFFSET_BITS> readOffset;
+  Register<2> readNEnc;
   std::array<std::array<SRAM<NUM_OF_DCACHE_SETS, 32, 8>, DCACHE_WORDS_PER_LINE>, NUM_OF_DCACHE_WAYS> datas;
   std::array<SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS>, NUM_OF_DCACHE_WAYS> metadata;
   std::array<std::array<Register<1>, NUM_OF_DCACHE_WAYS>, NUM_OF_DCACHE_SETS> validBits;
@@ -109,7 +112,8 @@ private:
   uint32_t victimAddress(int id) const;
   int hitWay() const;
   uint32_t selectVictim(uint32_t set) const;
-  uint32_t sramRaw(int slot, int way) const;
+  uint32_t sramRaw(int way) const;
+  bool acceptedLookup() const;
   uint32_t memoryRaw(int slot) const;
   DCachePlan plan() const;
   const DCachePlan &events() const;

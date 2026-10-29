@@ -1,10 +1,28 @@
 # 模板框架指南
 
+**2026-10-29**：主树已同步模板生产功能与独立1/2/4宽度；默认两树25例严格周期一致，主树首表与本模板表一致。
+FQ默认取指宽度两倍、IQ默认译码宽度两倍；2/4/4/2为FQ4/IQ8，下文旧FQ8说明为历史。
+当前同步/验证范围见[记录](../../docs/tree-sync-20261029.md)；历史独立采用证书不重标为本轮验收。
+
+2026-10-27双向同步r02已写入三个模板功能文件，生产路径复验通过；状态与二进制位置以
+[双向记录](../../../sync/MUTUAL-OPT-SYNC-20261027.md)为准。新默认表已按生产普通入口实测确认，
+不混用r01旧code/旧表；仓库已有code及参考主树表不覆盖。
+
+2026-10-27双向同步r01已写入模板DCache两文件，生产路径复验通过；当前状态及二进制位置以
+[双向记录](../../../sync/MUTUAL-OPT-SYNC-20261027.md)为准。已按普通入口实测更新本模板表，
+不修改主树表，不覆盖仓库已有`code`，不把旧二进制与新周期表混用。
+
+2026-10-27：生产源码已采用真实 Tournament BPU＋D$8 KiB，默认宽度仍1/1/1/2。
+参考主树未采用，本模板课程模式使用自己的[`benchmarks.md`](benchmarks.md)，不再默认读取主树周期表。
+`BP_BIN=/path/to/new/code ./test.sh`与`./test_IPC.sh`会自动选此表；直接运行公共脚本时使用
+`python3 ../data/course.py test --binary /path/to/new/code --data data/course-testcases --golden docs/benchmarks.md`。
+仓库已有code未覆盖，必须重新构建后通过BP_BIN指定新二进制；生产复验状态见[采用记录](../../../sync/ADOPT-BPU-DCACHE-20261027.md)。
+
 构建/课程测试见[README](../README.md)，公共架构见[主树](../../README.md)。
 长用例使用Release；断言版务必同时启用`_DEBUG`并取消`NDEBUG`，不要覆盖已有仓库`code`。
 默认双提交；`-DCPU_COMMIT_WIDTH=1`可构建单提交，但新RS配置须单独验证周期，不能套旧RS单提交golden。参数既可作为C++编译宏，也支持同名CMake cache。
-单提交测试同时给`data/course.py test --commit-width 1`，选择`benchmarks.md`中的历史单提交表；
-该测试参数不会修改二进制宽度。
+本轮新表仅覆盖默认双提交。单提交尚无本轮实测周期表，不能套用历史单提交表或仅改测试参数冒充当前配置验收；
+测试参数不会修改二进制的编译宽度。
 
 ## 基本类型
 
@@ -20,7 +38,7 @@ cmake -S . -B /tmp/opencode/template-four -DCMAKE_BUILD_TYPE=Release \
 cmake --build /tmp/opencode/template-four -j2
 ```
 
-四宽默认ROB32/PRF64/checkpoint64、FQ8/IQ8；默认单发射仍ROB16。
+四宽默认ROB32/PRF64/checkpoint64；FQ/IQ按fetch/decode分别派生，默认单发射仍ROB16。
 decode4/issue1或2须显式缩小FQ/IQ（例如各4项）以满足checkpoint32预算，不能截断CID或放宽预算断言。
 四宽不能套单发射golden周期，结果和独立退休数必须校验；可复用`sync/check_template_wide4.py`和
 `sync/check_template_wide4_cpu.py`，报告均输出到仓库外，真实观察器只打开外部副本CPU访问标签。
@@ -41,7 +59,7 @@ cmake --build /tmp/opencode/rename-build -j4
 
 前端配置可直接用CMake cache：`-DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=2 -DCPU_COMMIT_WIDTH=2`，并可设置`CPU_FQ_ENTRIES`/`CPU_IQ_ENTRIES`。默认容量各为译码宽度两倍；仍单发射，旧`CPU_ISSUE_WIDTH`仅在未提供新宽度时兼容原前端设置。双取已同步RTL packet/逐指令CID/恢复期安全hit提前取指，2/1/2与2/2/2均25例三端周期相等；默认保持1/1/2，其他容量组合不能套用该结论，见[实施记录](../../../sync/WIDTH-DECODE-SYNC-20261024.md)。
 
-Integer/Branch默认各4项，容量参数为`CPU_INT_RS_ENTRIES`/`CPU_BRANCH_RS_ENTRIES`。只有这两池允许授权WB当拍派发及满站实际离站复用，其他池不能借此读取新的PRF值。
+Integer/Branch默认各4项；当前Integer/Branch/Load允许授权WB当拍派发及实际离站复用，StoreAddr/StoreValue/MUL/DIV不能借此读取新PRF值。
 
 当前默认单取指档已与RTL 1/1/2完成25例结果/退休/core/total对齐，六perf IPC0.641865180802；旧RS/Load A/ABC整表保留。I$请求/AXIFetch/BTB/RAS容量参数分别是`CPU_FETCH_REQUEST_ENTRIES`/`CPU_AXI_FETCH_ENTRIES`/`CPU_BTB_ENTRIES`/`CPU_RAS_ENTRIES`，默认4/4/32/8。其他宽度须分别验收，不能套用本档golden；Slave服务和退出口径不变。
 

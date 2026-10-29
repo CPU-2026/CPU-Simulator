@@ -1,5 +1,25 @@
 # 后端
 
+**2026-10-29**：主树已按其comb/tick风格同步本模板1/2/4路共同分配前缀及Load RS授权WB/真实离站复用。
+Integer/Branch/Load可旁路，StoreAddr/StoreValue/MUL/DIV旧就绪不变；新项不当拍执行。
+当前合同见[主树后端](../../docs/backend.md)，验证范围见[同步记录](../../docs/tree-sync-20261029.md)。下文“主树仍单发射”仅为历史。
+
+## 历史阶段记录
+
+2026-10-27双向同步r02：Load旧活动项像Integer/Branch一样使用两路实际授权WB补足就绪和值，
+Load→AGU消费者同步接入，旧ready值优先/P0不匹配WB。StoreAddr/StoreValue/MUL/DIV仍只看旧就绪。
+issue1/2优先旧空槽，满时仅复用共享AGU实际接受的旧Load槽，第二lane排除第一lane实际占用；
+issue4已有复用保留。新项不当拍派发，RS原push优先、Register单写/统一sync保持。
+三文件与隔离候选字节一致后写入生产，采用后复验状态见[双向记录](../../../sync/MUTUAL-OPT-SYNC-20261027.md)。
+
+2026-10-27双向同步r01仅移植RTL已有的D$空闲Load接受沿同步读，当轮后端源码及带宽保持。
+当时未采用的Load RS优化现已由上方r02继续，不重标r01证书。
+独立ISA与生产复验状态见[双向记录](../../../sync/MUTUAL-OPT-SYNC-20261027.md)，不声称整核逐拍相等。
+
+2026-10-27：BPU checkpoint新增3位预测时上下文，D$改为8 KiB；本轮不改后端宽度、执行/CDB/提交口或恢复流水级。
+Register单写、统一sync及既有单/双/四发射选项保持。单取/双取和已有四宽选项的生产回归已通过，
+下方旧周期/性能结论不作为新配置验收，见[采用记录](../../../sync/ADOPT-BPU-DCACHE-20261027.md)。
+
 2026-10-26：模板接入RTL四路顺序重命名合同。`CPU_ISSUE_WIDTH=4`选择ROB32/PRF64/checkpoint64、
 6-bit完整ROB身份及8槽恢复窗；单/双宽保持ROB16和原路径。RAT/PRF/ROB/七池RS/LQ/SQ共用同一连续前缀，
 按实际目的数和各内存池分别排名；RAW选最近实际写者，LINK可转发PC+4，WAW串接oldPhy且最年轻映射胜出。

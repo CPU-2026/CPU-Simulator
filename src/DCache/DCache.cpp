@@ -137,16 +137,22 @@ uint32_t DCache::selectVictim(uint32_t set) const {
   for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) if (!found && !u(validBits[set][w])) { selected = w; found = true; }
   return selected;
 }
-uint32_t DCache::sramRaw(int s, int w) const {
-  const auto r = request(s);
-  const unsigned bank = (r.address & DCACHE_OFFSET_MASK) >> 2;
+uint32_t DCache::sramRaw(int w) const {
+  const unsigned bank = u(readOffset) >> 2;
   uint32_t low = 0, high = 0;
   for (int lane = 0; lane < 4; ++lane) {
     low |= datas[w][bank].readLane(lane) << (lane << 3);
     if (bank + 1 < DCACHE_WORDS_PER_LINE)
       high |= datas[w][bank + 1].readLane(lane) << (lane << 3);
   }
-  return extractLoadWord(low, high, r.address, r.nBytes);
+  return extractLoadWord(low, high, u(readOffset), 1u << u(readNEnc));
+}
+bool DCache::acceptedLookup() const {
+  // Reads only old state and producer-owned inputs, never events(). The new
+  // request still owns an ordinary slot; the SRAM result is visible next cycle.
+  return u(count) == 0 && !u(readValid) && u(decisionValid) &&
+      static_cast<Operation>(u(decisionOp)) == Operation::Load &&
+      u(decisionAddr) != AXI_EXIT_ADDR;
 }
 uint32_t DCache::memoryRaw(int s) const {
   const auto r = request(s);
@@ -156,8 +162,9 @@ uint32_t DCache::memoryRaw(int s) const {
 }
 DCachePlan DCache::plan() const {
   DCachePlan p{};
+  p.acceptLookup = acceptedLookup();
   const int first = oldestRequest(activeMask()), way = hitWay();
-  p.readHitRaw = u(readValid) && way >= 0 ? sramRaw(u(readIndex), way) : 0;
+  p.readHitRaw = u(readValid) && way >= 0 ? sramRaw(way) : 0;
   if (first >= 0 && request(first).address == AXI_EXIT_ADDR && request(first).op == Operation::Store && u(exitReady)) {
     assert(request(first).nBytes == 4);
     p.exitValid = true; p.exitValue = uint32_t(request(first).value);
@@ -241,7 +248,11 @@ DCachePlan DCache::plan() const {
     p.memoryRequest.write.address = victimAddress(wr); p.memoryRequest.write.transaction = wr;
     for (int b = 0; b < DCACHE_BLOCK_CAP; ++b) p.memoryRequest.write.lineData[b] = u(victimPayload[wr][b >> 2]) >> ((b & 3) << 3);
   }
-  const uint32_t lookupSet = (request(unsigned(p.lookupCandidate) & (REQUEST_CAP - 1)).address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+  // Like RTL's early address selection, old empty state selects the producer
+  // payload before the late acceptance grant. Only a real grant enables SRAM.
+  const uint32_t lookupAddress = u(count) == 0 ? u(decisionAddr) :
+      request(unsigned(p.lookupCandidate) & (REQUEST_CAP - 1)).address;
+  const uint32_t lookupSet = (lookupAddress >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
   for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
     p.meta[w].addr = lookupSet;
     for (int b = 0; b < DCACHE_WORDS_PER_LINE; ++b) p.data[w][b].addr = lookupSet;
@@ -279,8 +290,9 @@ DCachePlan DCache::plan() const {
     auto &port = p.meta[w];
     port.enable = port.writeEnable = port.writeMask[0] = true; port.addr = set;
     port.writeData[0] = (r.address >> DCACHE_TAG_SHIFT) | DCACHE_META_DIRTY;
-  } else if (p.lookup >= 0) {
-    const uint32_t set = (request(p.lookup).address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+  } else if (p.lookup >= 0 || p.acceptLookup) {
+    const uint32_t address = p.acceptLookup ? u(decisionAddr) : request(p.lookup).address;
+    const uint32_t set = (address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
     for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
       p.meta[w].enable = true; p.meta[w].addr = set;
       for (auto &port : p.data[w]) { port.enable = true; port.addr = set; }
@@ -367,12 +379,19 @@ void DCache::work() {
       else if (p.fillFire && set == int((u(misses[p.fillMiss].line) >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK) && uint32_t(w) == u(misses[p.fillMiss].way)) validBits[set][w] <= 1;
     }
   }
-  readValid <= (p.lookup >= 0);
-  if (p.lookup >= 0) {
-    const uint32_t set = (request(p.lookup).address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+  if (p.acceptLookup) {
+    assert(allocation >= 0 && active == 0 && !u(readValid) && !p.fillBeat && p.store < 0 && p.lookup < 0);
+    for (const auto &m : misses) assert(!u(m.valid));
+  }
+  readValid <= (p.lookup >= 0 || p.acceptLookup);
+  if (p.lookup >= 0 || p.acceptLookup) {
+    const uint32_t address = p.acceptLookup ? u(decisionAddr) : request(p.lookup).address;
+    const uint32_t set = (address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
     uint32_t mask = 0;
     for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) if (u(validBits[set][w])) mask |= 1u << w;
-    readIndex <= p.lookup; readWayMask <= mask;
+    readIndex <= (p.acceptLookup ? allocation : p.lookup); readWayMask <= mask;
+    readOffset <= (address & DCACHE_OFFSET_MASK);
+    readNEnc <= (p.acceptLookup ? u(decisionNBytes) : u(requests[p.lookup].nEnc));
   }
   if (allocation >= 0) cursor <= ((allocation + 1) & (REQUEST_CAP - 1));
   count <= u(count) + unsigned(u(decisionValid) != 0) - std::popcount(released);
