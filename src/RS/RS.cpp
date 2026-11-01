@@ -5,7 +5,7 @@
 // Per-slot single-write-point structure (RTL discipline: one driver per
 // Register per cycle, no early returns):
 //   pushHit  - issue allocates this slot (mutually exclusive with
-//              flush; Integer/Branch may also select an actually departing
+//              flush; Integer/Branch/Load/StoreValue may select an actually departing
 //              OLD occupied slot. Push must win over release on that edge.)
 //   relHit   - DispatchArbiter granted this slot to an execution unit (only
 //              entries older than the squash point are granted, so relHit and
@@ -18,8 +18,8 @@
 //              gates on it, and a push rewrites every payload field, so
 //              released contents are dead data. Clearing is not a safety
 //              net -- InvalidPhy is 0 and isOperandReady(0) is true.
-// storeValueRS is the one true overlap: its ready-release has no tag guard,
-// so release and flush converge through the same else-if (both set free=1).
+// StoreValue release is the same age-qualified event that writes SQ, including
+// the early ALU-only bypass. Allocation wins over that release on a reused row.
 
 void RSUnit::work() {
   // Select the writer per slot before touching any Register.
@@ -57,7 +57,8 @@ void RSUnit::work() {
     const RobTag tagOld = static_cast<uint32_t>(integerRS[i].robTag);
     const int lane = pushLane(i, &RSInputIssueSel::hasInteger, &RSInputIssueSel::integerSlot);
     const bool pushHit = lane >= 0;
-    const bool relHit = aluRel && aluIdx == static_cast<uint32_t>(i);
+    const bool relHit = (aluRel && aluIdx == static_cast<uint32_t>(i)) ||
+        (bool(dispatch.aluSecondValid) && uint32_t(dispatch.aluSecondIdx) == unsigned(i));
     const bool flushHit =
         needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
     if (pushHit) {
@@ -124,9 +125,7 @@ void RSUnit::work() {
     }
   }
 
-  // ---- storeValueRS: push / ready-release / flush (the one real overlap:
-  // ready-release has no tag guard in the reference, so release and flush
-  // converge on the same freed state) ----
+  // ---- storeValueRS: push / accepted data release / flush ----
   for (int i = 0; i < STORERS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(storeValueRS[i].busy);
     const RobTag tagOld = static_cast<uint32_t>(storeValueRS[i].robTag);

@@ -4,7 +4,7 @@
 #include <array>
 
 #ifndef CPU_COMMIT_WIDTH
-#define CPU_COMMIT_WIDTH 2
+#define CPU_COMMIT_WIDTH 4
 #endif
 constexpr unsigned COMMIT_WIDTH = CPU_COMMIT_WIDTH;
 static_assert(COMMIT_WIDTH == 1 || COMMIT_WIDTH == 2 || COMMIT_WIDTH == 4);

@@ -18,6 +18,9 @@ struct DCacheInput {
   Wire<5> dmemCredits;
   Wire<3> replyTransaction, writeTransaction;
   Wire<32> replyAddress, writeAddress;
+  Wire<1> wordValid;
+  Wire<32> wordAddress, wordData;
+  Wire<3> wordTransaction;
   std::array<Wire<8>, DCACHE_BLOCK_CAP> dmemLineData;
 };
 struct DCacheOutput {
@@ -28,6 +31,7 @@ struct DCacheOutput {
   Wire<1> reqReadValid;
   Wire<32> reqReadAddr;
   Wire<3> reqReadTransaction;
+  Wire<DCACHE_WORD_INDEX_BITS> reqReadStartWord;
   Wire<1> reqWriteValid;
   Wire<32> reqWriteAddr;
   Wire<3> reqWriteTransaction;
@@ -51,7 +55,7 @@ struct DCacheMiss {
   Register<DCACHE_TAG_WIDTH> victimTag;
   Register<DCACHE_REQUEST_BITS> owner;
   Register<2> way;
-  Register<DCACHE_WORD_INDEX_BITS> fillWord;
+  Register<std::bit_width(static_cast<uint32_t>(DCACHE_WORDS_PER_LINE))> fillWord;
   Register<1> valid, dirty, readSent, writeSent, writeDone, responded;
 };
 struct DCachePlan {
@@ -59,7 +63,9 @@ struct DCachePlan {
   int lookupCandidate = -1;
   bool acceptLookup = false;
   int allocate = -1, fillMiss = -1, writeAck = -1;
-  bool fillBeat = false, fillFire = false, loadValid = false, exitValid = false;
+  bool fillBeat = false, fillFire = false, wordReturn = false, loadValid = false, exitValid = false;
+  int wordMiss = -1;
+  uint8_t wordCapture = 0;
   uint32_t loadValue = 0, exitValue = 0;
   uint32_t readHitRaw = 0; // One read grant, one shared extraction.
   CacheMemoryRequest memoryRequest{};
@@ -115,6 +121,7 @@ private:
   uint32_t sramRaw(int way) const;
   bool acceptedLookup() const;
   uint32_t memoryRaw(int slot) const;
+  uint32_t wordRaw(int slot, uint32_t data) const;
   DCachePlan plan() const;
   const DCachePlan &events() const;
 };

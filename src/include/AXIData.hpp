@@ -7,6 +7,7 @@ struct AXIDataInput {
   Wire<1> readValid;
   Wire<32> readAddress;
   Wire<3> readTransaction;
+  Wire<DCACHE_WORD_INDEX_BITS> readStartWord;
   Wire<1> writeValid;
   Wire<32> writeAddress;
   Wire<3> writeTransaction;
@@ -32,6 +33,7 @@ struct AXIDataOutput {
 struct AXIDataEntry {
   Register<32> address;
   Register<3> transaction;
+  Register<DCACHE_WORD_INDEX_BITS> startWord;
   Register<std::bit_width(static_cast<uint32_t>(DCACHE_WORDS_PER_LINE))> issued, collected, w;
   Register<1> mmio;
 };
@@ -43,6 +45,9 @@ struct AXIDataInner {
   Register<4> rh, wh;
   Register<5> rn, wn;
   Register<5> rt, wt, ra, rr, wa, wd, wb;
+  Register<1> wordValid;
+  Register<32> wordAddress, wordData;
+  Register<3> wordTransaction;
 };
 struct AXIData : dark::Module<AXIDataInput, AXIDataOutput, AXIDataInner> {
   AXIData();
@@ -53,6 +58,10 @@ struct AXIData : dark::Module<AXIDataInput, AXIDataOutput, AXIDataInner> {
   uint8_t lineByte(int byte) const;
   uint32_t replyAddress() const;
   uint32_t replyTransaction() const;
+  bool isWordReady() const { return static_cast<uint32_t>(wordValid) != 0; }
+  uint32_t wordReplyAddress() const { return static_cast<uint32_t>(wordAddress); }
+  uint32_t wordReplyData() const { return static_cast<uint32_t>(wordData); }
+  uint32_t wordReplyTransaction() const { return static_cast<uint32_t>(wordTransaction); }
   uint32_t writeReplyAddress() const;
   uint32_t writeReplyTransaction() const;
   bool exitReady() const;

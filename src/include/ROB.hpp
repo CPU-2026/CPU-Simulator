@@ -65,6 +65,7 @@ struct ROBInput {
   ROBInputSquash squash;
   std::array<ROBInputIssue, ISSUE_WIDTH> issue;
   ROBInputCDBAlu cdbOfALU;
+  ROBInputCDBAlu cdbOfALUSecond;
   ROBInputCDBShared cdbOfShared;
   ROBInputBRU bru;
   ROBInputSQ sq;

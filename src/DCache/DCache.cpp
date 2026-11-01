@@ -16,6 +16,7 @@ DCache::DCache() {
   reqReadValid = [this]() { return events().memoryRequest.readValid; };
   reqReadAddr = [this]() { return events().memoryRequest.read.address; };
   reqReadTransaction = [this]() { return events().memoryRequest.read.transaction; };
+  reqReadStartWord = [this]() { return (request(u(misses[events().memoryRequest.read.transaction].owner)).address & DCACHE_OFFSET_MASK) >> 2; };
   reqWriteValid = [this]() { return events().memoryRequest.writeValid; };
   reqWriteAddr = [this]() { return events().memoryRequest.write.address; };
   reqWriteTransaction = [this]() { return events().memoryRequest.write.transaction; };
@@ -160,6 +161,13 @@ uint32_t DCache::memoryRaw(int s) const {
   for (int i = 0; i < 4; ++i) if (i < r.nBytes) raw |= u(dmemLineData[(r.address & DCACHE_OFFSET_MASK) + i]) << (i << 3);
   return raw;
 }
+uint32_t DCache::wordRaw(int s, uint32_t data) const {
+  const auto r = request(s);
+  const uint32_t shifted = data >> ((r.address & 3u) << 3);
+  if (r.nBytes == 1) return shifted & 0xffu;
+  if (r.nBytes == 2) return shifted & 0xffffu;
+  return shifted;
+}
 DCachePlan DCache::plan() const {
   DCachePlan p{};
   p.acceptLookup = acceptedLookup();
@@ -185,7 +193,33 @@ DCachePlan DCache::plan() const {
   const int fillOwner = p.fillMiss >= 0 ? int(u(misses[p.fillMiss].owner)) : -1;
   const bool early = p.fillBeat && request(fillOwner).op == Operation::Load && !u(misses[p.fillMiss].responded);
   if (early) p.response = fillOwner;
-  else {
+  else if (u(wordValid)) {
+    p.wordMiss = u(wordTransaction);
+    const auto &m = misses[p.wordMiss];
+    const int owner = u(m.owner);
+    const auto r = request(owner);
+    p.wordReturn = u(m.valid) && u(m.readSent) && !u(m.responded) &&
+        u(requests[owner].active) && r.op == Operation::Load && !storeHazard(owner, false) &&
+        (u(wordAddress) >> DCACHE_OFFSET_BITS) == (u(m.line) >> DCACHE_OFFSET_BITS) &&
+        ((u(wordAddress) & DCACHE_OFFSET_MASK) >> 2) == ((r.address & DCACHE_OFFSET_MASK) >> 2) &&
+        (r.address & 3u) + r.nBytes <= 4;
+    if (p.wordReturn) p.response = owner;
+  }
+  if (u(wordValid)) {
+    const auto &m = misses[u(wordTransaction)];
+    const int owner = u(m.owner);
+    const bool captureValid = u(m.valid) && u(m.readSent) &&
+        request(owner).op == Operation::Load &&
+        (u(wordAddress) >> DCACHE_OFFSET_BITS) == (u(m.line) >> DCACHE_OFFSET_BITS);
+    for (int s = 0; s < REQUEST_CAP; ++s) {
+      const auto r = request(s);
+      if (captureValid && s != owner && u(requests[s].active) && !u(requests[s].ready) &&
+          r.op == Operation::Load && !storeHazard(s, true) &&
+          (r.address >> 2) == (u(wordAddress) >> 2) && (r.address & 3u) + r.nBytes <= 4)
+        p.wordCapture |= static_cast<uint8_t>(1u << s);
+    }
+  }
+  if (p.response < 0) {
     uint8_t ready = 0;
     for (int s = 0; s < REQUEST_CAP; ++s)
       if (u(requests[s].active) && request(s).op == Operation::Load && !storeHazard(s, false) &&
@@ -194,7 +228,8 @@ DCachePlan DCache::plan() const {
   }
   if (p.response >= 0) {
     const int s = p.response;
-    p.loadValue = early ? memoryRaw(s) : u(readValid) && u(readIndex) == uint32_t(s) && way >= 0 ? p.readHitRaw : u(rawPayload[s]);
+    p.loadValue = early ? memoryRaw(s) : p.wordReturn ? wordRaw(s, u(wordData)) :
+        u(readValid) && u(readIndex) == uint32_t(s) && way >= 0 ? p.readHitRaw : u(rawPayload[s]);
     p.loadValid = !u(requests[s].cancelled) && (!u(squashNeed) || ROB::isOlder(request(s).robTag, u(squashTag)));
   }
   if (!p.fillBeat && first >= 0 && request(first).op == Operation::Store && request(first).address != AXI_EXIT_ADDR &&
@@ -228,8 +263,10 @@ DCachePlan DCache::plan() const {
       const auto r = request(s);
       const bool blocked = !u(requests[s].active) || (u(readValid) && u(readIndex) == uint32_t(s)) ||
           u(requests[s].ready) || miss(s) >= 0 || s == p.mergeSlot ||
-          r.address == AXI_EXIT_ADDR || setLocked(r.address) || storeHazard(s, false) || findMiss(r.address & ~DCACHE_OFFSET_MASK) >= 0 ||
-          (r.op == Operation::Store && s != first) || (u(requests[s].deferred) && (s != first || freeMiss() < 0)) ||
+           r.address == AXI_EXIT_ADDR || (r.op == Operation::Store && setLocked(r.address)) ||
+           storeHazard(s, false) || findMiss(r.address & ~DCACHE_OFFSET_MASK) >= 0 ||
+           (r.op == Operation::Store && s != first) ||
+           (u(requests[s].deferred) && (s != first || freeMiss() < 0 || setLocked(r.address))) ||
           (!anyMiss && s != first && s != lookupFirst);
       if (!blocked) eligible |= 1u << s;
     }
@@ -306,7 +343,7 @@ void DCache::work() {
   assert(std::popcount(active) == int(u(count)) && u(count) <= REQUEST_CAP);
   const int fillOwner = p.fillMiss >= 0 ? int(u(misses[p.fillMiss].owner)) : -1;
   uint8_t released = 0;
-  if (p.response >= 0 && p.response != fillOwner) released |= 1u << p.response;
+  if (p.response >= 0 && p.response != fillOwner && !p.wordReturn) released |= 1u << p.response;
   if (p.store >= 0) released |= 1u << p.store;
   if (p.fillFire) released |= 1u << fillOwner;
   if (p.exitValid) released |= 1u << oldestRequest(active);
@@ -330,7 +367,9 @@ void DCache::work() {
       if (released & (1u << s)) { r.ready <= 0; r.deferred <= 0; r.miss <= 0; }
       else if (u(r.active)) {
         const bool merged = firstFill && request(fillOwner).op == Operation::Load && miss(s) == p.fillMiss && s != fillOwner;
-        if (merged) { rawPayload[s] <= memoryRaw(s); r.ready <= 1; r.deferred <= 0; r.miss <= 0; }
+         if (p.wordCapture & (1u << s)) {
+           rawPayload[s] <= wordRaw(s, u(wordData)); r.ready <= 1; r.deferred <= 0; r.miss <= 0;
+         } else if (merged) { rawPayload[s] <= memoryRaw(s); r.ready <= 1; r.deferred <= 0; r.miss <= 0; }
         else if (u(readValid) && int(u(readIndex)) == s) {
           if (hit >= 0) { rawPayload[s] <= p.readHitRaw; r.ready <= 1; r.way <= hit; }
           else { r.miss <= p.allocate + 1; r.deferred <= (p.allocate < 0); }
@@ -368,6 +407,7 @@ void DCache::work() {
       if (p.writeAck == id) m.writeDone <= 1;
       if (p.fillMiss == id && p.fillBeat) m.fillWord <= u(m.fillWord) + DCACHE_FILL_WORDS_PER_BEAT;
       if (p.fillMiss == id && p.response == int(u(m.owner))) m.responded <= 1;
+      if (p.wordReturn && p.wordMiss == id) m.responded <= 1;
     }
   }
   if (u(readValid)) { if (hit >= 0) ++statHits; else ++statMisses; }

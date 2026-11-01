@@ -103,8 +103,32 @@ DispatchArbiter::WinResult DispatchArbiter::selectOldest(
   return w;
 }
 
-DispatchArbiter::WinResult DispatchArbiter::aluSelect() const {
-  return selectOldest(intBusy, intSrc1Tag, intSrc2Tag, intRobTag, true);
+DispatchArbiter::WinResult DispatchArbiter::aluSelect(unsigned unit) const {
+  std::array<bool, INTEGERRS_CAP> ready{};
+  std::array<WinResult, ALU_UNITS> ranked{};
+  for (unsigned row = 0; row < INTEGERRS_CAP; ++row)
+    ready[row] = bool(intBusy[row]) && readyOf(uint32_t(intSrc1Tag[row]), true) &&
+                 readyOf(uint32_t(intSrc2Tag[row]), true);
+  for (unsigned row = 0; row < INTEGERRS_CAP; ++row) {
+    unsigned rank = 0;
+    const RobTag tag = uint32_t(intRobTag[row]);
+    for (unsigned peer = 0; peer < INTEGERRS_CAP; ++peer)
+      if (ready[peer] && peer != row &&
+          (ROB::isOlder(uint32_t(intRobTag[peer]), tag) ||
+           (uint32_t(intRobTag[peer]) == tag && peer < row))) ++rank;
+    for (unsigned lane = 0; lane < ALU_UNITS; ++lane)
+      if (ready[row] && rank == lane) ranked[lane] = {true, tag, row};
+  }
+  WinResult winner{};
+  unsigned candidate = 0;
+  for (unsigned dest = 0; dest < ALU_UNITS; ++dest) {
+    const bool accept = dest == 0 ? bool(aluCanAccept) : bool(aluSecondCanAccept);
+    if (accept && candidate < ALU_UNITS) {
+      if (dest == unit) winner = ranked[candidate];
+      ++candidate;
+    }
+  }
+  return winner;
 }
 
 DispatchArbiter::WinResult DispatchArbiter::bruSelect() const {
@@ -148,22 +172,16 @@ void DispatchArbiter::wire_output() {
   // win = dest_accept & selected; grant = win & ~squash_kill. Fields (idx/tag/
   // type) are driven by win (not grant) -- verbatim: the former code wrote
   // them before flipping valid off under squash.
-  alu.valid = [this]() -> uint32_t {
-    WinResult w = aluSelect();
-    return static_cast<bool>(aluCanAccept) && w.v &&
-                   (!static_cast<bool>(squashNeed) ||
-                    ROB::isOlder(w.tag, static_cast<uint32_t>(squashTag)))
-               ? 1u
-               : 0u;
+  auto connect = [this](DispArbOutInfo &port, unsigned unit) {
+    port.valid = [this, unit]() {
+      const auto w = aluSelect(unit);
+      return w.v && (!bool(squashNeed) || ROB::isOlder(w.tag, uint32_t(squashTag)));
+    };
+    port.rsIndex = [this, unit]() { return aluSelect(unit).idx; };
+    port.robTag = [this, unit]() { return uint32_t(aluSelect(unit).tag); };
   };
-  alu.rsIndex = [this]() -> uint32_t {
-    WinResult w = aluSelect();
-    return static_cast<bool>(aluCanAccept) && w.v ? w.idx : 0u;
-  };
-  alu.robTag = [this]() -> uint32_t {
-    WinResult w = aluSelect();
-    return static_cast<bool>(aluCanAccept) && w.v ? w.tag : 0u;
-  };
+  connect(alu, 0);
+  connect(aluSecond, 1);
   agu.valid = [this]() -> uint32_t {
     WinResult w = aguSelect();
     return static_cast<bool>(aguCanAccept) && w.v &&
@@ -676,7 +694,7 @@ void IssueArbiter::wire_output() {
   };
   svFree = [this]() -> uint32_t {
     for (int i = 0; i < STORERS_CAP; i++)
-      if (!static_cast<bool>(rs.svBusy[i]))
+      if (!static_cast<bool>(rs.svBusy[i]) || bool(rs.svReuse[i]))
         return 1u;
     return 0u;
   };
@@ -684,6 +702,8 @@ void IssueArbiter::wire_output() {
     for (int i = 0; i < STORERS_CAP; i++)
       if (!static_cast<bool>(rs.svBusy[i]))
         return static_cast<uint32_t>(i);
+    for (int i = 0; i < STORERS_CAP; i++)
+      if (bool(rs.svReuse[i])) return static_cast<uint32_t>(i);
     return 0u;
   };
   brFree = [this]() -> uint32_t {
@@ -1335,7 +1355,7 @@ void IssueArbiter::wire_output() {
     svFree1 = [this]() -> uint32_t {
       const bool l0 = static_cast<uint32_t>(win) == 4u;
       for (int i = 0; i < STORERS_CAP; i++)
-        if (!static_cast<bool>(rs.svBusy[i]) &&
+        if ((!static_cast<bool>(rs.svBusy[i]) || bool(rs.svReuse[i])) &&
             (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(svSlot)))
           return 1u;
       return 0u;
@@ -1345,6 +1365,9 @@ void IssueArbiter::wire_output() {
       for (int i = 0; i < STORERS_CAP; i++)
         if (!static_cast<bool>(rs.svBusy[i]) &&
             (!l0 || static_cast<uint32_t>(i) != static_cast<uint32_t>(svSlot)))
+          return static_cast<uint32_t>(i);
+      for (int i = 0; i < STORERS_CAP; i++)
+        if (bool(rs.svReuse[i]) && (!l0 || uint32_t(i) != uint32_t(svSlot)))
           return static_cast<uint32_t>(i);
       return 0u;
     };
