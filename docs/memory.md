@@ -1,5 +1,13 @@
 # 访存
 
+## 2026-11-01 当前生产合同（优先于下方历史）
+
+同步第17轮D$同组其他way的Load命中及其他旧Load匹配返回word捕获；请求行提前返回不等待脏victim写完成，整行安装与owner/MSHR释放仍按原完整事务条件。SQ/LQ、StoreValue真实派发事件、单AGU及MMIO退出保持；退出冻结阶段PRF继续读SRAM、清写历史，全部模块统一sync。两树原六项答案/退休/课程周期匹配RTL，见[当前基线](hardware-baseline-prf-microbank.md)及[Cache合同](cache.md)。
+
+**2026-10-31当前**：AXIData轮转读/寄存返回字、D$字提前返回与整行填充见[Cache同步状态](cache.md)。StoreValue非控制ALU旁路的真实派发事件同时驱动SQ捕获、LQ通知、RS释放和Issue复用；保持Register单写。六项全匹配见[验收](hardware-baseline-word-production.md)。
+
+**2026-10-30当前**：Load可使用三授权WB口；单AGU、LQ/SQ、Store/退出及外部Slave协议保持。当前限定六例及计时区间见[基线](hardware-baseline-fetch2.md)，不把旧默认验收扩用于新源码。
+
 **2026-10-29**：主树已同步本模板多路LSQ共同前缀、Load RS授权WB/实际离站复用及8 KiB D$接受沿读。
 完整tag/epoch、旧信用、包含自身的恢复边界、raw扩展、单AGU/Cache/AXI及MMIO合同保持。
 当前规则见[访存设计](../../docs/memory.md)，本轮验证见[同步记录](../../docs/tree-sync-20261029.md)，不扩大历史RTL验收。

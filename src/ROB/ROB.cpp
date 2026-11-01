@@ -276,6 +276,7 @@ void ROB::work() {
   if (static_cast<bool>(cdbOfALU.cdbValid)) {
     markReady(static_cast<uint32_t>(cdbOfALU.cdbRobTag));
   }
+  if (bool(cdbOfALUSecond.cdbValid)) markReady(uint32_t(cdbOfALUSecond.cdbRobTag));
   if (static_cast<bool>(cdbOfShared.cdbValid)) {
     markReady(static_cast<uint32_t>(cdbOfShared.cdbRobTag));
   }

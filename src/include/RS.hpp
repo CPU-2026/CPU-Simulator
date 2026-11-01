@@ -125,7 +125,8 @@ struct RSInputIssueData {
 // Dispatch release ports (readiness itself is judged by DispatchArbiter over
 // PRF state; RS only needs the granted slot + the AGU load/store split)
 struct RSInputDispatch {
-  Wire<1> aluValid, aguValid, bruValid, mulValid, divValid;
+  Wire<1> aluValid, aluSecondValid, aguValid, bruValid, mulValid, divValid;
+  Wire<4> aluSecondIdx;
   Wire<4> aluIdx, aguIdx, bruIdx;
   Wire<2> mulIdx;
   Wire<2> divIdx;

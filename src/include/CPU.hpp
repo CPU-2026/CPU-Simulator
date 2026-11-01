@@ -44,6 +44,7 @@ class CPU {
   RAT RATModule;
   ROB ROBModule;
   ALU ALUModule;
+  ALU ALUSecondModule;
   MUL MULModule;
   DIV DIVModule;
   AGU AGUModule;
@@ -62,6 +63,7 @@ class CPU {
   BPU BPUModule;
   FlushArbiter flushArbiter;
   AluCDB AluCDBArbiterModule;
+  AluCDB AluCDBSecondModule;
   LqCDB LqCDBArbiterModule;
   MulCDB MulCDBModule;
   DivCDB DivCDBModule;
@@ -79,7 +81,11 @@ class CPU {
   bool exitRetiring() const;
   bool memoryDispatchValid() const;
   bool frontendCanRun() const;
-  OperandWriteback grantedWritebacks() const;
+  bool secondControl() const;
+  bool aluGrant(unsigned unit) const;
+  bool aluCanAccept(unsigned unit) const;
+  const AluCDB &jumpCDB() const;
+  OperandWriteback grantedWritebacks(bool earlyAluOnly = false) const;
   // 0..DECODE_WIDTH: decoded uops moved FQ -> IQ this cycle (min of FQ
   // availability, IQ push capacity after the actual issue pops, and width).
   unsigned decodePopCount() const;

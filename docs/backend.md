@@ -1,5 +1,13 @@
 # 后端
 
+## 2026-11-01 当前生产合同（优先于下方历史）
+
+PRF的P1–P63各为`SRAM<1,32>`，P0常零；ready/everWritten独立，四分配＋三WB共7条上一拍写入记录覆盖写后读。每个分配都写PC+4，包括未ready项；年轻分配优先，高序号WB优先。退出冻结仍work嵌套SRAM一次并清有效写历史，统一sync全部Register/Wire。保持默认2/4/4/4、双ALU/三CDB、单AGU及StoreValue非控制ALU授权旁路，MUL RS未采用同拍复用。411373拍完整PRF及374104条退休PC/周期三端一致，见[当前基线](hardware-baseline-prf-microbank.md)。
+
+**2026-10-31当前**：StoreValue使用实际授权的非控制ALU结果当拍旁路，所有真实离站槽可复用。SQ捕获/LQ通知/RS释放/Issue信用共用同一事件，新分配优先；共享CDB不进入此提前旁路。六项全匹配见[验收](hardware-baseline-word-production.md)。
+
+**2026-10-30当前**：默认2/4/4/4、双单槽ALU、独立CDB0/1＋共享Load/MUL/DIV CDB2。双整数离站槽均可复用，ROB/PRF接双ALU完成；第二ALU/CDB参与注册及冻结sync。当前限定六例验收见[基线](hardware-baseline-fetch2.md)，下方旧默认为历史。
+
 **2026-10-29**：主树已按其comb/tick风格同步本模板1/2/4路共同分配前缀及Load RS授权WB/真实离站复用。
 Integer/Branch/Load可旁路，StoreAddr/StoreValue/MUL/DIV旧就绪不变；新项不当拍执行。
 当前合同见[主树后端](../../docs/backend.md)，验证范围见[同步记录](../../docs/tree-sync-20261029.md)。下文“主树仍单发射”仅为历史。

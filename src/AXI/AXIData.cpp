@@ -16,7 +16,8 @@ uint32_t freeDataSlot(uint32_t busy) {
 
 AXIData::AXIData() {
   arValid = [this]() { return readIssue() >= 0; };
-  arAddr = [this]() { const int s = readIssue(); return s >= 0 ? u(readEntry(s).address) + (u(readEntry(s).issued) << 2) : 0; };
+  arAddr = [this]() { const int s = readIssue(); return s >= 0 ? u(readEntry(s).address) +
+      (((u(readEntry(s).startWord) + u(readEntry(s).issued)) & (DCACHE_WORDS_PER_LINE - 1)) << 2) : 0; };
   rReady = []() { return 1u; };
   awValid = [this]() { return writeIssue(true) >= 0; };
   awAddr = [this]() { const int s = writeIssue(true); return s >= 0 ? u(writeEntry(s).address) + (u(writeEntry(s).issued) << 2) : 0; };
@@ -84,10 +85,16 @@ void AXIData::work() {
   if (u(rValid)) {
     const int s = readCollect();
     assert(s >= 0 && u(rResp) == AXI_OKAY);
-    payload[u(readOrder[s])][u(readEntry(s).collected)] <= u(rData);
+    const auto &entry = readEntry(s);
+    const uint32_t word = (u(entry.startWord) + u(entry.collected)) & (DCACHE_WORDS_PER_LINE - 1);
+    payload[u(readOrder[s])][word] <= u(rData);
+    wordValid <= 1;
+    wordAddress <= (u(entry.address) + (word << 2));
+    wordData <= u(rData);
+    wordTransaction <= u(entry.transaction);
     entries[u(readOrder[s])].collected <= u(readEntry(s).collected) + 1;
     if (u(readEntry(s).collected) + 1 == DCACHE_WORDS_PER_LINE) rr <= ((u(rr) + 1) & 31);
-  }
+  } else wordValid <= 0;
   if (u(bValid)) {
     const int s = writeCollect();
     assert(s >= 0 && u(bResp) == AXI_OKAY);
@@ -98,6 +105,7 @@ void AXIData::work() {
     readOrder[(u(rh) + u(rn)) & 15] <= readSlot;
     auto &r = entries[readSlot];
     r.address <= u(readAddress); r.transaction <= u(readTransaction);
+    r.startWord <= u(readStartWord);
     r.issued <= 0; r.collected <= 0;
     rt <= ((u(rt) + 1) & 31);
   }

@@ -89,6 +89,7 @@ private:
 struct DispatchArbInput {
   // ALU admission accounts for result slots freed by same-cycle drain or
   // cancellation; the gate stays a Wire (see CPU.cpp wiring).
+  Wire<1> aluSecondCanAccept;
   Wire<1> aluCanAccept; // ALU result slot reusable including drain/cancellation.
   Wire<1> aguCanAccept; // Address result slot reusable including drain/cancellation.
   Wire<1> bruFull; // BRUModule.isFull()
@@ -138,7 +139,7 @@ struct DispArbOutAguInfo {
   Wire<3> rsType;  // RSType encoding (Integer..StoreAddr, 5 values)
 };
 struct DispatchArbOutput {
-  DispArbOutInfo alu, bru, mul, div;
+  DispArbOutInfo alu, aluSecond, bru, mul, div;
   DispArbOutAguInfo agu;
 };
 struct DispatchArbiter : dark::Module<DispatchArbInput, DispatchArbOutput> {
@@ -162,7 +163,7 @@ private:
                          const std::array<Wire<PHY_TAG_WIDTH>, N> &src2Tag,
                            const std::array<Wire<ROB_TAG_WIDTH>, N> &tags,
                            bool bypass = false) const;
-  WinResult aluSelect() const;
+  WinResult aluSelect(unsigned unit) const;
   WinResult bruSelect() const;
   WinResult mulSelect() const; // multiplyRS pool, same shape as aluSelect
   WinResult divSelect() const; // divideRS pool, same shape as mulSelect
@@ -212,6 +213,7 @@ struct IssueArbInputRs {
   std::array<Wire<1>, LOADRS_CAP> loadBusy;
   std::array<Wire<1>, STORERS_CAP> saBusy;
   std::array<Wire<1>, STORERS_CAP> svBusy;
+  std::array<Wire<1>, STORERS_CAP> svReuse;
   std::array<Wire<1>, BRANCHRS_CAP> brBusy;
   std::array<Wire<1>, MULTIPLYRS_CAP> mulBusy;
   std::array<Wire<1>, DIVIDERS_CAP> divBusy;

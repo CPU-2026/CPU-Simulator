@@ -13,7 +13,7 @@ inline bool legacyHaltEnabled = false; // Host configuration for archived images
 #ifdef CPU_RENAME_WIDTH
 #define CPU_ISSUE_WIDTH CPU_RENAME_WIDTH
 #else
-#define CPU_ISSUE_WIDTH 1
+#define CPU_ISSUE_WIDTH 4
 #endif
 #endif
 #ifndef CPU_RENAME_WIDTH
@@ -22,6 +22,18 @@ inline bool legacyHaltEnabled = false; // Host configuration for archived images
 static_assert(CPU_ISSUE_WIDTH == CPU_RENAME_WIDTH, "conflicting issue/rename widths");
 constexpr unsigned ISSUE_WIDTH = CPU_ISSUE_WIDTH;
 static_assert(ISSUE_WIDTH == 1 || ISSUE_WIDTH == 2 || ISSUE_WIDTH == 4);
+#ifndef CPU_ALU_UNITS
+#define CPU_ALU_UNITS 2
+#endif
+#ifndef CPU_ALU_CDB_PORTS
+#define CPU_ALU_CDB_PORTS 2
+#endif
+constexpr unsigned ALU_UNITS = CPU_ALU_UNITS;
+constexpr unsigned ALU_CDB_PORTS = CPU_ALU_CDB_PORTS;
+constexpr unsigned WRITEBACK_PORTS = ALU_CDB_PORTS + 1;
+static_assert(ALU_UNITS == 1 || ALU_UNITS == 2);
+static_assert(ALU_CDB_PORTS == ALU_UNITS);
+static_assert(ALU_UNITS != 2 || ISSUE_WIDTH == 4);
 
 constexpr int INTEGERRS_CAP = 4;
 constexpr int STORERS_CAP = 2;
@@ -77,10 +89,10 @@ static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
 static_assert(ROB_TAG_WIDTH <= 8,
                "RobTag is uint8_t: packed tag must fit in 8 bits");
 #ifndef CPU_FETCH_WIDTH
-#define CPU_FETCH_WIDTH 1
+#define CPU_FETCH_WIDTH 2
 #endif
 #ifndef CPU_DECODE_WIDTH
-#define CPU_DECODE_WIDTH 1
+#define CPU_DECODE_WIDTH 4
 #endif
 #ifndef CPU_RENAME_WIDTH
 #define CPU_RENAME_WIDTH 1
@@ -92,7 +104,7 @@ static_assert(DECODE_WIDTH == 1 || DECODE_WIDTH == 2 || DECODE_WIDTH == 4);
 #ifdef CPU_FQ_ENTRIES
 constexpr int FQ_CAP = CPU_FQ_ENTRIES;
 #else
-constexpr int FQ_CAP = FETCH_WIDTH << 1;
+constexpr int FQ_CAP = DECODE_WIDTH << 1;
 #endif
 #ifdef CPU_IQ_ENTRIES
 constexpr int IQ_CAP = CPU_IQ_ENTRIES;
@@ -222,7 +234,7 @@ struct OperandWritePort {
   uint8_t tag = 0;
   int32_t value = 0;
 };
-using OperandWriteback = std::array<OperandWritePort, 2>;
+using OperandWriteback = std::array<OperandWritePort, WRITEBACK_PORTS>;
 constexpr int IMEM_CAP = 4;
 constexpr int CKPT_CAP = ISSUE_WIDTH == 4 ? 64 : 32;
 // IDs are 0..CKPT_CAP-1 and CKPT_CAP is a power of two: derived width is exact.
@@ -294,7 +306,8 @@ constexpr int DCACHE_WORDS_PER_LINE =
 constexpr int DCACHE_WORD_INDEX_BITS =
     DCACHE_WORDS_PER_LINE > 1
         ? std::bit_width(static_cast<uint32_t>(DCACHE_WORDS_PER_LINE - 1)) : 1;
-constexpr int DCACHE_FILL_WORDS_PER_BEAT = DCACHE_WORDS_PER_LINE > 1 ? 2 : 1;
+// Independent SRAM word banks publish the whole accepted AXI line at one edge.
+constexpr int DCACHE_FILL_WORDS_PER_BEAT = DCACHE_WORDS_PER_LINE;
 static_assert(DCACHE_WORDS_PER_LINE > 0 &&
                   std::has_single_bit(static_cast<uint32_t>(DCACHE_WORDS_PER_LINE)),
               "DCache line size must hold a whole number of RV32 words");

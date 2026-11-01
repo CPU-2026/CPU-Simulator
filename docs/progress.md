@@ -1,5 +1,11 @@
 # 模板状态
 
+2026-11-01：用户要求“替换生产代码，并同步软件”，已同步正式采用第17轮。PRF用63个单行SRAM、everWritten及7条上一拍写入记录，保留所有分配PC+4写及未ready值，冻结阶段继续读；同步BPU置信度选择和D$同组其他way命中/其他Load字捕获/脏victim写回期间提前返回。隔离候选与生产126项构建输入逐字节一致，四构建原六项答案/退休/课程周期全匹配，411373拍全部64个PRF ready/value及374104条退休PC/周期三端一致。主树24 ticks＋58 helpers纪律通过；完整证据及范围见[第17轮基线](hardware-baseline-prf-microbank.md)。
+
+2026-10-31：生产AXIData关键字先读/寄存字返回、D$整行单拍填充及StoreValue非控制ALU旁路/离站复用已同步。最初只移植Cache/AXI时四例周期有差；将真实StoreValue事件贯通SQ/LQ/RS/Issue后，两树全新Release和断言构建的原六例答案/退休/课程周期全部匹配正式采用RTL。源码和失败证据均保留，见[验收](hardware-baseline-word-production.md)。
+
+2026-10-30：已同步生产双取指2/4/4/4、双ALU/三WB；恢复安全包边界与旧返回包信用准入已对齐。原六perf真实退休/分段周期与主树相同，438378拍11项观察与native RTL一致；保留旧计时口径并显式核对boot区间。最终生产复验见[当前基线](hardware-baseline-fetch2.md)，不扩大为完整状态等价或PPA。
+
 2026-10-29：主树按原comb/tick快照风格完整同步模板生产功能：Tournament预测时上下文、8 KiB D$、
 接受沿同步读、Load RS授权WB/实际离站复用、独立1/2/4宽度与全分配消费者前缀。
 默认两树断言构建25例严格匹配既有模板表，8冒烟＋39定向/固定seed随机程序同值同退休同周期；

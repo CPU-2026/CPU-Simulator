@@ -4,32 +4,34 @@
 2026-10-27已在生产源码采用真实 Tournament BPU（LHT256×1/local3/global2/PC chooser2、预测时上下文）
 及 D$8 KiB（128组×2路×32 B）；2026-10-29主树已同步这些生产功能与r01/r02及多路分配。
 隔离验收及生产复验均已通过，见[采用记录](../../sync/ADOPT-BPU-DCACHE-20261027.md)。
-没有顺带移植独立最佳候选的双ALU/四提交或 critical-word 早返回，既有宽度选项保持。
+2026-10-30已同步当前生产RTL：**默认2取指/4译码/4分配/4提交，双ALU、三路写回**。
+2026-11-01已同步正式采用第17轮：PRF 63×1×32 SRAM＋上一拍写入旁路、BPU置信度选择、D$同组其他way命中/返回字捕获及脏victim写回期间提前返回。两树Release及断言四构建原六perf答案、退休、课程周期全匹配；411373拍完整PRF状态及374104条退休PC/周期三端一致，见[当前基线](docs/hardware-baseline-prf-microbank.md)。
 
 ## 构建与测试
 
-四译码／四路顺序发射：追加`-DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=4 -DCPU_ISSUE_WIDTH=4 -DCPU_COMMIT_WIDTH=2`。
+默认即2/4/4/4，双ALU各保留单槽结果，独立CDB0/1；Load/MUL/DIV按年龄共享CDB2。
 `CPU_RENAME_WIDTH`现在是`CPU_ISSUE_WIDTH`的兼容别名（1/2/4），冲突配置编译失败。
-四宽自动使用ROB32/PRF64/checkpoint64，FQ默认FETCH_WIDTH×2、IQ默认DECODE_WIDTH×2（上述2/4为4/8）；不增加执行或访存端口。
-默认仍1/1/1/2；[模板实测表](docs/benchmarks.md)与[主树首表](../docs/benchmarks.md)已核对一致，旧主树表保留历史。
+四宽自动使用ROB32/PRF64/checkpoint64，FQ/IQ默认均为DECODE_WIDTH×2（各8）；AGU/Cache/AXI端口不变。
+PRF保留四路分配写和三路CDB写；无写bank持续读，退出冻结时仍work嵌套SRAM并统一sync。所有分配都保存PC+4，包括未ready项；高序号写回优先，P0恒零。
+[旧模板表](docs/benchmarks.md)与[旧主树表](../docs/benchmarks.md)保留历史1/1/1/2数据，不用于新默认验收。
 四宽历史验收边界见[同步记录](../../sync/TEMPLATE-WIDE4-20261026.md)，不能套用单宽周期或宣称持续4 IPC。
 
-可选双发射：追加`-DCPU_FETCH_WIDTH=2 -DCPU_DECODE_WIDTH=2 -DCPU_RENAME_WIDTH=2 -DCPU_COMMIT_WIDTH=2`，默认rename仍1。主树现也支持；当前软件对照见[同步记录](../docs/tree-sync-20261029.md)。历史RTL验收仍见[RTL移植记录](../../sync/RTL-DUAL-RENAME-20261025.md)，不扩作本轮新RTL或PPA结论。
+双ALU独立双CDB要求issue4；历史单ALU档须显式设置`CPU_ALU_UNITS=1`与`CPU_ALU_CDB_PORTS=1`。历史配置验收不能扩用于本轮新源码或PPA。
 
-在本目录执行，使用支持C++20的编译器：
+使用支持C++20的编译器，按[共同全新构建命令](../docs/hardware-baseline-prf-microbank.md#证据与复验)
+设置F盘输出及进程临时目录。已有两树独立构建时，从工作区根目录验收：
 
 ```bash
-cmake -S . -B /tmp/opencode/rv32-template -DCMAKE_BUILD_TYPE=Release -DCPU_RUNTIME_OUTPUT_DIRECTORY=/tmp/opencode/rv32-template
-cmake --build /tmp/opencode/rv32-template -j2
-BP_BIN=/tmp/opencode/rv32-template/code ./test.sh
-BP_BIN=/tmp/opencode/rv32-template/code ./test_IPC.sh
-python3 ../data/course.py smoke --binary /tmp/opencode/rv32-template/code
+python3 sync/check_current_production_software.py \
+  --main .cpu2026-synthesis/software-production-recheck-new/main/bin/code \
+  --template .cpu2026-synthesis/software-production-recheck-new/template/bin/code \
+  --out .cpu2026-synthesis/software-production-recheck-new/report-new
 ```
 
-断言版另建目录，追加`-DCMAKE_CXX_FLAGS=-D_DEBUG -DCMAKE_CXX_FLAGS_RELEASE='-O3 -UNDEBUG'`。
-课程模式的`test.sh`/`test_IPC.sh`默认只读[模板周期表](docs/benchmarks.md)，可用`GOLDEN_MD`覆盖；
-直接调用`../data/course.py test`时必须显式加`--golden docs/benchmarks.md`。25个课程镜像保持不变。
-默认仍单取/单译码/双提交。双取指或其它译码/发射宽度不能套用本表；
+断言版另建目录，追加`-DCMAKE_CXX_FLAGS=-D_DEBUG -DCMAKE_CXX_FLAGS_RELEASE='-O2 -UNDEBUG'`。
+旧`test.sh`/`test_IPC.sh`只读历史黄金表，不能套新默认；使用上述六例入口，不跑额外19例或全回归。
+25个课程镜像保持不变。软件旧`timing.total`不含独立boot，课程总周期须显式比较`init+core+drain`。
+其他配置不能套用当前六例结果；
 旧版2/1/2与2/2/2三端周期对齐只属于[当时配置](../../sync/WIDTH-DECODE-SYNC-20261024.md)。
 程序SW写`0x80000000`，对应AXI B握手后退出；`RESULT_FULL=1`输出完整32-bit结果。
 
@@ -37,5 +39,5 @@ python3 ../data/course.py smoke --binary /tmp/opencode/rv32-template/code
 
 - [共同配置与周期](../../CPU-SYNC-SPEC.md) · [共享架构](../README.md#设计与验收)
 - [框架使用与纪律](docs/help.md) · [进度](docs/progress.md)
-- [当前验收](../../sync/RTL-TO-SW-SYNC-20261018.md)：四软件构建及两软件分别对RTL的25例均通过。
+- [当前验收](docs/hardware-baseline-prf-microbank.md)：原六perf限定验收；[第10轮记录](docs/hardware-baseline-word-production.md)及旧25例报告保留历史。
 - [历史文档](docs/_archive/20261018/INDEX.md)：旧参数和迁移细节，仅作追溯。

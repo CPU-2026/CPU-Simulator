@@ -1,5 +1,13 @@
 # 前端
 
+## 2026-11-01 当前生产合同（优先于下方历史）
+
+同步第17轮BPU置信度选择：仅PC chooser=3且global强（计数器0/3）或local弱（3/4）时选global。LHT/local/global/chooser容量和预测时上下文训练保持；默认2/4/4/4、FQ8/IQ8与replay安全双取包保持。两树四构建原六项匹配正式生产RTL，见[当前基线](hardware-baseline-prf-microbank.md)及[共同前端](../../docs/frontend.md)。
+
+**2026-10-31当前**：生产访存及StoreValue旁路/复用同步后，原六项答案、退休、课程周期全部匹配正式采用RTL，见[验收](hardware-baseline-word-production.md)。前端保持既有配置/算法；以下10-30状态为历史。
+
+**2026-10-30当前**：默认2/4/4/4，FQ8/IQ8、I$2包；replay仅检查当前有效非控制包，新包不按FQ余量缩短，准入检查旧返回包。当前限定六例验收见[基线](hardware-baseline-fetch2.md)，下方旧默认为历史。
+
 **2026-10-29**：主树已同步本模板生产BPU及独立1/2/4宽度，默认仍1/1/1/2。
 FQ默认FETCH_WIDTH×2、IQ默认DECODE_WIDTH×2，2/4/4/2实际为FQ4/IQ8；下文旧FQ8及“主树未同步”属于历史。
 当前合同见[主树前端](../../docs/frontend.md)，本轮验证范围见[同步记录](../../docs/tree-sync-20261029.md)，不延用旧RTL/PPA结论。

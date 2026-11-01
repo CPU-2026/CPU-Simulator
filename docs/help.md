@@ -1,5 +1,11 @@
 # 模板框架指南
 
+**2026-11-01当前**：已同步第17轮PRF单行SRAM、BPU置信度选择及D$同组命中/返回字捕获。PRF嵌套SRAM每拍work一次，冻结时仍持续读并清有效写历史，统一sync全部Wire/Register。两树Release及`_DEBUG -O2 -UNDEBUG`四构建原六项答案/退休/课程周期匹配RTL；当前F盘构建、正式六项验收入口与三端PRF证据见[新基线](hardware-baseline-prf-microbank.md)。下方旧默认及第10轮数字仅为历史。
+
+**2026-10-31当前**：StoreValue使用非控制ALU授权结果旁路，SQ捕获/LQ通知/RS释放/Issue复用共享接受事件；禁止在该组合路径求共享CDB，以避免Load反馈环。Register仍单写、统一sync。两树Release/断言原六perf全匹配，当前构建和验收见[同步记录](hardware-baseline-word-production.md)。
+
+**2026-10-30当前**：默认2/4/4/4、双ALU/三WB，两个ALU和第二CDB注册并统一sync。当前用[README](../README.md)专用六例入口，旧表/脚本属于历史1/1/1/2。软件旧total不含init=1，课程区间为init+core+drain；详见[基线](hardware-baseline-fetch2.md)。下方旧默认及全量回归命令不作为本轮验证指令。
+
 **2026-10-29**：主树已同步模板生产功能与独立1/2/4宽度；默认两树25例严格周期一致，主树首表与本模板表一致。
 FQ默认取指宽度两倍、IQ默认译码宽度两倍；2/4/4/2为FQ4/IQ8，下文旧FQ8说明为历史。
 当前同步/验证范围见[记录](../../docs/tree-sync-20261029.md)；历史独立采用证书不重标为本轮验收。
