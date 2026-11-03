@@ -261,6 +261,8 @@ struct IssueArbInput {
   IssueArbInputRat rat;
   IssueArbInputRat rat1;
   Wire<1> squashNeed;
+  Wire<1> wholeGroup;
+  Wire<ISSUE_COUNT_WIDTH> wholeGroupSize;
   std::array<IssueArbInputDec, 4> wideDec;
   std::array<IssueArbInputRat, 4> wideRat;
   std::array<Wire<PHY_TAG_WIDTH>, 4> wideFreePhy;

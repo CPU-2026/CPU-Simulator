@@ -130,19 +130,18 @@ int LQ::CDBDetect() const {
 }
 
 bool LQ::notificationMatches(int index, int lane) const {
-  const bool addressLane = lane == STORERS_CAP;
   const auto &n = storeNotifies;
-  const bool valid = addressLane ? bool(n.sanValid) : bool(n.snValid[lane]);
+  const bool valid = bool(n.snValid[lane]);
   bool matches = false;
   if (valid && isActive(index) && isAddressReady(index)) {
     const RobTag tag = getRobTag(index);
-    const RobTag storeTag = addressLane ? uint32_t(n.sanStoreTag) : uint32_t(n.snStoreTag[lane]);
-    const uint32_t address = addressLane ? uint32_t(n.sanAddr) : uint32_t(n.snAddr[lane]);
-    const uint32_t bytes = addressLane ? uint32_t(n.sanNBytes) : uint32_t(n.snNBytes[lane]);
-    const bool known = addressLane ? bool(n.sanFoundKnownSame) : bool(n.snFoundKnownSame[lane]);
-    const RobTag knownTag = addressLane ? uint32_t(n.sanKnownTag) : uint32_t(n.snKnownTag[lane]);
-    const bool unknown = addressLane ? bool(n.sanFoundUnknown) : bool(n.snFoundUnknown[lane]);
-    const RobTag unknownTag = addressLane ? uint32_t(n.sanUnknownTag) : uint32_t(n.snUnknownTag[lane]);
+    const RobTag storeTag = uint32_t(n.snStoreTag[lane]);
+    const uint32_t address = uint32_t(n.snAddr[lane]);
+    const uint32_t bytes = uint32_t(n.snNBytes[lane]);
+    const bool known = bool(n.snFoundKnownSame[lane]);
+    const RobTag knownTag = uint32_t(n.snKnownTag[lane]);
+    const bool unknown = bool(n.snFoundUnknown[lane]);
+    const RobTag unknownTag = uint32_t(n.snUnknownTag[lane]);
     matches = getAddress(index) == address && getNBytes(index) == bytes &&
         ROB::isOlder(storeTag, tag) && !(known && ROB::isOlder(knownTag, tag)) &&
         !(unknown && ROB::isOlder(unknownTag, tag));
@@ -162,7 +161,7 @@ LoadResultCandidate LQ::resultCandidate() const {
         !bool(LQqueue[index].isCDBBroadcast) &&
         (!bool(squash.needSquash) || ROB::isOlder(tag, uint32_t(squash.SquashTag)))) {
       bool forwardPriority = false;
-      for (int lane = 0; lane <= STORERS_CAP; ++lane)
+      for (int lane = 0; lane < STORERS_CAP; ++lane)
         forwardPriority |= notificationMatches(index, lane);
       const auto event = addressBypass();
       if (event.valid && event.index == index) forwardPriority = event.forwarded;
@@ -266,40 +265,6 @@ void LQ::work() {
       }
     }
   }
-  if (static_cast<bool>(storeNotifies.sanValid)) {
-    StoreNotify n{};
-    n.valid = true;
-    n.storeTag = static_cast<uint32_t>(storeNotifies.sanStoreTag);
-    n.addr = static_cast<uint32_t>(storeNotifies.sanAddr);
-    n.value = static_cast<uint32_t>(storeNotifies.sanValue);
-    n.nBytes = static_cast<uint32_t>(storeNotifies.sanNBytes);
-    n.foundKnownSame = static_cast<bool>(storeNotifies.sanFoundKnownSame);
-    n.knownSameAddressOldestTag = static_cast<uint32_t>(storeNotifies.sanKnownTag);
-    n.foundUnknown = static_cast<bool>(storeNotifies.sanFoundUnknown);
-    n.unknownOldestTag = static_cast<uint32_t>(storeNotifies.sanUnknownTag);
-    for (int k = 0; k < LQ_CAP; ++k) {
-      uint8_t cur = static_cast<uint32_t>((static_cast<uint32_t>(head) + k) & LQ_MASK);
-      if (!isActive(cur))
-        break;
-      if (LQqueue[cur].isAddressReady == 0 ||
-          uint32_t(LQqueue[cur].valueState) == uint32_t(ValueState::READY) || bool(LQqueue[cur].isCDBBroadcast))
-        continue;
-      if (static_cast<uint32_t>(LQqueue[cur].address) != n.addr ||
-          getNBytes(cur) != n.nBytes)
-        continue;
-      if (!ROB::isOlder(n.storeTag, static_cast<uint32_t>(LQqueue[cur].robTag)))
-        continue;
-      bool blocked =
-          (n.foundKnownSame &&
-           ROB::isOlder(n.knownSameAddressOldestTag, static_cast<uint32_t>(LQqueue[cur].robTag))) ||
-          (n.foundUnknown &&
-           ROB::isOlder(n.unknownOldestTag, static_cast<uint32_t>(LQqueue[cur].robTag)));
-      if (!blocked) {
-        writeValueIntent(static_cast<int>(cur), n.value);
-      }
-    }
-  }
-
   // 3. AGU: load address ready -> write address + query SQ for forwarding
   if (!static_cast<bool>(agu.isAGUEmpty) &&
       !isStoreMem(static_cast<uint32_t>(agu.aguHeadMemIndex))) {

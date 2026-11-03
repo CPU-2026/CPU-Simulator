@@ -187,12 +187,11 @@ void CPU::wire() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
   DecodeUnitModule.issuePopCount = [this]() {
-    uint32_t n = 0;
-    for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane)
-      n += uint32_t(IssueArbiterModule.outputAt(lane).core.valid);
-    return n;
+    return wholeGroupProposal() ? 0u : issueAcceptedCount();
   };
-  DecodeUnitModule.decodePushCount = [this]() { return decodePopCount(); };
+  DecodeUnitModule.decodePushCount = [this]() {
+    return wholeGroupProposal() && issueAcceptedCount() == wholeGroupCount() ? 0u : decodePopCount();
+  };
   DecodeUnitModule.fqHeadRaw = [this]() { return FQModule.headRaw(); };
   DecodeUnitModule.fqHeadPc = [this]() { return FQModule.headpc(); };
   DecodeUnitModule.fqHeadPredictedPC = [this]() {
@@ -259,7 +258,7 @@ void CPU::wire() {
     return static_cast<uint32_t>(BPUModule.outCount);
   };
   ICacheModule.popConsume = [this]() {
-    return frontendCanRun() && !static_cast<bool>(flushArbiter.needSquash) && ICacheModule.isReturnReady() &&
+    return frontendResponseCanRun() && !static_cast<bool>(flushArbiter.needSquash) && ICacheModule.isReturnReady() &&
            !static_cast<bool>(FetchUnitModule.haltFetched) &&
            FQModule.canAccept(ICacheModule.returnCount(), decodePopCount());
   };
@@ -1475,34 +1474,6 @@ void CPU::wire() {
       return static_cast<uint32_t>(SQModule.data.unknownTag[i]);
     };
   }
-  LQModule.storeNotifies.sanValid = [this]() {
-    return static_cast<uint32_t>(SQModule.addr.valid);
-  };
-  LQModule.storeNotifies.sanStoreTag = [this]() {
-    return static_cast<uint32_t>(SQModule.addr.storeTag);
-  };
-  LQModule.storeNotifies.sanAddr = [this]() {
-    return static_cast<uint32_t>(SQModule.addr.addr);
-  };
-  LQModule.storeNotifies.sanValue = [this]() {
-    return static_cast<uint32_t>(SQModule.addr.value);
-  };
-  LQModule.storeNotifies.sanNBytes = [this]() {
-    return static_cast<uint32_t>(SQModule.addr.nBytes);
-  };
-  LQModule.storeNotifies.sanFoundKnownSame = [this]() {
-    return static_cast<uint32_t>(SQModule.addr.foundKnownSame);
-  };
-  LQModule.storeNotifies.sanKnownTag = [this]() {
-    return static_cast<uint32_t>(SQModule.addr.knownTag);
-  };
-  LQModule.storeNotifies.sanFoundUnknown = [this]() {
-    return static_cast<uint32_t>(SQModule.addr.foundUnknown);
-  };
-  LQModule.storeNotifies.sanUnknownTag = [this]() {
-    return static_cast<uint32_t>(SQModule.addr.unknownTag);
-  };
-
   // ---- Wire SQ's Input Wires ----
   SQModule.squash.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
@@ -1853,70 +1824,6 @@ void CPU::wire() {
           .unknownOldestTag;
     };
   }
-  SQModule.addr.valid = [this]() {
-    if (static_cast<bool>(recoveryActive) || AGUModule.isEmpty() || !isStoreMem(AGUModule.headMemIndex()))
-      return 0u;
-    if (static_cast<bool>(flushArbiter.needSquash) &&
-        !ROB::isOlder(AGUModule.headRobTag(),
-                      static_cast<uint32_t>(flushArbiter.SquashTag)))
-      return 0u;
-    return SQModule.planAddressForward(memSlot(AGUModule.headMemIndex()),
-                                       AGUModule.headValue(), AGUModule.headRobTag())
-                   .valid
-               ? 1u
-               : 0u;
-  };
-  SQModule.addr.storeTag = [this]() {
-    return SQModule
-        .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            AGUModule.headValue(), AGUModule.headRobTag())
-        .storeTag;
-  };
-  SQModule.addr.addr = [this]() {
-    return SQModule
-        .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            AGUModule.headValue(), AGUModule.headRobTag())
-        .addr;
-  };
-  SQModule.addr.value = [this]() {
-    return static_cast<uint32_t>(
-        SQModule
-            .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                                AGUModule.headValue(), AGUModule.headRobTag())
-            .value);
-  };
-  SQModule.addr.foundKnownSame = [this]() {
-    return SQModule.planAddressForward(memSlot(AGUModule.headMemIndex()),
-                                       AGUModule.headValue(), AGUModule.headRobTag())
-                   .foundKnownSame
-               ? 1u
-               : 0u;
-  };
-  SQModule.addr.nBytes = [this]() {
-    return SQModule
-        .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            AGUModule.headValue(), AGUModule.headRobTag())
-        .nBytes;
-  };
-  SQModule.addr.knownTag = [this]() {
-    return SQModule
-        .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            AGUModule.headValue(), AGUModule.headRobTag())
-        .knownSameAddressOldestTag;
-  };
-  SQModule.addr.foundUnknown = [this]() {
-    return SQModule.planAddressForward(memSlot(AGUModule.headMemIndex()),
-                                       AGUModule.headValue(), AGUModule.headRobTag())
-                   .foundUnknown
-               ? 1u
-               : 0u;
-  };
-  SQModule.addr.unknownTag = [this]() {
-    return SQModule
-        .planAddressForward(memSlot(AGUModule.headMemIndex()),
-                            AGUModule.headValue(), AGUModule.headRobTag())
-        .unknownOldestTag;
-  };
   SQModule.reply.valid = [this]() {
     if (static_cast<bool>(recoveryActive) || AGUModule.isEmpty() || isStoreMem(AGUModule.headMemIndex()))
       return 0u;
@@ -2029,34 +1936,36 @@ void CPU::wireIssue() {
     };
   }
 
+  IssueArbiterModule.wholeGroup = [this]() { return wholeGroupProposal(); };
+  IssueArbiterModule.wholeGroupSize = [this]() { return wholeGroupCount(); };
   if constexpr (ISSUE_WIDTH == 4) {
     for (unsigned lane = 0; lane < 4; ++lane) {
       auto &dec = IssueArbiterModule.wideDec[lane];
-      dec.isEmpty = [this, lane]() { return DecodeUnitModule.count() <= lane; };
+      dec.isEmpty = [this, lane]() { return (wholeGroupProposal() ? wholeGroupCount() : DecodeUnitModule.count()) <= lane; };
       auto field = [this, lane](auto &wire, auto member) {
-        wire = [this, lane, member]() { return uint32_t(DecodeUnitModule.entryAt(lane).*member); };
+        wire = [this, lane, member]() { return uint32_t(issueUop(lane).*member); };
       };
-      field(dec.type, &UopEntry::type); field(dec.opcode, &UopEntry::opcode);
-      field(dec.funct3, &UopEntry::funct3); field(dec.funct7, &UopEntry::funct7);
-      field(dec.rd, &UopEntry::rd); field(dec.rs1, &UopEntry::rs1); field(dec.rs2, &UopEntry::rs2);
-      field(dec.imm, &UopEntry::imm); field(dec.pc, &UopEntry::pc);
-      field(dec.isHalt, &UopEntry::isHalt); field(dec.allocDest, &UopEntry::allocDest);
-      field(dec.predictedPC, &UopEntry::predictedPC); field(dec.ckptId, &UopEntry::ckptId);
+      field(dec.type, &Uop::type); field(dec.opcode, &Uop::opcode);
+      field(dec.funct3, &Uop::funct3); field(dec.funct7, &Uop::funct7);
+      field(dec.rd, &Uop::rd); field(dec.rs1, &Uop::rs1); field(dec.rs2, &Uop::rs2);
+      field(dec.imm, &Uop::imm); field(dec.pc, &Uop::pc);
+      field(dec.isHalt, &Uop::isHalt); field(dec.allocDest, &Uop::allocDest);
+      field(dec.predictedPC, &Uop::predictedPC); field(dec.ckptId, &Uop::ckptId);
       auto source = [this, lane](auto &view, auto member) {
-        view.phy = [this, lane, member]() { return RATModule.readRAT_PRF(uint32_t(DecodeUnitModule.entryAt(lane).*member)); };
+        view.phy = [this, lane, member]() { return RATModule.readRAT_PRF(uint32_t(issueUop(lane).*member)); };
         view.ready = [this, lane, member]() {
-          const unsigned reg = uint32_t(DecodeUnitModule.entryAt(lane).*member);
+          const unsigned reg = uint32_t(issueUop(lane).*member);
           return reg == 0 || PRFModule.isReady(RATModule.readRAT_PRF(reg));
         };
         view.value = [this, lane, member]() {
-          const unsigned reg = uint32_t(DecodeUnitModule.entryAt(lane).*member);
+          const unsigned reg = uint32_t(issueUop(lane).*member);
           return reg == 0 ? 0u : uint32_t(PRFModule.getValue(RATModule.readRAT_PRF(reg)));
         };
       };
-      source(IssueArbiterModule.wideRat[lane].s1, &UopEntry::rs1);
-      source(IssueArbiterModule.wideRat[lane].s2, &UopEntry::rs2);
+      source(IssueArbiterModule.wideRat[lane].s1, &Uop::rs1);
+      source(IssueArbiterModule.wideRat[lane].s2, &Uop::rs2);
       IssueArbiterModule.wideRat[lane].rdOldPhy = [this, lane]() {
-        return RATModule.readRAT_PRF(uint32_t(DecodeUnitModule.entryAt(lane).rd));
+        return RATModule.readRAT_PRF(uint32_t(issueUop(lane).rd));
       };
       IssueArbiterModule.wideFreePhy[lane] = [this, lane]() {
         PrfSeq seq = PRFModule.getHeadSeq();
@@ -2211,12 +2120,68 @@ bool CPU::frontendCanRun() const {
   bool safe = !bool(recoveryActive);
   if (!safe && FETCH_WIDTH == 2 && !legacyHaltEnabled && ICacheModule.hit(pc))
     safe = !ICacheModule.firstControl(pc) &&
-        ((pc & 4u) || !ICacheModule.firstControl(pc | 4u));
+        (((pc >> 2) & ICACHE_WORD_INDEX_MASK) == ICACHE_WORD_INDEX_MASK ||
+         !ICacheModule.firstControl(pc + 4u));
   return !bool(exitCommitted) && safe;
 }
 
+bool CPU::frontendResponseCanRun() const {
+  // Old response safety is independent of the NEXT fetch/prediction PC.
+  if (bool(exitCommitted) || !ICacheModule.isReturnReady()) return false;
+  bool safe = !bool(recoveryActive);
+  if (!safe && FETCH_WIDTH == 2 && !legacyHaltEnabled) {
+    safe = true;
+    for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane)
+      if (lane < ICacheModule.returnCount() && ICache::isControl(ICacheModule.returnRaw(lane)))
+        safe = false;
+  }
+  return safe;
+}
+
+bool CPU::wholeGroupProposal() const {
+  return ISSUE_WIDTH == 4 && DECODE_WIDTH == 4 && !bool(exitCommitted) &&
+      !bool(flushArbiter.needSquash) && DecodeUnitModule.isEmpty() && FQModule.count() != 0;
+}
+
+unsigned CPU::wholeGroupCount() const {
+  if (!wholeGroupProposal()) return 0;
+  const unsigned n = FQModule.count();
+  return n < DECODE_WIDTH ? n : DECODE_WIDTH;
+}
+
+unsigned CPU::issueAcceptedCount() const {
+  unsigned n = 0;
+  for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane)
+    n += unsigned(bool(IssueArbiterModule.outputAt(lane).core.valid));
+  return n;
+}
+
+Uop CPU::issueUop(unsigned lane) const {
+  Uop u{};
+  if (wholeGroupProposal()) {
+    if (lane < wholeGroupCount()) {
+      const auto &entry = FQModule.entryAt(lane);
+      const uint32_t raw = uint32_t(entry.raw);
+      u = Decoder::decode(static_cast<int32_t>(raw));
+      u.pc = uint32_t(entry.pc); u.predictedPC = int32_t(uint32_t(entry.predictedPC));
+      u.ckptId = uint8_t(uint32_t(entry.ckptId));
+      u.isHalt = legacyHaltEnabled && raw == 0x0ff00513;
+    }
+  } else {
+    const auto &entry = DecodeUnitModule.entryAt(lane);
+    u.type = static_cast<RISC_V>(uint32_t(entry.type));
+    u.opcode = uint32_t(entry.opcode); u.funct3 = uint32_t(entry.funct3); u.funct7 = uint32_t(entry.funct7);
+    u.rd = uint32_t(entry.rd); u.rs1 = uint32_t(entry.rs1); u.rs2 = uint32_t(entry.rs2);
+    u.imm = int32_t(uint32_t(entry.imm)); u.pc = uint32_t(entry.pc);
+    u.isHalt = bool(entry.isHalt); u.allocDest = bool(entry.allocDest);
+    u.predictedPC = int32_t(uint32_t(entry.predictedPC)); u.ckptId = uint8_t(uint32_t(entry.ckptId));
+  }
+  return u;
+}
+
 unsigned CPU::decodePopCount() const {
-  if (!frontendCanRun() || bool(flushArbiter.needSquash)) return 0;
+  if (bool(exitCommitted) || bool(flushArbiter.needSquash)) return 0;
+  if (wholeGroupProposal()) return wholeGroupCount();
   const unsigned popped = static_cast<uint32_t>(DecodeUnitModule.issuePopCount);
   const unsigned cap = DecodeUnitModule.pushCapacity(popped);
   const unsigned avail = FQModule.count();
@@ -2270,9 +2235,8 @@ void CPU::clock(bool shuffle) {
     PRFModule.work();
     if (recovering && !frozen) {
       ICacheModule.work(); LQModule.work(); BPUModule.work(); RATModule.work();
-      if (frontendCanRun()) {
-        FetchUnitModule.work(); FQModule.work(); DecodeUnitModule.work();
-      }
+      // New control prediction may stop; authenticated safe transport does not.
+      FetchUnitModule.work(); FQModule.work(); DecodeUnitModule.work();
     }
     // Frozen sequential state holds, but ALL Wire caches still invalidate at
     // this edge. No transport/SRAM response is allowed to bypass sync().

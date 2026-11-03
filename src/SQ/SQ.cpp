@@ -108,44 +108,6 @@ auto SQ::planDataForward(int index, int32_t value) const -> StoreNotify {
   return notify;
 }
 
-auto SQ::planAddressForward(int index, uint32_t address, RobTag producerTag) const -> StoreNotify {
-  StoreNotify notify{};
-  if (!matchesAddress(index, producerTag) || SQqueue[index].isValueReady == 0)
-    return notify;
-  notify.storeTag = static_cast<uint32_t>(SQqueue[index].robTag);
-  notify.addr = address;
-  notify.value = static_cast<uint32_t>(SQqueue[index].value);
-  notify.nBytes = getNBytes(index);
-  RobTag knownSameAddressOldestTag =
-      static_cast<uint32_t>(SQqueue[index].robTag);
-  RobTag unknownOldestTag = static_cast<uint32_t>(SQqueue[index].robTag);
-  bool FoundKnownSameAddressOldest = false;
-  bool FoundUnknownOldest = false;
-  for (int k = 1; k <= SQ_CAP; ++k) {
-    uint8_t i = (index + k) & SQ_MASK;
-    if (i == index || !isActive(i))
-      continue;
-    if (((i - static_cast<uint32_t>(head)) & SQ_MASK) <=
-        ((static_cast<uint32_t>(index) - static_cast<uint32_t>(head)) & SQ_MASK))
-      continue;
-    if ((static_cast<uint32_t>(SQqueue[i].address) >> 2) == (address >> 2) &&
-        SQqueue[i].isAddressReady &&
-        !FoundKnownSameAddressOldest) {
-      knownSameAddressOldestTag = static_cast<uint32_t>(SQqueue[i].robTag);
-      FoundKnownSameAddressOldest = true;
-    } else if (SQqueue[i].isAddressReady == 0 && !FoundUnknownOldest) {
-      unknownOldestTag = static_cast<uint32_t>(SQqueue[i].robTag);
-      FoundUnknownOldest = true;
-    }
-  }
-  notify.foundKnownSame = FoundKnownSameAddressOldest;
-  notify.knownSameAddressOldestTag = knownSameAddressOldestTag;
-  notify.foundUnknown = FoundUnknownOldest;
-  notify.unknownOldestTag = unknownOldestTag;
-  notify.valid = true;
-  return notify;
-}
-
 auto SQ::replyToLoadRequest(uint32_t addr, uint8_t nBytes,
                             RobTag loadTag) const -> StoreResponse {
   int youngestSameAddrOrder = -1;

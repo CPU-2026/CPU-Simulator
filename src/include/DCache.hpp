@@ -61,6 +61,9 @@ struct DCacheMiss {
 struct DCachePlan {
   int lookup = -1, response = -1, store = -1, mergeSlot = -1, mergeMiss = -1;
   int lookupCandidate = -1;
+  int hitLocationTrain = -1;
+  bool storeHintFire = false;
+  uint8_t storeHintWay = 0;
   bool acceptLookup = false;
   int allocate = -1, fillMiss = -1, writeAck = -1;
   bool fillBeat = false, fillFire = false, wordReturn = false, loadValid = false, exitValid = false;
@@ -95,6 +98,11 @@ struct DCacheInner {
   std::array<SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS>, NUM_OF_DCACHE_WAYS> metadata;
   std::array<std::array<Register<1>, NUM_OF_DCACHE_WAYS>, NUM_OF_DCACHE_SETS> validBits;
   std::array<Register<DCACHE_PLRU_BITS>, NUM_OF_DCACHE_SETS> plru;
+  // Only exact Load-hit location metadata, submitted with the other old/new state.
+  std::array<Register<1>, 4> hitLocationValid;
+  std::array<Register<32 - DCACHE_OFFSET_BITS>, 4> hitLocationLine;
+  std::array<Register<DCACHE_WAY_BITS>, 4> hitLocationWay;
+  Register<2> hitLocationVictim;
   DCacheComb comb;
 };
 struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
@@ -119,7 +127,6 @@ private:
   int hitWay() const;
   uint32_t selectVictim(uint32_t set) const;
   uint32_t sramRaw(int way) const;
-  bool acceptedLookup() const;
   uint32_t memoryRaw(int slot) const;
   uint32_t wordRaw(int slot, uint32_t data) const;
   DCachePlan plan() const;

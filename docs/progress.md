@@ -4,4 +4,4 @@
 
 本提交的默认取指 / 译码 / 分配 / 提交宽度为 2 / 4 / 4 / 4。验证数据仅适用于各记录注明的版本。
 
-[PRF 单行 SRAM](hardware-baseline-prf-microbank.md) · [用例基准](benchmarks.md) · [迁移归档](_archive/20261018/docs/progress.md)
+[IQ 整组旁路](hardware-baseline-iq-whole-group.md) · [PRF 单行 SRAM](hardware-baseline-prf-microbank.md) · [用例基准](benchmarks.md) · [迁移归档](_archive/20261018/docs/progress.md)

@@ -148,13 +148,6 @@ uint32_t DCache::sramRaw(int w) const {
   }
   return extractLoadWord(low, high, u(readOffset), 1u << u(readNEnc));
 }
-bool DCache::acceptedLookup() const {
-  // Reads only old state and producer-owned inputs, never events(). The new
-  // request still owns an ordinary slot; the SRAM result is visible next cycle.
-  return u(count) == 0 && !u(readValid) && u(decisionValid) &&
-      static_cast<Operation>(u(decisionOp)) == Operation::Load &&
-      u(decisionAddr) != AXI_EXIT_ADDR;
-}
 uint32_t DCache::memoryRaw(int s) const {
   const auto r = request(s);
   uint32_t raw = 0;
@@ -170,9 +163,25 @@ uint32_t DCache::wordRaw(int s, uint32_t data) const {
 }
 DCachePlan DCache::plan() const {
   DCachePlan p{};
-  p.acceptLookup = acceptedLookup();
   const int first = oldestRequest(activeMask()), way = hitWay();
   p.readHitRaw = u(readValid) && way >= 0 ? sramRaw(way) : 0;
+  if (u(readValid) && way >= 0 && request(u(readIndex)).op == Operation::Load) {
+    uint8_t selected = u(hitLocationVictim);
+    // Lowest invalid row first, then cyclic replacement after training.
+    for (int h = 3; h >= 0; --h)
+      if (!u(hitLocationValid[h])) selected = h;
+    for (int h = 0; h < 4; ++h)
+      if (u(hitLocationValid[h]) && u(hitLocationLine[h]) ==
+          (request(u(readIndex)).address >> DCACHE_OFFSET_BITS)) selected = h;
+    p.hitLocationTrain = selected;
+  }
+  bool storeHintMatch = false;
+  for (int h = 0; h < 4; ++h)
+    if (first >= 0 && u(hitLocationValid[h]) && u(hitLocationLine[h]) ==
+        (request(first).address >> DCACHE_OFFSET_BITS)) {
+      storeHintMatch = true;
+      p.storeHintWay = u(hitLocationWay[h]);
+    }
   if (first >= 0 && request(first).address == AXI_EXIT_ADDR && request(first).op == Operation::Store && u(exitReady)) {
     assert(request(first).nBytes == 4);
     p.exitValid = true; p.exitValue = uint32_t(request(first).value);
@@ -232,8 +241,13 @@ DCachePlan DCache::plan() const {
         u(readValid) && u(readIndex) == uint32_t(s) && way >= 0 ? p.readHitRaw : u(rawPayload[s]);
     p.loadValid = !u(requests[s].cancelled) && (!u(squashNeed) || ROB::isOlder(request(s).robTag, u(squashTag)));
   }
+  p.storeHintFire = !p.fillBeat && first >= 0 && request(first).op == Operation::Store &&
+      request(first).address != AXI_EXIT_ADDR && !u(requests[first].ready) && miss(first) < 0 &&
+      !u(requests[first].deferred) && storeHintMatch && !setLocked(request(first).address) &&
+      (!u(readValid) || (way >= 0 && request(u(readIndex)).op == Operation::Load &&
+                        p.response == int(u(readIndex))));
   if (!p.fillBeat && first >= 0 && request(first).op == Operation::Store && request(first).address != AXI_EXIT_ADDR &&
-      !setLocked(request(first).address) && (u(requests[first].ready) || (u(readValid) && int(u(readIndex)) == first && way >= 0))) p.store = first;
+      !setLocked(request(first).address) && (p.storeHintFire || u(requests[first].ready) || (u(readValid) && int(u(readIndex)) == first && way >= 0))) p.store = first;
   if (u(readValid) && way < 0 && !storeHazard(u(readIndex), true)) {
     const uint32_t line = request(u(readIndex)).address & ~DCACHE_OFFSET_MASK;
     if (findMiss(line) < 0 && !setLocked(line)) p.allocate = freeMiss();
@@ -273,6 +287,24 @@ DCachePlan DCache::plan() const {
     p.lookupCandidate = oldestRequest(eligible);
     if ((!u(readValid) || continueHit) && !p.fillBeat && p.store < 0) p.lookup = p.lookupCandidate;
   }
+  // OLD lookup/fill/Store work retains SRAM priority. The accepted Load still
+  // occupies an ordinary slot and cannot see its SRAM result until next cycle.
+  bool queuedStoreConflict = false;
+  for (int s = 0; s < REQUEST_CAP; ++s) {
+    const auto r = request(s);
+    if (u(requests[s].active) && r.op == Operation::Store &&
+        ((r.address >> DCACHE_OFFSET_BITS) == (u(decisionAddr) >> DCACHE_OFFSET_BITS) ||
+         r.address == AXI_EXIT_ADDR)) queuedStoreConflict = true;
+  }
+  const bool readEdgeAvailable = !u(readValid) ||
+      (way >= 0 && request(u(readIndex)).op == Operation::Load &&
+       p.response == int(u(readIndex)));
+  p.acceptLookup = u(decisionValid) && u(count) < REQUEST_CAP &&
+      !queuedStoreConflict && readEdgeAvailable && p.lookup < 0 &&
+      !p.fillBeat && p.store < 0 &&
+      static_cast<Operation>(u(decisionOp)) == Operation::Load &&
+      u(decisionAddr) != AXI_EXIT_ADDR && !setLocked(u(decisionAddr));
+
   uint8_t readable = 0, writable = 0;
   for (int m = 0; m < DCACHE_MSHR_CAP; ++m) if (u(misses[m].valid)) {
     if (!u(misses[m].readSent) && !victimHazard(m) && !storeHazard(u(misses[m].owner), true)) readable |= 1u << m;
@@ -285,9 +317,8 @@ DCachePlan DCache::plan() const {
     p.memoryRequest.write.address = victimAddress(wr); p.memoryRequest.write.transaction = wr;
     for (int b = 0; b < DCACHE_BLOCK_CAP; ++b) p.memoryRequest.write.lineData[b] = u(victimPayload[wr][b >> 2]) >> ((b & 3) << 3);
   }
-  // Like RTL's early address selection, old empty state selects the producer
-  // payload before the late acceptance grant. Only a real grant enables SRAM.
-  const uint32_t lookupAddress = u(count) == 0 ? u(decisionAddr) :
+  // Only a granted accepted lookup selects the producer's SRAM address.
+  const uint32_t lookupAddress = p.acceptLookup ? u(decisionAddr) :
       request(unsigned(p.lookupCandidate) & (REQUEST_CAP - 1)).address;
   const uint32_t lookupSet = (lookupAddress >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
   for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
@@ -316,7 +347,8 @@ DCachePlan DCache::plan() const {
     }
   } else if (p.store >= 0) {
     const auto r = request(p.store);
-    const int w = u(readValid) && int(u(readIndex)) == p.store && way >= 0 ? way : int(u(requests[p.store].way));
+    const int w = p.storeHintFire ? p.storeHintWay :
+        u(readValid) && int(u(readIndex)) == p.store && way >= 0 ? way : int(u(requests[p.store].way));
     const uint32_t set = (r.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
     for (int b = 0; b < 4; ++b) if (b < r.nBytes && r.address + b < AXI_RAM_BYTES) {
       const uint32_t lane = (r.address & DCACHE_OFFSET_MASK) + b;
@@ -353,6 +385,16 @@ void DCache::work() {
   const int hit = hitWay();
   const uint32_t readSet = u(readValid) ? (request(u(readIndex)).address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK : 0;
   const uint32_t victim = u(readValid) && hit < 0 ? selectVictim(readSet) : 0;
+  for (int h = 0; h < 4; ++h) {
+    if (p.hitLocationTrain == h) {
+      hitLocationValid[h] <= 1;
+      hitLocationLine[h] <= (request(u(readIndex)).address >> DCACHE_OFFSET_BITS);
+      hitLocationWay[h] <= hit;
+    } else if (p.allocate >= 0 && (u(hitLocationLine[h]) & DCACHE_INDEX_MASK) == readSet) {
+      hitLocationValid[h] <= 0;
+    }
+  }
+  if (p.hitLocationTrain >= 0) hitLocationVictim <= ((p.hitLocationTrain + 1) & 3);
   for (int s = 0; s < REQUEST_CAP; ++s) {
     auto &r = requests[s];
     if (s == allocation) {
@@ -413,6 +455,7 @@ void DCache::work() {
   if (u(readValid)) { if (hit >= 0) ++statHits; else ++statMisses; }
   for (int set = 0; set < NUM_OF_DCACHE_SETS; ++set) {
     if (p.fillFire && set == int((u(misses[p.fillMiss].line) >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK)) plru[set] <= dcachePlruTouch(u(plru[set]), u(misses[p.fillMiss].way));
+    else if (p.storeHintFire && set == int((request(p.store).address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK)) plru[set] <= dcachePlruTouch(u(plru[set]), p.storeHintWay);
     else if (u(readValid) && hit >= 0 && set == int(readSet)) plru[set] <= dcachePlruTouch(u(plru[set]), hit);
     for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
       if (p.allocate >= 0 && set == int(readSet) && uint32_t(w) == victim) validBits[set][w] <= 0;
@@ -420,8 +463,14 @@ void DCache::work() {
     }
   }
   if (p.acceptLookup) {
-    assert(allocation >= 0 && active == 0 && !u(readValid) && !p.fillBeat && p.store < 0 && p.lookup < 0);
-    for (const auto &m : misses) assert(!u(m.valid));
+    assert(allocation >= 0 && !p.fillBeat && p.store < 0 && p.lookup < 0 &&
+           !setLocked(u(decisionAddr)));
+    assert(!u(readValid) || (hit >= 0 && request(u(readIndex)).op == Operation::Load &&
+                           p.response == int(u(readIndex))));
+    for (int s = 0; s < REQUEST_CAP; ++s)
+      if (u(requests[s].active) && request(s).op == Operation::Store)
+        assert((request(s).address >> DCACHE_OFFSET_BITS) != (u(decisionAddr) >> DCACHE_OFFSET_BITS) &&
+               request(s).address != AXI_EXIT_ADDR);
   }
   readValid <= (p.lookup >= 0 || p.acceptLookup);
   if (p.lookup >= 0 || p.acceptLookup) {
