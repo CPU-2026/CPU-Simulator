@@ -533,6 +533,11 @@ const WideIssueDecision &IssueArbiter::wideDecision(unsigned requested) const {
         tag = robNextTag(tag);
       }
     }
+    if (bool(wholeGroup)) {
+      unsigned accepted = 0;
+      for (unsigned lane = 0; lane < 4; ++lane) accepted += unsigned(wideCache.lanes[lane].valid);
+      if (accepted != uint32_t(wholeGroupSize)) wideCache.lanes = {};
+    }
     wideCache.valid = true;
   }
   return wideCache.lanes[requested];

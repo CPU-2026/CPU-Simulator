@@ -81,6 +81,7 @@ class CPU {
   bool exitRetiring() const;
   bool memoryDispatchValid() const;
   bool frontendCanRun() const;
+  bool frontendResponseCanRun() const;
   bool secondControl() const;
   bool aluGrant(unsigned unit) const;
   bool aluCanAccept(unsigned unit) const;
@@ -89,6 +90,10 @@ class CPU {
   // 0..DECODE_WIDTH: decoded uops moved FQ -> IQ this cycle (min of FQ
   // availability, IQ push capacity after the actual issue pops, and width).
   unsigned decodePopCount() const;
+  bool wholeGroupProposal() const;
+  unsigned wholeGroupCount() const;
+  unsigned issueAcceptedCount() const;
+  Uop issueUop(unsigned lane) const;
 public:
   CPU(const Memory &mem);
   void wire();

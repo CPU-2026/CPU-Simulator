@@ -85,16 +85,6 @@ struct LQInputStoreNotifies {
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> snKnownTag;
   std::array<Wire<1>, STORERS_CAP> snFoundUnknown;
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> snUnknownTag;
-  // single address-forward notify — san prefix retained
-  Wire<1> sanValid;
-  Wire<ROB_TAG_WIDTH> sanStoreTag;
-  Wire<32> sanAddr;
-  Wire<32> sanValue;
-  Wire<3> sanNBytes;
-  Wire<1> sanFoundKnownSame;
-  Wire<ROB_TAG_WIDTH> sanKnownTag;
-  Wire<1> sanFoundUnknown;
-  Wire<ROB_TAG_WIDTH> sanUnknownTag;
 };
 struct LQInput {
   std::array<CommitPort, COMMIT_WIDTH> commits;

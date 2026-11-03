@@ -57,8 +57,7 @@ struct SQInput {
 };
 
 // --- Output: combinational public views (assigns over committed state) ---
-// StoreNotify packet: data-forward per storeValueRS slot and the single
-// AGU-head-driven address-forward.
+// StoreNotify packet: data-forward per storeValueRS slot only.
 struct SQOutputNotifyData {
   std::array<Wire<1>, STORERS_CAP> valid;
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> storeTag;
@@ -69,17 +68,6 @@ struct SQOutputNotifyData {
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> knownTag;
   std::array<Wire<1>, STORERS_CAP> foundUnknown;
   std::array<Wire<ROB_TAG_WIDTH>, STORERS_CAP> unknownTag;
-};
-struct SQOutputNotifyAddr {
-  Wire<1> valid;
-  Wire<ROB_TAG_WIDTH> storeTag;
-  Wire<32> addr;
-  Wire<32> value;
-  Wire<3> nBytes;
-  Wire<1> foundKnownSame;
-  Wire<ROB_TAG_WIDTH> knownTag;
-  Wire<1> foundUnknown;
-  Wire<ROB_TAG_WIDTH> unknownTag;
 };
 // StoreResponse: the store-forward reply to the AGU-head load query.
 struct SQOutputReply {
@@ -97,7 +85,6 @@ struct SQOutputCompletion {
 };
 struct SQOutput {
   SQOutputNotifyData data;
-  SQOutputNotifyAddr addr;
   SQOutputReply reply;
   SQOutputCompletion completion;
 };
@@ -166,7 +153,6 @@ public:
     return static_cast<bool>(SQqueue[index].isValueReady);
   }
   auto planDataForward(int index, int32_t value) const -> StoreNotify;
-  auto planAddressForward(int index, uint32_t address, RobTag producerTag) const -> StoreNotify;
   auto replyToLoadRequest(uint32_t addr, uint8_t nBytes, RobTag loadTag) const
       -> StoreResponse;
   // Called after forwarding fails; nBytes is the actual Load byte count.
