@@ -39,7 +39,7 @@ FetchTypeInfo scanJump(bool valid, uint32_t raw, uint32_t pc) {
     fi.valid = true;
   } else if (opcode == 0x67 && funct3 == 0) { // jalr
     fi.isCall = rdLink;                       // indirect call (push)
-    fi.isRet = rs1Link;                       // independent pop; both => pop then push
+    fi.isRet = rs1Link && rd != rs1;                       // same-link call does not pop
     fi.valid = true;
   }
   return fi;
@@ -178,7 +178,8 @@ void CPU::wire() {
   FQModule.icacheReturnCkptId = [this]() {
     return ICacheModule.returnCkptId();
   };
-  FQModule.decodePopCount = [this]() { return decodePopCount(); };
+  FQModule.decodePopCount = [this]() { return emptyFQReturn() ? 0u : decodePopCount(); };
+  FQModule.bypassReturnStorage = [this]() { return emptyFQReturn() ? 1u : 0u; };
 
   // Wire the DecodeUnit's input wires once. fq* sample the converted
   // InstructBuffer's bridge accessors (_M_old); issueValid samples the
@@ -192,24 +193,24 @@ void CPU::wire() {
   DecodeUnitModule.decodePushCount = [this]() {
     return wholeGroupProposal() && issueAcceptedCount() == wholeGroupCount() ? 0u : decodePopCount();
   };
-  DecodeUnitModule.fqHeadRaw = [this]() { return FQModule.headRaw(); };
-  DecodeUnitModule.fqHeadPc = [this]() { return FQModule.headpc(); };
+  DecodeUnitModule.fqHeadRaw = [this]() { return emptyFQReturn() ? uint32_t(ICacheModule.returnRaw(0)) : uint32_t(FQModule.headRaw()); };
+  DecodeUnitModule.fqHeadPc = [this]() { return emptyFQReturn() ? uint32_t(ICacheModule.returnPC(0)) : uint32_t(FQModule.headpc()); };
   DecodeUnitModule.fqHeadPredictedPC = [this]() {
-    return FQModule.headPredictedPC();
+    return emptyFQReturn() ? uint32_t(ICacheModule.returnPredictPC(0)) : uint32_t(FQModule.headPredictedPC());
   };
-  DecodeUnitModule.fqHeadCkptId = [this]() { return FQModule.headCkptId(); };
-  DecodeUnitModule.fqHeadRaw1 = [this]() { return FQModule.headRaw1(); };
-  DecodeUnitModule.fqHeadPc1 = [this]() { return FQModule.headpc1(); };
+  DecodeUnitModule.fqHeadCkptId = [this]() { return emptyFQReturn() ? uint32_t(((ICacheModule.returnCkptId()+0u)&(CKPT_CAP-1))) : uint32_t(FQModule.headCkptId()); };
+  DecodeUnitModule.fqHeadRaw1 = [this]() { return emptyFQReturn() ? uint32_t(ICacheModule.returnRaw(1)) : uint32_t(FQModule.headRaw1()); };
+  DecodeUnitModule.fqHeadPc1 = [this]() { return emptyFQReturn() ? uint32_t(ICacheModule.returnPC(1)) : uint32_t(FQModule.headpc1()); };
   DecodeUnitModule.fqHeadPredictedPC1 = [this]() {
-    return FQModule.headPredictedPC1();
+    return emptyFQReturn() ? uint32_t(ICacheModule.returnPredictPC(1)) : uint32_t(FQModule.headPredictedPC1());
   };
-  DecodeUnitModule.fqHeadCkptId1 = [this]() { return FQModule.headCkptId1(); };
+  DecodeUnitModule.fqHeadCkptId1 = [this]() { return emptyFQReturn() ? uint32_t(((ICacheModule.returnCkptId()+1u)&(CKPT_CAP-1))) : uint32_t(FQModule.headCkptId1()); };
   if constexpr (DECODE_WIDTH == 4) {
     for (unsigned lane = 2; lane < DECODE_WIDTH; ++lane) {
-      DecodeUnitModule.fqExtraRaw[lane - 2] = [this, lane]() { return uint32_t(FQModule.entryAt(lane).raw); };
-      DecodeUnitModule.fqExtraPc[lane - 2] = [this, lane]() { return uint32_t(FQModule.entryAt(lane).pc); };
-      DecodeUnitModule.fqExtraPredictedPC[lane - 2] = [this, lane]() { return uint32_t(FQModule.entryAt(lane).predictedPC); };
-      DecodeUnitModule.fqExtraCkptId[lane - 2] = [this, lane]() { return uint32_t(FQModule.entryAt(lane).ckptId); };
+      DecodeUnitModule.fqExtraRaw[lane - 2] = [this, lane]() { return emptyFQReturn() ? uint32_t(ICacheModule.returnRaw(lane)) : uint32_t(FQModule.entryAt(lane).raw); };
+      DecodeUnitModule.fqExtraPc[lane - 2] = [this, lane]() { return emptyFQReturn() ? uint32_t(ICacheModule.returnPC(lane)) : uint32_t(FQModule.entryAt(lane).pc); };
+      DecodeUnitModule.fqExtraPredictedPC[lane - 2] = [this, lane]() { return emptyFQReturn() ? uint32_t(ICacheModule.returnPredictPC(lane)) : uint32_t(FQModule.entryAt(lane).predictedPC); };
+      DecodeUnitModule.fqExtraCkptId[lane - 2] = [this, lane]() { return emptyFQReturn() ? uint32_t(((ICacheModule.returnCkptId()+lane)&(CKPT_CAP-1))) : uint32_t(FQModule.entryAt(lane).ckptId); };
     }
   }
   // Wire the instruction-side AXI adapter's input wires once.
@@ -373,6 +374,19 @@ void CPU::wire() {
   // by loadValid so the un-ready throw paths are never reached -- the ready-
   // flag gate is a superset-safe call of the original storeSelected-only
   // call sites, pure reads with no side effects) ----
+  MemArbiterModule.loadYieldEnabled = [this]() {
+    return bool(initialized) && !bool(recoveryActive) && !bool(exitCommitted) && !bool(flushArbiter.needSquash);
+  };
+  MemArbiterModule.yieldDebt = [this]() { return uint32_t(lsuYieldDebt); };
+  MemArbiterModule.sqCount = [this]() {
+    // getHead() is a physical slot; getTail() includes epoch. Count old live
+    // rows directly, matching RTL sqValid popcount even across FIFO wrap.
+    unsigned count = 0;
+    for (unsigned slot = 0; slot < SQ_CAP; ++slot) count += unsigned(SQModule.isActive(slot));
+    return count;
+  };
+  MemArbiterModule.loadOwners = [this]() { return uint32_t(lsuOwners); };
+  MemArbiterModule.yieldBytesSafe = [this]() { return loadYieldBytesSafe(); };
   MemArbiterModule.dmemBusy = [this]() {
     return static_cast<uint32_t>(DCacheModule.isRequestFull());
   };
@@ -761,7 +775,7 @@ void CPU::wire() {
       return static_cast<uint32_t>(PRFModule.getOperandValue(
           RSModule.getLoadSrc1(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()));
     return static_cast<uint32_t>(PRFModule.getOperandValue(
-        RSModule.getSaSrc1(static_cast<uint32_t>(d.rsIndex))));
+        RSModule.getSaSrc1(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()));
   };
   AGUModule.src2Value = [this]() {
     const auto &d = DispatchArbiterModule.agu;
@@ -771,7 +785,7 @@ void CPU::wire() {
       return static_cast<uint32_t>(PRFModule.getOperandValue(
           RSModule.getLoadSrc2(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()));
     return static_cast<uint32_t>(PRFModule.getOperandValue(
-        RSModule.getSaSrc2(static_cast<uint32_t>(d.rsIndex))));
+        RSModule.getSaSrc2(static_cast<uint32_t>(d.rsIndex)), grantedWritebacks()));
   };
   AGUModule.memIndex = [this]() {
     const auto &d = DispatchArbiterModule.agu;
@@ -1176,6 +1190,10 @@ void CPU::wire() {
   DCacheModule.squashTag = [this]() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
+  DCacheModule.proposalValid = [this]() {
+    return MemArbiterModule.proposalValid() && (!static_cast<bool>(exitCommitted) ||
+        (!SQModule.isEmpty() && SQModule.isCommitted(SQModule.getHead() & SQ_MASK)));
+  };
   DCacheModule.decisionValid = [this]() {
     return memoryDispatchValid() ? 1u : 0u;
   };
@@ -1475,6 +1493,28 @@ void CPU::wire() {
     };
   }
   // ---- Wire SQ's Input Wires ----
+  // Completion-only data cone may use full WB; the original SV/LQ cone must
+  // keep using early ALU only, otherwise shared Load WB would feed itself.
+  SQModule.completionEvents.enabled = [this]() {
+    return !bool(recoveryActive) && !bool(exitCommitted) ? 1u : 0u;
+  };
+  SQModule.completionEvents.dataReadyMask = [this]() {
+    uint32_t mask = 0;
+    if (!bool(recoveryActive) && !bool(exitCommitted)) {
+      const auto writebacks = grantedWritebacks(false);
+      for (int lane = 0; lane < STORERS_CAP; ++lane) {
+        if (!RSModule.isSvFree(lane)) {
+          const auto slot = memSlot(RSModule.getSvMemIndex(lane));
+          const RobTag tag = RSModule.getSvRobTag(lane);
+          if (SQModule.matchesAddress(slot, tag) && !SQModule.isCommitted(slot) &&
+              (!bool(flushArbiter.needSquash) || ROB::isOlder(tag, uint32_t(flushArbiter.SquashTag))) &&
+              PRFModule.isOperandReady(RSModule.getSvData(lane), writebacks))
+            mask |= uint32_t{1} << slot;
+        }
+      }
+    }
+    return mask;
+  };
   SQModule.squash.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
@@ -1996,6 +2036,9 @@ void CPU::wireIssue() {
           if (pool == 3) available |= bool(DispatchArbiterModule.bru.valid) && uint32_t(DispatchArbiterModule.bru.rsIndex) == row;
           if (pool == 4) available |= bool(DispatchArbiterModule.agu.valid) &&
               uint32_t(DispatchArbiterModule.agu.rsType) == uint32_t(RSType::Load) && uint32_t(DispatchArbiterModule.agu.rsIndex) == row;
+          // Credit from the OLD StoreAddr that really won the shared AGU.
+          if (pool == 5) available |= bool(DispatchArbiterModule.agu.valid) &&
+              uint32_t(DispatchArbiterModule.agu.rsType) == uint32_t(RSType::StoreAddr) && uint32_t(DispatchArbiterModule.agu.rsIndex) == row;
           if (pool == 6) available |= bool(SQModule.prf.svWriteValid[row]);
           if (available) mask |= 1u << row;
         }
@@ -2138,14 +2181,34 @@ bool CPU::frontendResponseCanRun() const {
   return safe;
 }
 
+bool CPU::emptyFQReturn() const {
+  return ISSUE_WIDTH==4 && DECODE_WIDTH==4 && FQModule.isEmpty() && DecodeUnitModule.isEmpty() &&
+      !bool(exitCommitted) && !bool(flushArbiter.needSquash) && !bool(FetchUnitModule.haltFetched) && frontendResponseCanRun();
+}
+
+Uop CPU::frontendCandidate(unsigned lane) const {
+  Uop u{};
+  uint32_t raw=0,pc=0,predicted=0,cid=0;
+  if(emptyFQReturn()) {
+    raw=ICacheModule.returnRaw(lane);pc=ICacheModule.returnPC(lane);
+    predicted=ICacheModule.returnPredictPC(lane);cid=(ICacheModule.returnCkptId()+lane)&(CKPT_CAP-1);
+  } else {
+    const auto &entry=FQModule.entryAt(lane);
+    raw=uint32_t(entry.raw);pc=uint32_t(entry.pc);predicted=uint32_t(entry.predictedPC);cid=uint32_t(entry.ckptId);
+  }
+  u=Decoder::decode(int32_t(raw));u.pc=pc;u.predictedPC=int32_t(predicted);u.ckptId=uint8_t(cid);
+  u.isHalt=legacyHaltEnabled && raw==0x0ff00513;
+  return u;
+}
+
 bool CPU::wholeGroupProposal() const {
   return ISSUE_WIDTH == 4 && DECODE_WIDTH == 4 && !bool(exitCommitted) &&
-      !bool(flushArbiter.needSquash) && DecodeUnitModule.isEmpty() && FQModule.count() != 0;
+      !bool(flushArbiter.needSquash) && DecodeUnitModule.isEmpty() && (FQModule.count() != 0 || emptyFQReturn());
 }
 
 unsigned CPU::wholeGroupCount() const {
   if (!wholeGroupProposal()) return 0;
-  const unsigned n = FQModule.count();
+  const unsigned n = emptyFQReturn() ? ICacheModule.returnCount() : FQModule.count();
   return n < DECODE_WIDTH ? n : DECODE_WIDTH;
 }
 
@@ -2160,12 +2223,7 @@ Uop CPU::issueUop(unsigned lane) const {
   Uop u{};
   if (wholeGroupProposal()) {
     if (lane < wholeGroupCount()) {
-      const auto &entry = FQModule.entryAt(lane);
-      const uint32_t raw = uint32_t(entry.raw);
-      u = Decoder::decode(static_cast<int32_t>(raw));
-      u.pc = uint32_t(entry.pc); u.predictedPC = int32_t(uint32_t(entry.predictedPC));
-      u.ckptId = uint8_t(uint32_t(entry.ckptId));
-      u.isHalt = legacyHaltEnabled && raw == 0x0ff00513;
+      u = frontendCandidate(lane);
     }
   } else {
     const auto &entry = DecodeUnitModule.entryAt(lane);
@@ -2199,6 +2257,40 @@ bool CPU::exitRetiring() const {
   return retiring;
 }
 
+// Ordinary-RAM complete-byte interval, matching the RTL yield guard.
+static bool yieldRamAccess(uint32_t address, unsigned bytes) {
+  const uint64_t last = uint64_t(address) + bytes - 1u;
+  return (bytes == 1 || bytes == 2 || bytes == 4) && address < 0x10000000u &&
+      last < 0x10000000ull && (uint64_t(address) >> 5) == (last >> 5);
+}
+
+bool CPU::loadYieldBytesSafe() const {
+  const auto event = LQModule.addressBypass();
+  const auto load = LQModule.LoadDetect(event);
+  if (load == 0xFFFFFFFF) return false;
+  const uint32_t addr = LQModule.requestAddress(load, event);
+  const unsigned bytes = LQModule.getNBytes(load);
+  bool safe = yieldRamAccess(addr, bytes);
+  for (unsigned slot = 0; slot < SQ_CAP; ++slot) {
+    if (SQModule.isActive(slot)) {
+      bool retiring = false;
+      for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
+        retiring |= bool(ROBModule.retirement[lane].valid) &&
+            uint32_t(ROBModule.retirement[lane].tag) == SQModule.getRobTag(slot);
+      if (SQModule.isCommitted(slot) || retiring) {
+        if (!SQModule.isAddressReady(slot) || !SQModule.isValueReady(slot)) safe = false;
+        else {
+          const uint32_t other = SQModule.getAddress(slot);
+          const unsigned width = SQModule.getNBytes(slot);
+          if (!yieldRamAccess(other, width) ||
+              (uint64_t(addr) < uint64_t(other) + width && uint64_t(other) < uint64_t(addr) + bytes)) safe = false;
+        }
+      }
+    }
+  }
+  return safe;
+}
+
 bool CPU::memoryDispatchValid() const {
   return static_cast<bool>(MemArbiterModule.valid) && (!static_cast<bool>(exitCommitted) ||
       (static_cast<Operation>(static_cast<uint32_t>(MemArbiterModule.op)) == Operation::Store &&
@@ -2206,6 +2298,17 @@ bool CPU::memoryDispatchValid() const {
 }
 
 void CPU::clock(bool shuffle) {
+  const bool accepted = memoryDispatchValid();
+  const bool storeAccepted = accepted && uint32_t(MemArbiterModule.op) == uint32_t(Operation::Store);
+  const bool loadAccepted = accepted && uint32_t(MemArbiterModule.op) == uint32_t(Operation::Load);
+  const bool ownerReturned = DCacheModule.loadOwnerResponse();
+  const unsigned owners = uint32_t(lsuOwners);
+  assert(!ownerReturned || owners != 0);
+  assert(owners + unsigned(loadAccepted) >= unsigned(ownerReturned));
+  assert(owners + unsigned(loadAccepted) - unsigned(ownerReturned) <= REQUEST_CAP);
+  lsuOwners <= (owners + unsigned(loadAccepted) - unsigned(ownerReturned));
+  lsuYieldDebt <= (storeAccepted ? 0u :
+      (loadAccepted && MemArbiterModule.bypassProposal() ? 1u : uint32_t(lsuYieldDebt)));
   initialized <= 1;
   const bool frozen = static_cast<bool>(exitCommitted);
   const bool recovering = static_cast<bool>(recoveryActive);
@@ -2255,6 +2358,8 @@ void CPU::clock(bool shuffle) {
   // once at the same edge, after every module has completed work().
   dark::sync_member(initialized);
   dark::sync_member(exitCommitted);
+  dark::sync_member(lsuYieldDebt);
+  dark::sync_member(lsuOwners);
   dark::sync_member(recoveryActive);
   dark::sync_member(recoveryBeat);
   dark::sync_member(recoveryOffset);

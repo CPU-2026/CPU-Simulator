@@ -46,7 +46,12 @@ struct SQInputPRF {
   std::array<Wire<32>, STORERS_CAP> svValue;
   std::array<Wire<7>, STORERS_CAP> svMemIndex;
 };
+struct SQCompletionEvents {
+  Wire<1> enabled;
+  Wire<SQ_CAP> dataReadyMask;
+};
 struct SQInput {
+  SQCompletionEvents completionEvents;
   std::array<CommitPort, COMMIT_WIDTH> commits;
   SQInputSquash squash;
   std::array<SQInputIssue, ISSUE_WIDTH> issue;

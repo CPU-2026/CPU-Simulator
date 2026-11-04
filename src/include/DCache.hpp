@@ -7,7 +7,7 @@
 struct DCacheInput {
   Wire<1> squashNeed;
   Wire<ROB_TAG_WIDTH> squashTag;
-  Wire<1> decisionValid;
+  Wire<1> decisionValid, proposalValid;
   Wire<5> decisionOp;
   Wire<32> decisionValue, decisionAddr;
   Wire<1> decisionIsSigned;
@@ -48,7 +48,7 @@ struct DCacheEntry {
   Register<7> memIndex;
   Register<2> way;
   Register<3> miss; // 0 = none; MSHR m is encoded m+1 (zero-reset safe).
-  Register<1> active, ready, deferred, cancelled;
+  Register<1> active, ready, deferred, cancelled, prefetch;
 };
 struct DCacheMiss {
   Register<32> line;
@@ -59,6 +59,10 @@ struct DCacheMiss {
   Register<1> valid, dirty, readSent, writeSent, writeDone, responded;
 };
 struct DCachePlan {
+  uint8_t prefetchMask = 0, prefetchAbort = 0, prefetchMissCount = 0;
+  bool prefetchTrigger = false, prefetchEnqueue = false;
+  bool prefetchDuplicate = false, prefetchStoreConflict = false;
+  uint32_t prefetchNextLine = 0;
   int lookup = -1, response = -1, store = -1, mergeSlot = -1, mergeMiss = -1;
   int lookupCandidate = -1;
   int hitLocationTrain = -1;
@@ -103,12 +107,19 @@ struct DCacheInner {
   std::array<Register<32 - DCACHE_OFFSET_BITS>, 4> hitLocationLine;
   std::array<Register<DCACHE_WAY_BITS>, 4> hitLocationWay;
   Register<2> hitLocationVictim;
+  Register<1> prefetchPending, prefetchStopped;
+  Register<32> prefetchTarget;
+  std::array<Register<1>, 4> prefetchSeenValid;
+  std::array<Register<32>, 4> prefetchSeenLine;
+  Register<2> prefetchSeenVictim;
   DCacheComb comb;
 };
 struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   DCache();
+  // Functional unfiltered terminal event, including cancelled Load owners.
+  bool loadOwnerResponse() const { return events().response >= 0; }
   void work() override;
-  bool isEmpty() const { return static_cast<uint32_t>(count) == 0; }
+  bool isEmpty() const { return static_cast<uint32_t>(count) == 0 && !static_cast<uint32_t>(prefetchPending); }
   bool isRequestFull() const { return static_cast<uint32_t>(count) == REQUEST_CAP; }
   uint64_t statHits = 0, statMisses = 0; // host-only reporting
 private:

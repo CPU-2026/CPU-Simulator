@@ -5,24 +5,22 @@
 // ---- MemArbiter: stateless combinational memory-request arbiter ----
 // Store priority + load disambiguation semantics are verbatim from the
 // inlined MemRequestArbiter that used to live in CPU::comb().
-bool MemArbiter::storeSelected() const {
-  if (static_cast<bool>(sqEmpty) || static_cast<bool>(dmemBusy))
-    return false;
-  RobTag storeTag = static_cast<uint32_t>(sqHeadRobTag);
-  RobTag head = static_cast<uint32_t>(robHeadTag);
-  bool committed = static_cast<bool>(sqHeadCommitted);
-  bool atHeadReady = !committed &&
-                     static_cast<bool>(robStoreWillCommit);
-  return committed || atHeadReady;
+bool MemArbiter::storeAvailable() const {
+  return !bool(sqEmpty) && (bool(sqHeadCommitted) || bool(robStoreWillCommit));
 }
-
-bool MemArbiter::loadSelected() const {
-  if (storeSelected() || static_cast<bool>(dmemBusy) ||
-      !static_cast<bool>(loadValid) || !static_cast<bool>(loadCanSendToCache))
-    return false;
-  return !static_cast<bool>(squashNeed) ||
-         ROB::isOlder(static_cast<uint32_t>(loadRobTag),
-                      static_cast<uint32_t>(squashTag));
+bool MemArbiter::loadAvailable() const {
+  return bool(loadValid) && bool(loadCanSendToCache) && uint32_t(loadOwners) < REQUEST_CAP &&
+      (!bool(squashNeed) || ROB::isOlder(uint32_t(loadRobTag), uint32_t(squashTag)));
+}
+bool MemArbiter::bypassProposal() const {
+  return bool(loadYieldEnabled) && !bool(yieldDebt) && uint32_t(sqCount) <= 4 &&
+      uint32_t(loadOwners) == 0 && storeAvailable() && loadAvailable() && bool(yieldBytesSafe);
+}
+bool MemArbiter::storeSelected(bool ignoreBusy) const {
+  return (ignoreBusy || !bool(dmemBusy)) && storeAvailable() && !bypassProposal();
+}
+bool MemArbiter::loadSelected(bool ignoreBusy) const {
+  return (ignoreBusy || !bool(dmemBusy)) && loadAvailable() && (!storeAvailable() || bypassProposal());
 }
 
 void MemArbiter::wire_output() {
@@ -159,7 +157,7 @@ DispatchArbiter::WinResult DispatchArbiter::aguSelect() const {
     } else {
       int j = i - LOADRS_CAP;
       req = static_cast<bool>(saBusy[j]) &&
-            readyOf(static_cast<uint32_t>(saSrc1Tag[j]));
+            readyOf(static_cast<uint32_t>(saSrc1Tag[j]), true);
       tag = static_cast<uint32_t>(saRobTag[j]);
     }
     if (req && (!w.v || ROB::isOlder(tag, w.tag)))
@@ -484,7 +482,7 @@ const WideIssueDecision &IssueArbiter::wideDecision(unsigned requested) const {
         p.control = (cls == 1 && uint32_t(d.opcode) == 0x67) ||
                     (cls == 6 && uint32_t(d.type) == uint32_t(RISC_V::J));
         p.call = p.control && (p.rd == 1 || p.rd == 5);
-        p.ret = cls == 1 && p.control && (uint32_t(d.rs1) == 1 || uint32_t(d.rs1) == 5);
+        p.ret = cls == 1 && p.control && (uint32_t(d.rs1) == 1 || uint32_t(d.rs1) == 5) && uint32_t(d.rd) != uint32_t(d.rs1);
         p.intImmediate = uint32_t(d.type) != uint32_t(RISC_V::R);
         p.upperPC = cls == 6 && (p.control || uint32_t(d.opcode) == 0x17);
         // The latest *actual* writer wins for each source and for WAW oldPhy.
@@ -1211,7 +1209,7 @@ void IssueArbiter::wire_output() {
     const uint32_t rs1 = static_cast<uint32_t>(dec.rs1);
     const bool rs1Link = (rs1 == 1u || rs1 == 5u);
     return (static_cast<uint32_t>(win) == 1u &&
-             static_cast<bool>(intIsControl) && rs1Link)
+             static_cast<bool>(intIsControl) && rs1Link && static_cast<uint32_t>(dec.rd) != rs1)
                ? 1u
                : 0u;
   };
@@ -1937,7 +1935,7 @@ void IssueArbiter::wire_output() {
       const uint32_t rs1 = static_cast<uint32_t>(dec1.rs1);
       const bool rs1Link = (rs1 == 1u || rs1 == 5u);
       return (static_cast<uint32_t>(win1) == 1u &&
-               static_cast<bool>(intIsControl1) && rs1Link)
+               static_cast<bool>(intIsControl1) && rs1Link && static_cast<uint32_t>(dec1.rd) != rs1)
                  ? 1u
                  : 0u;
     };

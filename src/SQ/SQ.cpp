@@ -12,11 +12,18 @@ void SQ::wire_output() {
 }
 
 StoreCompletion SQ::completionBitmap() const {
-  // Only committed registers participate, never same-edge AGU/data events.
+  // Pure OLD-row completion; same-edge events feed only ROB ready registers.
   StoreCompletion completion{};
   for (int i = 0; i < SQ_CAP; ++i) {
-    if (isActive(i) && isReadyToCommit(i) && !isCommitted(i)) {
-      const RobTag tag = getRobTag(i);
+    const RobTag tag = getRobTag(i);
+    const bool live = bool(completionEvents.enabled) &&
+        (!bool(squash.needSquash) || ROB::isOlder(tag, uint32_t(squash.SquashTag)));
+    const bool addressEvent = live && !bool(agu.isAGUEmpty) &&
+        isStoreMem(uint32_t(agu.aguHeadMemIndex)) &&
+        memSlot(uint32_t(agu.aguHeadMemIndex)) == i && uint32_t(agu.aguHeadRobTag) == tag;
+    const bool dataEvent = live && ((uint32_t(completionEvents.dataReadyMask) >> i) & 1u);
+    if (isActive(i) && !isCommitted(i) &&
+        (isAddressReady(i) || addressEvent) && (isValueReady(i) || dataEvent)) {
       const uint32_t oneHot = uint32_t{1} << robSlot(tag);
       dark::debug::assert(!(completion.readyMask & oneHot), "eligible Stores share a ROB slot");
       completion.readyMask |= oneHot;
