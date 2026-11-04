@@ -75,11 +75,14 @@ class CPU {
   // Top-level state is written once before work(), committed after all work().
   Register<1> initialized;
   Register<1> exitCommitted;
+  Register<1> lsuYieldDebt;
+  Register<4> lsuOwners;
   Register<1> recoveryActive;
   Register<2> recoveryBeat;
   Register<ROB_TAG_WIDTH> recoveryOffset, recoveryCount, recoveryNextTag, recoveryBoundary;
   bool exitRetiring() const;
   bool memoryDispatchValid() const;
+  bool loadYieldBytesSafe() const;
   bool frontendCanRun() const;
   bool frontendResponseCanRun() const;
   bool secondControl() const;
@@ -91,6 +94,8 @@ class CPU {
   // availability, IQ push capacity after the actual issue pops, and width).
   unsigned decodePopCount() const;
   bool wholeGroupProposal() const;
+  bool emptyFQReturn() const;
+  Uop frontendCandidate(unsigned lane) const;
   unsigned wholeGroupCount() const;
   unsigned issueAcceptedCount() const;
   Uop issueUop(unsigned lane) const;

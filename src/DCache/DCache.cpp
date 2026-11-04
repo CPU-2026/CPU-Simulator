@@ -163,9 +163,35 @@ uint32_t DCache::wordRaw(int s, uint32_t data) const {
 }
 DCachePlan DCache::plan() const {
   DCachePlan p{};
-  const int first = oldestRequest(activeMask()), way = hitWay();
+  for (int m = 0; m < DCACHE_MSHR_CAP; ++m) p.prefetchMissCount += unsigned(u(misses[m].valid) != 0);
+  bool seen = false;
+  for (int h = 0; h < 4; ++h)
+    if (u(prefetchSeenValid[h]) && u(prefetchSeenLine[h]) == (u(decisionAddr) & ~DCACHE_OFFSET_MASK)) seen = true;
+  p.prefetchNextLine = (u(decisionAddr) & ~DCACHE_OFFSET_MASK) + DCACHE_BLOCK_CAP;
+  p.prefetchTrigger = !u(prefetchStopped) && u(decisionValid) && static_cast<Operation>(u(decisionOp)) == Operation::Load &&
+      (u(decisionAddr) >> 28) == 0 && (p.prefetchNextLine >> 28) == 0 && !seen;
+  for (int s = 0; s < REQUEST_CAP; ++s) {
+    const auto r = request(s);
+    if (u(requests[s].active) && u(requests[s].prefetch)) p.prefetchMask |= static_cast<uint8_t>(1u << s);
+    if (u(requests[s].active) && (r.address & ~DCACHE_OFFSET_MASK) == u(prefetchTarget)) p.prefetchDuplicate = true;
+    if (u(requests[s].active) && r.op == Operation::Store &&
+        ((r.address ^ u(prefetchTarget)) & (DCACHE_INDEX_MASK << DCACHE_OFFSET_BITS)) == 0) p.prefetchStoreConflict = true;
+    if (u(requests[s].active) && u(requests[s].prefetch) && miss(s) < 0) {
+      bool abort = u(prefetchStopped) || p.prefetchMissCount >= 3 || findMiss(r.address & ~DCACHE_OFFSET_MASK) >= 0;
+      for (int st = 0; st < REQUEST_CAP; ++st)
+        if (u(requests[st].active) && request(st).op == Operation::Store &&
+            ((request(st).address ^ r.address) & (DCACHE_INDEX_MASK << DCACHE_OFFSET_BITS)) == 0) abort = true;
+      if (u(decisionValid) && static_cast<Operation>(u(decisionOp)) == Operation::Store &&
+          ((u(decisionAddr) ^ r.address) & (DCACHE_INDEX_MASK << DCACHE_OFFSET_BITS)) == 0) abort = true;
+      if (abort) p.prefetchAbort |= static_cast<uint8_t>(1u << s);
+    }
+  }
+  p.prefetchEnqueue = !u(prefetchStopped) && u(prefetchPending) && !u(decisionValid) &&
+      p.prefetchMask == 0 && u(count) <= REQUEST_CAP - 2 && p.prefetchMissCount <= 2 &&
+      !p.prefetchDuplicate && !p.prefetchStoreConflict && findMiss(u(prefetchTarget)) < 0;
+  const int first = oldestRequest(activeMask() & ~p.prefetchMask), way = hitWay();
   p.readHitRaw = u(readValid) && way >= 0 ? sramRaw(way) : 0;
-  if (u(readValid) && way >= 0 && request(u(readIndex)).op == Operation::Load) {
+  if (u(readValid) && !u(requests[u(readIndex)].prefetch) && way >= 0 && request(u(readIndex)).op == Operation::Load) {
     uint8_t selected = u(hitLocationVictim);
     // Lowest invalid row first, then cyclic replacement after training.
     for (int h = 3; h >= 0; --h)
@@ -200,7 +226,7 @@ DCachePlan DCache::plan() const {
     }
   }
   const int fillOwner = p.fillMiss >= 0 ? int(u(misses[p.fillMiss].owner)) : -1;
-  const bool early = p.fillBeat && request(fillOwner).op == Operation::Load && !u(misses[p.fillMiss].responded);
+  const bool early = p.fillBeat && request(fillOwner).op == Operation::Load && !u(misses[p.fillMiss].responded) && !u(requests[fillOwner].prefetch);
   if (early) p.response = fillOwner;
   else if (u(wordValid)) {
     p.wordMiss = u(wordTransaction);
@@ -208,7 +234,7 @@ DCachePlan DCache::plan() const {
     const int owner = u(m.owner);
     const auto r = request(owner);
     p.wordReturn = u(m.valid) && u(m.readSent) && !u(m.responded) &&
-        u(requests[owner].active) && r.op == Operation::Load && !storeHazard(owner, false) &&
+        u(requests[owner].active) && !u(requests[owner].prefetch) && r.op == Operation::Load && !storeHazard(owner, false) &&
         (u(wordAddress) >> DCACHE_OFFSET_BITS) == (u(m.line) >> DCACHE_OFFSET_BITS) &&
         ((u(wordAddress) & DCACHE_OFFSET_MASK) >> 2) == ((r.address & DCACHE_OFFSET_MASK) >> 2) &&
         (r.address & 3u) + r.nBytes <= 4;
@@ -222,7 +248,7 @@ DCachePlan DCache::plan() const {
         (u(wordAddress) >> DCACHE_OFFSET_BITS) == (u(m.line) >> DCACHE_OFFSET_BITS);
     for (int s = 0; s < REQUEST_CAP; ++s) {
       const auto r = request(s);
-      if (captureValid && s != owner && u(requests[s].active) && !u(requests[s].ready) &&
+      if (captureValid && s != owner && u(requests[s].active) && !u(requests[s].prefetch) && !u(requests[s].ready) &&
           r.op == Operation::Load && !storeHazard(s, true) &&
           (r.address >> 2) == (u(wordAddress) >> 2) && (r.address & 3u) + r.nBytes <= 4)
         p.wordCapture |= static_cast<uint8_t>(1u << s);
@@ -231,7 +257,7 @@ DCachePlan DCache::plan() const {
   if (p.response < 0) {
     uint8_t ready = 0;
     for (int s = 0; s < REQUEST_CAP; ++s)
-      if (u(requests[s].active) && request(s).op == Operation::Load && !storeHazard(s, false) &&
+      if (u(requests[s].active) && !u(requests[s].prefetch) && request(s).op == Operation::Load && !storeHazard(s, false) &&
           (u(requests[s].ready) || (u(readValid) && u(readIndex) == uint32_t(s) && way >= 0))) ready |= 1u << s;
     p.response = oldestRequest(ready);
   }
@@ -248,7 +274,7 @@ DCachePlan DCache::plan() const {
                         p.response == int(u(readIndex))));
   if (!p.fillBeat && first >= 0 && request(first).op == Operation::Store && request(first).address != AXI_EXIT_ADDR &&
       !setLocked(request(first).address) && (p.storeHintFire || u(requests[first].ready) || (u(readValid) && int(u(readIndex)) == first && way >= 0))) p.store = first;
-  if (u(readValid) && way < 0 && !storeHazard(u(readIndex), true)) {
+  if (u(readValid) && way < 0 && !(p.prefetchAbort & (1u << u(readIndex))) && !storeHazard(u(readIndex), true)) {
     const uint32_t line = request(u(readIndex)).address & ~DCACHE_OFFSET_MASK;
     if (findMiss(line) < 0 && !setLocked(line)) p.allocate = freeMiss();
   }
@@ -256,7 +282,7 @@ DCachePlan DCache::plan() const {
     uint8_t mergeable = 0;
     for (int s = 0; s < REQUEST_CAP; ++s) {
       const int m = findMiss(request(s).address & ~DCACHE_OFFSET_MASK);
-      if (u(requests[s].active) && !u(requests[s].ready) && miss(s) < 0 && request(s).op == Operation::Load &&
+      if (u(requests[s].active) && !u(requests[s].prefetch) && !u(requests[s].ready) && miss(s) < 0 && request(s).op == Operation::Load &&
           !storeHazard(s, true) && m >= 0 && request(u(misses[m].owner)).op == Operation::Load &&
           u(misses[m].fillWord) == 0 && !u(misses[m].responded) && p.fillMiss != m) mergeable |= 1u << s;
     }
@@ -270,20 +296,23 @@ DCachePlan DCache::plan() const {
     uint8_t lookupActive = activeMask();
     if (!p.fillBeat && p.response >= 0)
       lookupActive &= static_cast<uint8_t>(~(1u << p.response));
-    const int lookupFirst = oldestRequest(lookupActive);
+    const int lookupFirst = oldestRequest(lookupActive & ~p.prefetchMask);
     bool anyMiss = false;
     for (int m = 0; m < DCACHE_MSHR_CAP; ++m) anyMiss = anyMiss || u(misses[m].valid);
     for (int s = 0; s < REQUEST_CAP; ++s) {
       const auto r = request(s);
-      const bool blocked = !u(requests[s].active) || (u(readValid) && u(readIndex) == uint32_t(s)) ||
+      const bool blocked = !u(requests[s].active) || (p.prefetchAbort & (1u << s)) || (u(readValid) && u(readIndex) == uint32_t(s)) ||
           u(requests[s].ready) || miss(s) >= 0 || s == p.mergeSlot ||
            r.address == AXI_EXIT_ADDR || (r.op == Operation::Store && setLocked(r.address)) ||
            storeHazard(s, false) || findMiss(r.address & ~DCACHE_OFFSET_MASK) >= 0 ||
            (r.op == Operation::Store && s != first) ||
            (u(requests[s].deferred) && (s != first || freeMiss() < 0 || setLocked(r.address))) ||
-          (!anyMiss && s != first && s != lookupFirst);
+          (!anyMiss && s != first && s != lookupFirst && !u(requests[s].prefetch));
       if (!blocked) eligible |= 1u << s;
     }
+    const uint8_t demand = eligible & ~p.prefetchMask;
+    if (demand) eligible = demand;
+    else if (u(proposalValid)) eligible = 0;
     p.lookupCandidate = oldestRequest(eligible);
     if ((!u(readValid) || continueHit) && !p.fillBeat && p.store < 0) p.lookup = p.lookupCandidate;
   }
@@ -310,6 +339,10 @@ DCachePlan DCache::plan() const {
     if (!u(misses[m].readSent) && !victimHazard(m) && !storeHazard(u(misses[m].owner), true)) readable |= 1u << m;
     if (u(misses[m].dirty) && !u(misses[m].writeSent)) writable |= 1u << m;
   }
+  uint8_t demandReadable = 0;
+  for (int m = 0; m < DCACHE_MSHR_CAP; ++m)
+    if ((readable & (1u << m)) && !u(requests[u(misses[m].owner)].prefetch)) demandReadable |= static_cast<uint8_t>(1u << m);
+  if (demandReadable) readable = demandReadable;
   const int rd = oldestMiss(readable), wr = oldestMiss(writable);
   if (rd >= 0 && u(dmemCredits) > unsigned(wr >= 0)) { p.memoryRequest.readValid = true; p.memoryRequest.read = {u(misses[rd].line), uint8_t(rd)}; }
   if (wr >= 0 && u(dmemWriteReady)) {
@@ -374,17 +407,39 @@ void DCache::work() {
   const uint8_t active = activeMask();
   assert(std::popcount(active) == int(u(count)) && u(count) <= REQUEST_CAP);
   const int fillOwner = p.fillMiss >= 0 ? int(u(misses[p.fillMiss].owner)) : -1;
-  uint8_t released = 0;
+  assert(std::popcount(p.prefetchMask) <= 1);
+  assert(!p.prefetchEnqueue || (!u(decisionValid) && u(count) <= REQUEST_CAP - 2 && p.prefetchMissCount <= 2));
+  assert(p.response < 0 || !u(requests[p.response].prefetch));
+  uint8_t released = p.prefetchAbort;
+  if (u(readValid) && u(requests[u(readIndex)].prefetch) && hitWay() >= 0) released |= static_cast<uint8_t>(1u << u(readIndex));
   if (p.response >= 0 && p.response != fillOwner && !p.wordReturn) released |= 1u << p.response;
   if (p.store >= 0) released |= 1u << p.store;
   if (p.fillFire) released |= 1u << fillOwner;
   if (p.exitValid) released |= 1u << oldestRequest(active);
-  const int allocation = u(decisionValid) ? freeRequest() : -1;
+  const int allocation = u(decisionValid) || p.prefetchEnqueue ? freeRequest() : -1;
   assert(!u(decisionValid) || (allocation >= 0 && u(count) < REQUEST_CAP));
   const bool firstFill = p.fillBeat && u(misses[p.fillMiss].fillWord) == 0;
   const int hit = hitWay();
   const uint32_t readSet = u(readValid) ? (request(u(readIndex)).address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK : 0;
   const uint32_t victim = u(readValid) && hit < 0 ? selectVictim(readSet) : 0;
+  bool pending = u(prefetchPending) != 0;
+  if (p.prefetchEnqueue || p.prefetchDuplicate || p.prefetchStoreConflict ||
+      p.prefetchMissCount >= 3 || u(count) > REQUEST_CAP - 2) pending = false;
+  if (p.prefetchTrigger) pending = true;
+  const bool stop = u(decisionValid) && static_cast<Operation>(u(decisionOp)) == Operation::Store && u(decisionAddr) == AXI_EXIT_ADDR;
+  if (stop) pending = false;
+  prefetchPending <= pending;
+  if (stop) prefetchStopped <= 1;
+  if (p.prefetchTrigger) {
+    prefetchTarget <= p.prefetchNextLine;
+    prefetchSeenVictim <= ((u(prefetchSeenVictim) + 1) & 3);
+  }
+  for (int h = 0; h < 4; ++h) {
+    if (p.prefetchTrigger && u(prefetchSeenVictim) == unsigned(h)) {
+      prefetchSeenValid[h] <= 1;
+      prefetchSeenLine[h] <= (u(decisionAddr) & ~DCACHE_OFFSET_MASK);
+    }
+  }
   for (int h = 0; h < 4; ++h) {
     if (p.hitLocationTrain == h) {
       hitLocationValid[h] <= 1;
@@ -398,12 +453,17 @@ void DCache::work() {
   for (int s = 0; s < REQUEST_CAP; ++s) {
     auto &r = requests[s];
     if (s == allocation) {
-      r.op <= u(decisionOp); r.value <= u(decisionValue); r.address <= u(decisionAddr);
-      r.isSigned <= u(decisionIsSigned); r.nEnc <= u(decisionNBytes);
-      r.robTag <= u(decisionRobTag); r.memIndex <= u(decisionMemIndex);
+      r.op <= (p.prefetchEnqueue ? unsigned(Operation::Load) : u(decisionOp));
+      r.value <= (p.prefetchEnqueue ? 0 : u(decisionValue));
+      r.address <= (p.prefetchEnqueue ? u(prefetchTarget) : u(decisionAddr));
+      r.isSigned <= (p.prefetchEnqueue ? 0 : u(decisionIsSigned));
+      r.nEnc <= (p.prefetchEnqueue ? 2 : u(decisionNBytes));
+      r.robTag <= (p.prefetchEnqueue ? 0 : u(decisionRobTag));
+      r.memIndex <= (p.prefetchEnqueue ? 0 : u(decisionMemIndex));
+      r.prefetch <= p.prefetchEnqueue;
       r.way <= 0; r.miss <= 0;
       r.active <= 1; r.ready <= 0; r.deferred <= 0; r.cancelled <= 0;
-      assert((u(decisionAddr) & DCACHE_OFFSET_MASK) + (1u << u(decisionNBytes)) <= DCACHE_BLOCK_CAP);
+      assert(p.prefetchEnqueue || (u(decisionAddr) & DCACHE_OFFSET_MASK) + (1u << u(decisionNBytes)) <= DCACHE_BLOCK_CAP);
     } else {
       r.active <= (u(r.active) && !(released & (1u << s)));
       if (released & (1u << s)) { r.ready <= 0; r.deferred <= 0; r.miss <= 0; }
@@ -417,7 +477,7 @@ void DCache::work() {
           else { r.miss <= p.allocate + 1; r.deferred <= (p.allocate < 0); }
         } else if (p.mergeSlot == s) { r.miss <= p.mergeMiss + 1; r.deferred <= 0; }
       }
-      if (u(r.active) && request(s).op == Operation::Load && u(squashNeed) && !ROB::isOlder(request(s).robTag, u(squashTag))) r.cancelled <= 1;
+      if (u(r.active) && !u(r.prefetch) && request(s).op == Operation::Load && u(squashNeed) && !ROB::isOlder(request(s).robTag, u(squashTag))) r.cancelled <= 1;
     }
     uint8_t relation = 0;
     if ((active & ~released) & (1u << s)) {
@@ -483,7 +543,7 @@ void DCache::work() {
     readNEnc <= (p.acceptLookup ? u(decisionNBytes) : u(requests[p.lookup].nEnc));
   }
   if (allocation >= 0) cursor <= ((allocation + 1) & (REQUEST_CAP - 1));
-  count <= u(count) + unsigned(u(decisionValid) != 0) - std::popcount(released);
+  count <= u(count) + unsigned(u(decisionValid) != 0) + unsigned(p.prefetchEnqueue) - std::popcount(released);
   for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
     for (auto &bank : datas[w]) bank.work();
     metadata[w].work();

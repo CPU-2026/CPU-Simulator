@@ -5,7 +5,7 @@
 // Per-slot single-write-point structure (RTL discipline: one driver per
 // Register per cycle, no early returns):
 //   pushHit  - issue allocates this slot (mutually exclusive with
-//              flush; Integer/Branch/Load/StoreValue may select an actually departing
+//              flush; four-wide non-MUL/DIV pools may select an actually departing
 //              OLD occupied slot. Push must win over release on that edge.)
 //   relHit   - DispatchArbiter granted this slot to an execution unit (only
 //              entries older than the squash point are granted, so relHit and

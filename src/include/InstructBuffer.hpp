@@ -16,6 +16,7 @@ struct InstructBufferEntry {
 
 struct FQInput {
   Wire<1> needSquash;
+  Wire<1> bypassReturnStorage;
   Wire<1> icacheReturnAccepted;
   Wire<3> icacheReturnCount;
   std::array<Wire<32>, FETCH_WIDTH> icacheReturnRaw;

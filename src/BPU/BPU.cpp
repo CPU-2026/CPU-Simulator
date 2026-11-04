@@ -110,9 +110,8 @@ BPU::FetchGroup BPU::fetchGroup() const {
   const bool canMulti = !legacyHaltEnabled && static_cast<bool>(fetchCtx.icacheHit);
   // Fetch packet geometry only: prediction and table training are unchanged.
   const uint32_t lineRemain = ICACHE_WORDS_PER_LINE - ((pc0 >> 2) & ICACHE_WORD_INDEX_MASK);
-  const uint32_t blockRemain = !canMulti ? 1u : FETCH_WIDTH == 2 ?
-      (lineRemain < FETCH_WIDTH ? lineRemain : FETCH_WIDTH) :
-      FETCH_WIDTH - ((pc0 >> 2) & (FETCH_WIDTH - 1));
+  const uint32_t blockRemain = !canMulti ? 1u :
+      (lineRemain < FETCH_WIDTH ? lineRemain : FETCH_WIDTH);
   unsigned maxLanes = blockRemain;
   for (unsigned L = 0; L < blockRemain; ++L)
     if (!static_cast<bool>(fetchCtx.fqCanAcceptN[L])) { maxLanes = L; break; }

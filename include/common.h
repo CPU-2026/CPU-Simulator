@@ -89,7 +89,7 @@ static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
 static_assert(ROB_TAG_WIDTH <= 8,
                "RobTag is uint8_t: packed tag must fit in 8 bits");
 #ifndef CPU_FETCH_WIDTH
-#define CPU_FETCH_WIDTH 2
+#define CPU_FETCH_WIDTH 4
 #endif
 #ifndef CPU_DECODE_WIDTH
 #define CPU_DECODE_WIDTH 4

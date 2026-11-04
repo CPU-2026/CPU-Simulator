@@ -26,6 +26,8 @@
 // store branch carries no squash guard, verbatim from the inlined
 // MemRequestArbiter).
 struct MemArbInput {
+  Wire<1> loadYieldEnabled, yieldDebt, yieldBytesSafe;
+  Wire<4> sqCount, loadOwners;
   Wire<1> dmemBusy; // DCache queue-full (DCacheModule.isRequestFull()):
                     // the arbiter issues while the queue has room; head-only
                     // lookup + DMEM dual-port drain in the background.
@@ -69,11 +71,15 @@ struct MemArbOutput {
 };
 struct MemArbiter : dark::Module<MemArbInput, MemArbOutput> {
   MemArbiter() { wire_output(); }
+  bool bypassProposal() const;
+  bool proposalValid() const { return storeSelected(true) || loadSelected(true); }
   void work() override {} // pure combinational: outputs are lazy Wires
 private:
   void wire_output();
-  bool storeSelected() const; // commit-permitted store wins over any load
-  bool loadSelected() const;
+  bool storeAvailable() const;
+  bool loadAvailable() const;
+  bool storeSelected(bool ignoreBusy = false) const; // commit-permitted store wins over any load
+  bool loadSelected(bool ignoreBusy = false) const;
 };
 
 // Stateless dispatch arbiter (pure combinational, zero flip-flops), written
