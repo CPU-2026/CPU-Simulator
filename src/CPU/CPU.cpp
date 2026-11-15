@@ -1026,21 +1026,13 @@ void CPU::wire() {
       return RSModule.isIntFree(i) ? 0u : 1u;
     };
   }
-  IssueArbiterModule.rs.intReuseValid = [this]() {
-    return !bool(recoveryActive) && !bool(exitCommitted) && bool(DispatchArbiterModule.alu.valid) ? 1u : 0u;
-  };
-  IssueArbiterModule.rs.intReuseSlot = [this]() { return uint32_t(DispatchArbiterModule.alu.rsIndex); };
-  IssueArbiterModule.rs.brReuseValid = [this]() {
-    return !bool(recoveryActive) && !bool(exitCommitted) && bool(DispatchArbiterModule.bru.valid) ? 1u : 0u;
-  };
-  IssueArbiterModule.rs.brReuseSlot = [this]() { return uint32_t(DispatchArbiterModule.bru.rsIndex); };
-  IssueArbiterModule.rs.loadReuseValid = [this]() {
-    // Reuse only the OLD Load actually accepted by the shared AGU, never a
-    // ready Load that lost arbitration to StoreAddr or a frozen consumer.
-    return !bool(recoveryActive) && !bool(exitCommitted) && bool(DispatchArbiterModule.agu.valid) &&
-        uint32_t(DispatchArbiterModule.agu.rsType) == uint32_t(RSType::Load) ? 1u : 0u;
-  };
-  IssueArbiterModule.rs.loadReuseSlot = [this]() { return uint32_t(DispatchArbiterModule.agu.rsIndex); };
+  // Scalar/dual planners follow the same old-row credit contract as wide issue.
+  IssueArbiterModule.rs.intReuseValid = []() { return 0u; };
+  IssueArbiterModule.rs.intReuseSlot = []() { return 0u; };
+  IssueArbiterModule.rs.brReuseValid = []() { return 0u; };
+  IssueArbiterModule.rs.brReuseSlot = []() { return 0u; };
+  IssueArbiterModule.rs.loadReuseValid = []() { return 0u; };
+  IssueArbiterModule.rs.loadReuseSlot = []() { return 0u; };
   for (int i = 0; i < LOADRS_CAP; ++i) {
     IssueArbiterModule.rs.loadBusy[i] = [this, i]() {
       return RSModule.isLoadFree(i) ? 0u : 1u;
@@ -1053,9 +1045,7 @@ void CPU::wire() {
     IssueArbiterModule.rs.svBusy[i] = [this, i]() {
       return RSModule.isSvFree(i) ? 0u : 1u;
     };
-    IssueArbiterModule.rs.svReuse[i] = [this, i]() {
-      return uint32_t(SQModule.prf.svWriteValid[i]);
-    };
+    IssueArbiterModule.rs.svReuse[i] = []() { return 0u; };
   }
   for (int i = 0; i < BRANCHRS_CAP; ++i) {
     IssueArbiterModule.rs.brBusy[i] = [this, i]() {
@@ -2025,33 +2015,22 @@ void CPU::wireIssue() {
       for (unsigned n = 1; n <= SQ_CAP; ++n) if (SQModule.canAllocate(n)) credits = n;
       return credits;
     };
-    auto rows = [this](auto &wire, unsigned capacity, auto isFree, unsigned pool) {
-      wire = [this, capacity, isFree, pool]() {
+    auto rows = [this](auto &wire, unsigned capacity, auto isFree) {
+      wire = [this, capacity, isFree]() {
         uint32_t mask = 0;
         for (unsigned row = 0; row < capacity; ++row) {
-          bool available = (RSModule.*isFree)(row);
-          if (pool == 0) available |=
-              (bool(DispatchArbiterModule.alu.valid) && uint32_t(DispatchArbiterModule.alu.rsIndex) == row) ||
-              (bool(DispatchArbiterModule.aluSecond.valid) && uint32_t(DispatchArbiterModule.aluSecond.rsIndex) == row);
-          if (pool == 3) available |= bool(DispatchArbiterModule.bru.valid) && uint32_t(DispatchArbiterModule.bru.rsIndex) == row;
-          if (pool == 4) available |= bool(DispatchArbiterModule.agu.valid) &&
-              uint32_t(DispatchArbiterModule.agu.rsType) == uint32_t(RSType::Load) && uint32_t(DispatchArbiterModule.agu.rsIndex) == row;
-          // Credit from the OLD StoreAddr that really won the shared AGU.
-          if (pool == 5) available |= bool(DispatchArbiterModule.agu.valid) &&
-              uint32_t(DispatchArbiterModule.agu.rsType) == uint32_t(RSType::StoreAddr) && uint32_t(DispatchArbiterModule.agu.rsIndex) == row;
-          if (pool == 6) available |= bool(SQModule.prf.svWriteValid[row]);
-          if (available) mask |= 1u << row;
+          if ((RSModule.*isFree)(row)) mask |= 1u << row;
         }
         return mask;
       };
     };
-    rows(IssueArbiterModule.availableRows[0], INTEGERRS_CAP, &RSUnit::isIntFree, 0);
-    rows(IssueArbiterModule.availableRows[1], MULTIPLYRS_CAP, &RSUnit::isMulFree, 1);
-    rows(IssueArbiterModule.availableRows[2], DIVIDERS_CAP, &RSUnit::isDivFree, 2);
-    rows(IssueArbiterModule.availableRows[3], BRANCHRS_CAP, &RSUnit::isBrFree, 3);
-    rows(IssueArbiterModule.availableRows[4], LOADRS_CAP, &RSUnit::isLoadFree, 4);
-    rows(IssueArbiterModule.availableRows[5], STORERS_CAP, &RSUnit::isSaFree, 5);
-    rows(IssueArbiterModule.availableRows[6], STORERS_CAP, &RSUnit::isSvFree, 6);
+    rows(IssueArbiterModule.availableRows[0], INTEGERRS_CAP, &RSUnit::isIntFree);
+    rows(IssueArbiterModule.availableRows[1], MULTIPLYRS_CAP, &RSUnit::isMulFree);
+    rows(IssueArbiterModule.availableRows[2], DIVIDERS_CAP, &RSUnit::isDivFree);
+    rows(IssueArbiterModule.availableRows[3], BRANCHRS_CAP, &RSUnit::isBrFree);
+    rows(IssueArbiterModule.availableRows[4], LOADRS_CAP, &RSUnit::isLoadFree);
+    rows(IssueArbiterModule.availableRows[5], STORERS_CAP, &RSUnit::isSaFree);
+    rows(IssueArbiterModule.availableRows[6], STORERS_CAP, &RSUnit::isSvFree);
   } else if constexpr (ISSUE_WIDTH == 2) {
     auto &dec = IssueArbiterModule.dec1;
     dec.isEmpty = [this]() { return DecodeUnitModule.count() < 2u; };

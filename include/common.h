@@ -58,7 +58,7 @@ constexpr int MEMQ_SCAN_WINDOW = SQ_CAP < 8 ? SQ_CAP : 8;
 constexpr uint8_t MEM_STORE_BIT = 0x40;
 inline bool isStoreMem(uint8_t m) { return (m & MEM_STORE_BIT) != 0; }
 inline uint8_t memSlot(uint8_t m) { return m & 0x3F; }
-constexpr uint32_t ROB_CAP = ISSUE_WIDTH == 4 ? 32 : 16;
+constexpr uint32_t ROB_CAP = 16;
 constexpr unsigned RECOVERY_BEATS = 4;
 constexpr unsigned RECOVERY_WIDTH = (ROB_CAP + 3u) >> 2;
 struct RecoveryStep {

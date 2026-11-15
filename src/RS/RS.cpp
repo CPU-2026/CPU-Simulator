@@ -5,8 +5,8 @@
 // Per-slot single-write-point structure (RTL discipline: one driver per
 // Register per cycle, no early returns):
 //   pushHit  - issue allocates this slot (mutually exclusive with
-//              flush; four-wide non-MUL/DIV pools may select an actually departing
-//              OLD occupied slot. Push must win over release on that edge.)
+//              flush; allocation selects only OLD free rows. The original
+//              push-over-release writer priority is retained.)
 //   relHit   - DispatchArbiter granted this slot to an execution unit (only
 //              entries older than the squash point are granted, so relHit and
 //              flushHit are mutually exclusive; merged anyway -- both write
@@ -19,7 +19,7 @@
 //              released contents are dead data. Clearing is not a safety
 //              net -- InvalidPhy is 0 and isOperandReady(0) is true.
 // StoreValue release is the same age-qualified event that writes SQ, including
-// the early ALU-only bypass. Allocation wins over that release on a reused row.
+// the early ALU-only bypass. Released credit is visible next cycle, not now.
 
 void RSUnit::work() {
   // Select the writer per slot before touching any Register.
