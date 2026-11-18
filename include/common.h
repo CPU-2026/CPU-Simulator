@@ -30,7 +30,9 @@ static_assert(ISSUE_WIDTH == 1 || ISSUE_WIDTH == 2 || ISSUE_WIDTH == 4);
 #endif
 constexpr unsigned ALU_UNITS = CPU_ALU_UNITS;
 constexpr unsigned ALU_CDB_PORTS = CPU_ALU_CDB_PORTS;
-constexpr unsigned WRITEBACK_PORTS = ALU_CDB_PORTS + 1;
+constexpr unsigned MULDIV_CDB_PORT = ALU_CDB_PORTS;
+constexpr unsigned LOAD_CDB_PORT = MULDIV_CDB_PORT + 1;
+constexpr unsigned WRITEBACK_PORTS = LOAD_CDB_PORT + 1;
 static_assert(ALU_UNITS == 1 || ALU_UNITS == 2);
 static_assert(ALU_CDB_PORTS == ALU_UNITS);
 static_assert(ALU_UNITS != 2 || ISSUE_WIDTH == 4);
@@ -59,8 +61,9 @@ constexpr uint8_t MEM_STORE_BIT = 0x40;
 inline bool isStoreMem(uint8_t m) { return (m & MEM_STORE_BIT) != 0; }
 inline uint8_t memSlot(uint8_t m) { return m & 0x3F; }
 constexpr uint32_t ROB_CAP = 16;
-constexpr unsigned RECOVERY_BEATS = 4;
-constexpr unsigned RECOVERY_WIDTH = (ROB_CAP + 3u) >> 2;
+constexpr unsigned RECOVERY_BEATS = ROB_CAP == 16 && ISSUE_WIDTH == 4 ? 2 : 4;
+constexpr unsigned RECOVERY_WIDTH =
+    (ROB_CAP + RECOVERY_BEATS - 1) >> (RECOVERY_BEATS == 2 ? 1 : 2);
 struct RecoveryStep {
   bool active = false;
   uint8_t beat = 0, offset = 0, liveCount = 0;

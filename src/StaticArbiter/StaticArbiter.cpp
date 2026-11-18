@@ -78,9 +78,10 @@ void MemArbiter::wire_output() {
 // source tags itself. Selection is a folded priority chain; a grant gates on
 // destination admission and the squash point (squash suppresses valid only --
 // the selected idx/tag stay driven, consumers gate on valid).
-bool DispatchArbiter::readyOf(uint32_t tag, bool bypass) const {
-  return tag == InvalidPhy || (bypass ? static_cast<bool>(bypassReady[tag])
-                                      : static_cast<bool>(prdReady[tag]));
+bool DispatchArbiter::readyOf(uint32_t tag, Ready source) const {
+  const auto &map = source == Ready::Old ? prdReady :
+      (source == Ready::Branch ? branchBypassReady : bypassReady);
+  return tag == InvalidPhy || bool(map[tag]);
 }
 
 template <std::size_t N>
@@ -88,12 +89,12 @@ DispatchArbiter::WinResult DispatchArbiter::selectOldest(
     const std::array<Wire<1>, N> &busy,
     const std::array<Wire<PHY_TAG_WIDTH>, N> &src1Tag,
     const std::array<Wire<PHY_TAG_WIDTH>, N> &src2Tag,
-    const std::array<Wire<ROB_TAG_WIDTH>, N> &tags, bool bypass) const {
+    const std::array<Wire<ROB_TAG_WIDTH>, N> &tags, Ready source) const {
   WinResult w{false, 0, 0};
   for (uint32_t i = 0; i < N; ++i) {
     bool req = static_cast<bool>(busy[i]) &&
-                readyOf(static_cast<uint32_t>(src1Tag[i]), bypass) &&
-                readyOf(static_cast<uint32_t>(src2Tag[i]), bypass);
+                readyOf(static_cast<uint32_t>(src1Tag[i]), source) &&
+                readyOf(static_cast<uint32_t>(src2Tag[i]), source);
     RobTag tag = static_cast<uint32_t>(tags[i]);
     if (req && (!w.v || ROB::isOlder(tag, w.tag)))
       w = {true, tag, i};
@@ -105,8 +106,8 @@ DispatchArbiter::WinResult DispatchArbiter::aluSelect(unsigned unit) const {
   std::array<bool, INTEGERRS_CAP> ready{};
   std::array<WinResult, ALU_UNITS> ranked{};
   for (unsigned row = 0; row < INTEGERRS_CAP; ++row)
-    ready[row] = bool(intBusy[row]) && readyOf(uint32_t(intSrc1Tag[row]), true) &&
-                 readyOf(uint32_t(intSrc2Tag[row]), true);
+    ready[row] = bool(intBusy[row]) && readyOf(uint32_t(intSrc1Tag[row]), Ready::All) &&
+                 readyOf(uint32_t(intSrc2Tag[row]), Ready::All);
   for (unsigned row = 0; row < INTEGERRS_CAP; ++row) {
     unsigned rank = 0;
     const RobTag tag = uint32_t(intRobTag[row]);
@@ -130,7 +131,7 @@ DispatchArbiter::WinResult DispatchArbiter::aluSelect(unsigned unit) const {
 }
 
 DispatchArbiter::WinResult DispatchArbiter::bruSelect() const {
-  return selectOldest(brBusy, brSrc1Tag, brSrc2Tag, brRobTag, true);
+  return selectOldest(brBusy, brSrc1Tag, brSrc2Tag, brRobTag, Ready::Branch);
 }
 
 DispatchArbiter::WinResult DispatchArbiter::mulSelect() const {
@@ -141,29 +142,44 @@ DispatchArbiter::WinResult DispatchArbiter::divSelect() const {
   return selectOldest(divBusy, divSrc1Tag, divSrc2Tag, divRobTag);
 }
 
-// load[0..3] ++ sa[0..3] concatenated into a single 8-slot pass -- verbatim
-// iteration order and fold condition of the former software double loop
-// (store-addr carries a single operand; equal tags keep the earlier slot).
-DispatchArbiter::WinResult DispatchArbiter::aguSelect() const {
-  WinResult w{false, 0, 0};
-  for (int i = 0; i < LOADRS_CAP + STORERS_CAP; ++i) {
-    bool req;
-    RobTag tag;
-    if (i < LOADRS_CAP) {
-      req = static_cast<bool>(loadBusy[i]) &&
-            readyOf(static_cast<uint32_t>(loadSrc1Tag[i]), true) &&
-            readyOf(static_cast<uint32_t>(loadSrc2Tag[i]), true);
-      tag = static_cast<uint32_t>(loadRobTag[i]);
-    } else {
-      int j = i - LOADRS_CAP;
-      req = static_cast<bool>(saBusy[j]) &&
-            readyOf(static_cast<uint32_t>(saSrc1Tag[j]), true);
-      tag = static_cast<uint32_t>(saRobTag[j]);
+template <std::size_t N>
+DispatchArbiter::WinResult DispatchArbiter::selectAddress(
+    const std::array<Wire<1>, N> &busy,
+    const std::array<Wire<PHY_TAG_WIDTH>, N> &src1Tag,
+    const std::array<Wire<PHY_TAG_WIDTH>, N> *src2Tag,
+    const std::array<Wire<ROB_TAG_WIDTH>, N> &tags,
+    unsigned selected, bool wake) const {
+  WinResult winner{};
+  for (unsigned row = 0; row < N; ++row) {
+    const unsigned bit = 1u << row;
+    if (bool(busy[row])) {
+      const uint32_t a = uint32_t(src1Tag[row]);
+      const uint32_t b = src2Tag ? uint32_t((*src2Tag)[row]) : InvalidPhy;
+      const RobTag tag = uint32_t(tags[row]);
+      const bool oldReady = readyOf(a) && readyOf(b);
+      const bool eligible = wake ? !oldReady && !(selected & bit) &&
+          readyOf(a, Ready::All) && readyOf(b, Ready::All) :
+          oldReady && (!selected || (selected & bit));
+      if (eligible && (!winner.v || ROB::isOlder(tag, winner.tag)))
+        winner = {true, tag, row};
     }
-    if (req && (!w.v || ROB::isOlder(tag, w.tag)))
-      w = {true, tag, static_cast<uint32_t>(i)};
   }
-  return w;
+  assert(wake || !selected || (winner.v && selected == (1u << winner.idx)));
+  return winner;
+}
+
+DispatchArbiter::WinResult DispatchArbiter::aguSelect() const {
+  const auto load = selectAddress(loadBusy, loadSrc1Tag, &loadSrc2Tag, loadRobTag,
+                                  uint32_t(loadSelected), false);
+  auto sa = selectAddress<STORERS_CAP>(saBusy, saSrc1Tag, nullptr, saRobTag,
+                                      uint32_t(saSelected), false);
+  const auto live = [&](const WinResult &w) {
+    return w.v && (!bool(squashNeed) || ROB::isOlder(w.tag, uint32_t(squashTag)));
+  };
+  if (live(load) && (!live(sa) || ROB::isOlder(load.tag, sa.tag))) return load;
+  sa.v = live(sa);
+  sa.idx += LOADRS_CAP;
+  return sa;
 }
 
 void DispatchArbiter::wire_output() {
@@ -180,13 +196,18 @@ void DispatchArbiter::wire_output() {
   };
   connect(alu, 0);
   connect(aluSecond, 1);
+  loadWakeChoice = [this]() {
+    const auto w = selectAddress(loadBusy, loadSrc1Tag, &loadSrc2Tag, loadRobTag,
+                                 uint32_t(loadSelected), true);
+    return w.v ? 1u << w.idx : 0u;
+  };
+  saWakeChoice = [this]() {
+    const auto w = selectAddress<STORERS_CAP>(saBusy, saSrc1Tag, nullptr, saRobTag,
+                                             uint32_t(saSelected), true);
+    return w.v ? 1u << w.idx : 0u;
+  };
   agu.valid = [this]() -> uint32_t {
-    WinResult w = aguSelect();
-    return static_cast<bool>(aguCanAccept) && w.v &&
-                   (!static_cast<bool>(squashNeed) ||
-                    ROB::isOlder(w.tag, static_cast<uint32_t>(squashTag)))
-               ? 1u
-               : 0u;
+    return bool(aguCanAccept) && aguSelect().v ? 1u : 0u;
   };
   agu.rsIndex = [this]() -> uint32_t {
     WinResult w = aguSelect();

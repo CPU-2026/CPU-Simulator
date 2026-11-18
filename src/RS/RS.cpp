@@ -51,6 +51,12 @@ void RSUnit::work() {
   const bool divRel = static_cast<bool>(dispatch.divValid);
   const uint32_t divIdx = static_cast<uint32_t>(dispatch.divIdx);
 
+  // The old one-hot selections hold unless their own pool actually departs.
+  if (needSquash || !bool(loadSelected) || (aguRel && aguIsLoadV))
+    loadSelected <= (needSquash ? 0u : uint32_t(dispatch.loadWakeChoice));
+  if (needSquash || !bool(saSelected) || (aguRel && !aguIsLoadV))
+    saSelected <= (needSquash ? 0u : uint32_t(dispatch.saWakeChoice));
+
   // ---- integerRS: push / release / flush ----
   for (int i = 0; i < INTEGERRS_CAP; ++i) {
     const bool busyOld = static_cast<bool>(integerRS[i].busy);

@@ -88,10 +88,8 @@ private:
 // tags itself. Four independent grants (ALU/MUL/AGU/BRU), each = oldest-ready
 // folded priority chain over its pool, gated by destination admission and the
 // squash point (squash suppresses valid only -- the selected idx/tag stay
-// driven, consumers gate on valid). AGU pool = LoadRS ++ StoreAddrRS
-// concatenated into a single 8-entry selection tree (verbatim iteration
-// order of the former software double loop). The MUL channel mirrors the ALU
-// channel over the dedicated multiplyRS pool.
+// driven, consumers gate on valid). LoadRS and StoreAddrRS each keep a late
+// wakeup choice and arbitrate their old candidates for the shared AGU.
 struct DispatchArbInput {
   // ALU admission accounts for result slots freed by same-cycle drain or
   // cancellation; the gate stays a Wire (see CPU.cpp wiring).
@@ -127,7 +125,10 @@ struct DispatchArbInput {
   std::array<Wire<PHY_TAG_WIDTH>, DIVIDERS_CAP> divSrc1Tag, divSrc2Tag;
   std::array<Wire<ROB_TAG_WIDTH>, DIVIDERS_CAP> divRobTag;
   std::array<Wire<1>, PRF_CAP> prdReady; // PRF ready bitmap bus
-  std::array<Wire<1>, PRF_CAP> bypassReady; // Granted WB, Integer/Branch/Load only.
+  std::array<Wire<1>, PRF_CAP> bypassReady; // All granted WB ports.
+  std::array<Wire<1>, PRF_CAP> branchBypassReady; // Same-cycle Branch excludes Load.
+  Wire<LOADRS_CAP> loadSelected;
+  Wire<STORERS_CAP> saSelected;
   Wire<1> squashNeed;
   Wire<ROB_TAG_WIDTH> squashTag;
 };
@@ -147,6 +148,8 @@ struct DispArbOutAguInfo {
 struct DispatchArbOutput {
   DispArbOutInfo alu, aluSecond, bru, mul, div;
   DispArbOutAguInfo agu;
+  Wire<LOADRS_CAP> loadWakeChoice;
+  Wire<STORERS_CAP> saWakeChoice;
 };
 struct DispatchArbiter : dark::Module<DispatchArbInput, DispatchArbOutput> {
   DispatchArbiter() { wire_output(); }
@@ -158,8 +161,9 @@ private:
     uint32_t idx;
   };
   void wire_output();
+  enum class Ready { Old, All, Branch };
   // prd_ready[tag] with P0 tied high (InvalidPhy=0 is permanently ready).
-  bool readyOf(uint32_t tag, bool bypass = false) const;
+  bool readyOf(uint32_t tag, Ready source = Ready::Old) const;
   // Folded priority chain (always_comb): req[i] = busy & rdy1 & rdy2, first
   // hit occupies, strictly-older replaces (equal tag keeps the earlier slot
   // -- dead logic in RTL since busy slots hold unique tags, kept verbatim).
@@ -168,12 +172,18 @@ private:
                          const std::array<Wire<PHY_TAG_WIDTH>, N> &src1Tag,
                          const std::array<Wire<PHY_TAG_WIDTH>, N> &src2Tag,
                            const std::array<Wire<ROB_TAG_WIDTH>, N> &tags,
-                           bool bypass = false) const;
+                           Ready source = Ready::Old) const;
+  template <std::size_t N>
+  WinResult selectAddress(const std::array<Wire<1>, N> &busy,
+                          const std::array<Wire<PHY_TAG_WIDTH>, N> &src1Tag,
+                          const std::array<Wire<PHY_TAG_WIDTH>, N> *src2Tag,
+                          const std::array<Wire<ROB_TAG_WIDTH>, N> &tags,
+                          unsigned selected, bool wake) const;
   WinResult aluSelect(unsigned unit) const;
   WinResult bruSelect() const;
   WinResult mulSelect() const; // multiplyRS pool, same shape as aluSelect
   WinResult divSelect() const; // divideRS pool, same shape as mulSelect
-  WinResult aguSelect() const; // load[0..3] ++ sa[0..3]: one 8-slot pass
+  WinResult aguSelect() const;
 };
 // ---- width/encoding guards for the wire-ized issue packet ----
 static_assert(static_cast<uint32_t>(Operation::OP_INVALID) < 32,

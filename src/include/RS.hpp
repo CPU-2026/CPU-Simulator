@@ -131,6 +131,8 @@ struct RSInputDispatch {
   Wire<2> mulIdx;
   Wire<2> divIdx;
   Wire<1> aguIsLoad;
+  Wire<LOADRS_CAP> loadWakeChoice;
+  Wire<STORERS_CAP> saWakeChoice;
 };
 struct RSInputSquash {
   Wire<1> needSquash;
@@ -156,6 +158,8 @@ struct RSInner {
   std::array<IntRS, INTEGERRS_CAP> integerRS;
   std::array<LoadRS, LOADRS_CAP> loadRS;
   std::array<StoreAddrRS, STORERS_CAP> storeAddressRS;
+  Register<LOADRS_CAP> loadSelected;
+  Register<STORERS_CAP> saSelected;
   std::array<StoreValueRS, STORERS_CAP> storeValueRS;
   std::array<BranchRS, BRANCHRS_CAP> branchRS;
   // Dedicated multiply pool (mirror of IntRS: busy/op/srcs/robTag). M-ops
@@ -171,6 +175,9 @@ static_assert(DIVIDERS_CAP <= 4, "divide slot index uses a 2-bit wire");
 struct RSUnit
     : public dark::Module<RSInput, dark::details::empty_class, RSInner> {
 public:
+  unsigned loadWakeSelection() const { return uint32_t(loadSelected); }
+  unsigned saWakeSelection() const { return uint32_t(saSelected); }
+
   // field bridge accessors (Register is non-copyable: consumers read fields,
   // never whole entries)
   bool isIntFree(int i) const {

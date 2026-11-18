@@ -25,15 +25,19 @@ PRF::PRF() {
     write.value = [cdb]() { return uint32_t(cdb->cdbValue); };
     write.ready = []() { return true; };
   }
-  auto &shared = valuePorts[PRF_VALUE_WRITERS - 1];
-  shared.valid = [this]() {
-    return bool(bootDone) && !bool(freeze) && bool(cdbOfShared.cdbValid) &&
-        uint32_t(cdbOfShared.cdbNewPhy) != 0 &&
-        (!bool(squash.needSquash) || ROB::isOlder(uint32_t(cdbOfShared.cdbRobTag), uint32_t(squash.SquashTag)));
+  auto connectResult = [this](unsigned port, const PRFInputCDBShared &cdb) {
+    auto &write = valuePorts[ISSUE_WIDTH + port];
+    write.valid = [this, &cdb]() {
+      return bool(bootDone) && !bool(freeze) && bool(cdb.cdbValid) &&
+          uint32_t(cdb.cdbNewPhy) != InvalidPhy &&
+          (!bool(squash.needSquash) || ROB::isOlder(uint32_t(cdb.cdbRobTag), uint32_t(squash.SquashTag)));
+    };
+    write.phy = [&cdb]() { return uint32_t(cdb.cdbNewPhy); };
+    write.value = [&cdb]() { return uint32_t(cdb.cdbValue); };
+    write.ready = []() { return true; };
   };
-  shared.phy = [this]() { return uint32_t(cdbOfShared.cdbNewPhy); };
-  shared.value = [this]() { return uint32_t(cdbOfShared.cdbValue); };
-  shared.ready = []() { return true; };
+  connectResult(MULDIV_CDB_PORT, cdbOfShared);
+  connectResult(LOAD_CDB_PORT, cdbOfLoad);
   for (unsigned bank = 0; bank < PRF_CAP - 1; ++bank) {
     payload[bank].enable = [this]() { return bool(bootDone); };
     payload[bank].addr = []() { return 0u; };

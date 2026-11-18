@@ -29,7 +29,7 @@ struct PRFInputSquash {
   Wire<1> needSquash;
   Wire<ROB_TAG_WIDTH> SquashTag;
 };
-// Dedicated ALU ports and one age-selected MUL/DIV/LQ port.
+// Dedicated ALU and Load ports, plus the age-selected MUL/DIV port.
 struct PRFInputCDBAlu {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
@@ -67,6 +67,7 @@ struct PRFInput {
   PRFInputCDBAlu cdbOfALU;
   PRFInputCDBAlu cdbOfALUSecond;
   PRFInputCDBShared cdbOfShared;
+  PRFInputCDBShared cdbOfLoad;
   std::array<PRFInputIssue, ISSUE_WIDTH> issue;
   PRFInputROB rob;
 };

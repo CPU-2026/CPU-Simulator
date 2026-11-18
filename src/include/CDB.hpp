@@ -99,17 +99,16 @@ struct SharedCDBCandidate {
   Wire<ROB_TAG_WIDTH> robTag;
 };
 struct SharedCDBInput {
-  // MUL, DIV, LQ; all candidates are flush-qualified before arbitration.
-  std::array<SharedCDBCandidate, 3> candidates;
+  // Only MUL and DIV arbitrate; Load has an independent port.
+  std::array<SharedCDBCandidate, 2> candidates;
 };
 struct SharedCDBOutput {
   Wire<1> valid;
   Wire<32> value;
   Wire<ROB_TAG_WIDTH> robTag;
-  Wire<2> selected; // 0=none, 1=MUL, 2=DIV, 3=LQ
+  Wire<2> selected; // 0=none, 1=MUL, 2=DIV
   Wire<1> mulGrant;
   Wire<1> divGrant;
-  Wire<1> lqGrant;
 };
 struct SharedCDB : dark::Module<SharedCDBInput, SharedCDBOutput> {
   SharedCDB();

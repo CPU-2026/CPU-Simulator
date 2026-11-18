@@ -67,6 +67,7 @@ struct ROBInput {
   ROBInputCDBAlu cdbOfALU;
   ROBInputCDBAlu cdbOfALUSecond;
   ROBInputCDBShared cdbOfShared;
+  ROBInputCDBShared cdbOfLoad;
   ROBInputBRU bru;
   ROBInputSQ sq;
 };

@@ -80,7 +80,7 @@ void LqCDB::wire_output() {
 uint32_t SharedCDB::selectOldest() const {
   uint32_t winner = 0;
   RobTag tag = 0;
-  for (uint32_t i = 0; i < 3; ++i) {
+  for (uint32_t i = 0; i < candidates.size(); ++i) {
     const RobTag candidateTag = static_cast<uint32_t>(candidates[i].robTag);
     if (static_cast<bool>(candidates[i].valid) &&
         (winner == 0 || ROB::isOlder(candidateTag, tag))) {
@@ -104,5 +104,4 @@ SharedCDB::SharedCDB() {
   };
   mulGrant = [this]() { return static_cast<uint32_t>(selected) == 1; };
   divGrant = [this]() { return static_cast<uint32_t>(selected) == 2; };
-  lqGrant = [this]() { return static_cast<uint32_t>(selected) == 3; };
 }

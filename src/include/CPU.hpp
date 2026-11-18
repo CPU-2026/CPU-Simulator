@@ -89,7 +89,8 @@ class CPU {
   bool aluGrant(unsigned unit) const;
   bool aluCanAccept(unsigned unit) const;
   const AluCDB &jumpCDB() const;
-  OperandWriteback grantedWritebacks(bool earlyAluOnly = false) const;
+  enum class WritebackScope { All, AluOnly, Branch };
+  OperandWriteback grantedWritebacks(WritebackScope scope = WritebackScope::All) const;
   // 0..DECODE_WIDTH: decoded uops moved FQ -> IQ this cycle (min of FQ
   // availability, IQ push capacity after the actual issue pops, and width).
   unsigned decodePopCount() const;

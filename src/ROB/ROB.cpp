@@ -280,6 +280,7 @@ void ROB::work() {
   if (static_cast<bool>(cdbOfShared.cdbValid)) {
     markReady(static_cast<uint32_t>(cdbOfShared.cdbRobTag));
   }
+  if (bool(cdbOfLoad.cdbValid)) markReady(uint32_t(cdbOfLoad.cdbRobTag));
   for (int i = 0; i < ROB_CAP; ++i) {
     if (readyWrite[i])
       ROBqueue[i].isCommitReady <= readyData[i];
